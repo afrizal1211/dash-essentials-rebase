@@ -1,3 +1,5 @@
+part of 'main.dart';
+
 // The health and log view.
 //
 // The daemon knows why a control did not take effect, but that knowledge used
@@ -26,7 +28,7 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
   @override
   void initState() {
     super.initState();
-    _refresh();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
   }
 
   Future<void> _refresh() async {
@@ -39,23 +41,36 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
       final dynamic health = await PerAppBackend.instance.command('GET health');
       final dynamic logs = await PerAppBackend.instance.command('GET logs');
       if (!mounted) return;
-      final List<dynamic> events =
-          (logs is Map ? logs['events'] : null) as List<dynamic>? ??
-              <dynamic>[];
+      final List<dynamic> events = _eventList(logs);
       setState(() {
         _health = health is Map
             ? Map<String, dynamic>.from(health)
             : <String, dynamic>{};
         _events = events
-            .whereType<Map<dynamic, dynamic>>()
-            .map((Map<dynamic, dynamic> e) => Map<String, dynamic>.from(e))
-            .toList();
+            .whereType<Map<String, dynamic>>()
+            .toList(growable: false);
       });
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  static String _ownedList(Object? owned) {
+    if (owned is! List) return 'nothing';
+    final List<String> names = <String>[
+      for (final dynamic item in owned) '$item',
+    ];
+    if (names.isEmpty) return 'nothing';
+    return names.join(', ');
+  }
+
+  static List<dynamic> _eventList(dynamic logs) {
+    if (logs is! Map) return <dynamic>[];
+    final Object? events = logs['events'];
+    if (events is List) return events;
+    return <dynamic>[];
   }
 
   Future<void> _clear() async {
@@ -92,6 +107,12 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Diagnostics copied to the clipboard')),
     );
+  }
+
+  Map<String, dynamic> _section(String name) {
+    final Object? value = _health?[name];
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return <String, dynamic>{};
   }
 
   @override
@@ -147,11 +168,11 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
           ),
         ],
         const SizedBox(height: 16),
-        _buildGpuCard(colors),
+        _buildGpuCard(),
         const SizedBox(height: 12),
-        _buildConflictCard(colors),
+        _buildConflictCard(),
         const SizedBox(height: 12),
-        _buildPerAppCard(colors),
+        _buildPerAppCard(),
         const SizedBox(height: 12),
         _buildLogCard(colors),
         const SizedBox(height: 24),
@@ -159,23 +180,8 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     );
   }
 
-  Map<String, dynamic> _gpu() {
-    final Object? value = _health?['gpu'];
-    return value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
-  }
-
-  Map<String, dynamic> _game() {
-    final Object? value = _health?['gameServices'];
-    return value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
-  }
-
-  Map<String, dynamic> _perApp() {
-    final Object? value = _health?['perApp'];
-    return value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{};
-  }
-
-  Widget _buildGpuCard(ColorScheme colors) {
-    final Map<String, dynamic> gpu = _gpu();
+  Widget _buildGpuCard() {
+    final Map<String, dynamic> gpu = _section('gpu');
     final bool verified = gpu['verified'] == true;
     final bool armed = gpu['armed'] == true;
     final Object? capped = gpu['cappedBy'];
@@ -183,9 +189,7 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     final String state = verified
         ? 'Applied'
         : (armed
-              ? (capped == null
-                    ? 'Armed'
-                    : 'Armed, capped by $capped')
+              ? (capped == null ? 'Armed' : 'Armed, capped by $capped')
               : 'Not applied');
 
     return SurfaceCard(
@@ -199,10 +203,7 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
             trailing: state,
           ),
           const SizedBox(height: 10),
-          _DiagnosticsRow(
-            'Profile',
-            'profile ${gpu['profile'] ?? '-'}',
-          ),
+          _DiagnosticsRow('Profile', 'profile ${gpu['profile'] ?? '-'}'),
           _DiagnosticsRow(
             'Target / live',
             '${gpu['targetMHz'] ?? '-'} MHz requested, '
@@ -246,8 +247,8 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     );
   }
 
-  Widget _buildConflictCard(ColorScheme colors) {
-    final Map<String, dynamic> game = _game();
+  Widget _buildConflictCard() {
+    final Map<String, dynamic> game = _section('gameServices');
     final bool active = game['active'] == true;
 
     return SurfaceCard(
@@ -264,8 +265,8 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
           _DiagnosticsRow('State', '${game['summary'] ?? 'idle'}'),
           if (active) ...<Widget>[
             const SizedBox(height: 8),
-            _DiagnosticsNote(
-              color: const Color(0xFFFFB84D),
+            const _DiagnosticsNote(
+              color: Color(0xFFFFB84D),
               title: 'These services own the same controls',
               detail:
                   'The MediaTek game driver and the task turbo publish their '
@@ -279,8 +280,8 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     );
   }
 
-  Widget _buildPerAppCard(ColorScheme colors) {
-    final Map<String, dynamic> perApp = _perApp();
+  Widget _buildPerAppCard() {
+    final Map<String, dynamic> perApp = _section('perApp');
     final Object? foreground = perApp['foreground'];
     final Object? owned = perApp['ownedControls'];
     final Object? error = perApp['error'];
@@ -298,20 +299,19 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
           const SizedBox(height: 10),
           _DiagnosticsRow(
             'Foreground',
-            foreground is Map
-                ? '${(foreground as Map)['package']}'
+            foreground is Map<String, dynamic>
+                ? '${foreground['package']}'
                 : 'none',
+          ),
+          _DiagnosticsRow(
+            'Detected by',
+            '${perApp['source'] ?? 'none'}',
           ),
           _DiagnosticsRow(
             'Saved profiles',
             '${perApp['configuredProfiles'] ?? 0}',
           ),
-          _DiagnosticsRow(
-            'Owned by an app',
-            owned is List && (owned as List).isNotEmpty
-                ? (owned as List).join(', ')
-                : 'nothing',
-          ),
+          _DiagnosticsRow('Owned by an app', _ownedList(owned)),
           _DiagnosticsRow(
             'Watching events',
             perApp['watching'] == true ? 'yes' : 'no',
@@ -448,7 +448,7 @@ class _DiagnosticsNote extends StatelessWidget {
   final String detail;
 
   @override
-  Widget build(BuildContext context) {
+ Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     return Container(
       width: double.infinity,
@@ -501,6 +501,9 @@ class _DiagnosticsEvent extends StatelessWidget {
     final ColorScheme colors = Theme.of(context).colorScheme;
     final Color level = _levelColor();
     final Object? at = event['at'];
+    final String when = at is int
+        ? DateTime.fromMillisecondsSinceEpoch(at).toIso8601String().substring(11, 19)
+        : '';
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -525,9 +528,9 @@ class _DiagnosticsEvent extends StatelessWidget {
                   ),
                 ),
               ),
-              if (at is int)
+              if (when.isNotEmpty)
                 Text(
-                  '#${event['seq']}',
+                  '$when  #${event['seq']}',
                   style: TextStyle(fontSize: 10.5, color: colors.onSurfaceVariant),
                 ),
             ],
