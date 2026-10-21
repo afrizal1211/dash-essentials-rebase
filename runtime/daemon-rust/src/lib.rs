@@ -240,6 +240,22 @@ mod vendor_binder {
         Some(binder)
     }
 
+    /// Whether the daemon may talk to the vendor services at all.
+    ///
+    /// The module's daemon runs in the module's own context. It does not
+    /// see the vendor service manager, so a vendor service it asks for
+    /// comes back as a pending binder, and the NDK's completion for a
+    /// pending binder has been seen to fault on a binder thread and take
+    /// the daemon with it. The ROM-native daemon runs as a system service
+    /// and can reach them, so only that one asks.
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("DASH_VENDOR_BINDER").as_deref() == Ok("1")
+                || crate::state_dir().starts_with("/data/system/")
+        })
+    }
+
     /// What the service manager answered the last time it was asked.
     ///
     /// The answer is kept for a while: the daemon cannot reach the vendor
@@ -296,10 +312,16 @@ mod vendor_binder {
     }
 
     pub fn touch_available() -> bool {
+        if !enabled() {
+            return false;
+        }
         vendor_availability().0
     }
 
     pub fn display_available() -> bool {
+        if !enabled() {
+            return false;
+        }
         vendor_availability().1
     }
 
@@ -369,6 +391,9 @@ mod vendor_binder {
     }
 
     pub fn set_touch_mode(display_id: i32, mode: i32, value: i32) -> bool {
+        if !enabled() {
+            return false;
+        }
         guarded_call(|| touch_mode_transaction(display_id, mode, value))
     }
 
@@ -424,6 +449,9 @@ mod vendor_binder {
     }
 
     pub fn set_display_feature(case_id: i32, mode_id: i32, cookie: i32) -> bool {
+        if !enabled() {
+            return false;
+        }
         guarded_call(|| display_feature_transaction(case_id, mode_id, cookie))
     }
 
@@ -5385,7 +5413,42 @@ fn charging_power_supply_event_loop() {
     }
 }
 
+/// Report a fatal signal with the place it happened.
+///
+/// A fault in the daemon used to show up only as the module restarting it,
+/// which says nothing about where the fault was.
+fn install_crash_reporter() {
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: usize) -> usize;
+    }
+    const SIGSEGV: i32 = 11;
+    const SIGABRT: i32 = 6;
+    const SIGBUS: i32 = 7;
+    const SIGILL: i32 = 4;
+    const SIGFPE: i32 = 8;
+    const SIGTRAP: i32 = 5;
+
+    extern "C" fn report(signal_number: i32) {
+        eprintln!("DASH_CRASH signal={signal_number}");
+        eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        unsafe {
+            // SIG_DFL: let the fault happen again, so the system records the
+            // crash the way it always did.
+            signal(signal_number, 0);
+            unsafe extern "C" {
+                fn raise(signal_number: i32) -> i32;
+            }
+            raise(signal_number);
+        }
+    }
+
+    for number in [SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP] {
+        unsafe { signal(number, report as *const () as usize) };
+    }
+}
+
 pub fn start_background_services() {
+    install_crash_reporter();
     #[cfg(target_os = "android")]
     std::thread::spawn(bypass_monitor_loop);
     if std::env::var("DASH_REVERSE_IPC").as_deref() == Ok("1") {

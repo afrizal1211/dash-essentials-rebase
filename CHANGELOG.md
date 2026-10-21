@@ -6,9 +6,26 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.11
+## 1.18.12
 
 Pre-release.
+
+### Fixed
+
+- The daemon only asks the vendor services for something when it can reach
+  them. The module's daemon runs in the module's own context and does not
+  see the vendor service manager, so a vendor service it asked for came
+  back as a pending binder whose completion has been seen to fault and take
+  the daemon with it. The ROM-native daemon, which runs as a system service,
+  can reach them and still asks.
+- A crash in the daemon now says where it happened. The daemon is the root
+  of every control on the device, and a fault that only showed up as the
+  module restarting it could not be found.
+- A per-app profile is written again when the platform takes its controls
+  back. The power HAL publishes its own GPU state and the stock ROM
+  re-asserts the touch rate on every screen on, so a profile that was
+  applied once was not a profile that was in effect.
+
 
 ### Fixed
 
