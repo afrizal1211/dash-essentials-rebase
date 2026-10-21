@@ -6,93 +6,121 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.15
+
+Pre-release.
+
+### Changed
+
+- The Telegram announcement is short. It says what the build is and what
+  changed in it, and the whole changelog stays on the release page.
+- A dropped connection to the Telegram API no longer fails the release. The
+  release is published before the announcement is sent, so a failure there is
+  reported and is not taken as a failed build.
+
+### Fixed
+
+- The changelog of the port's own versions has its headings back. Each new
+  version had replaced the heading of the previous one, so the entries of
+  1.18.9 to 1.18.13 sat under the heading of the version above them.
+
 ## 1.18.14
 
 Pre-release.
 
 ### Fixed
 
-- A crash in the daemon is written to a crash log that is kept open, with
-  write() only, so the report cannot deadlock in a fault that happened
-  while a lock was held. A daemon that never dies is a device with no
-  controls at all, which is worse than a daemon that restarts.
-- The exported report carries the crash log, so the answer to "where did it
-  crash" is in the report the user already knows how to make.
+- A crash in the daemon is written to a crash log that is kept open. The report
+  is written with write() only, so it cannot deadlock in a fault that happened
+  while a lock was held. A daemon that never dies is a device with no controls
+  at all, which is worse than a daemon that restarts.
+- The exported report carries the crash log. The answer to "where did it crash"
+  is in the report the user already knows how to make.
 
+## 1.18.13
+
+Pre-release.
 
 ### Fixed
 
-- The global profile is restored before the per-app profile is applied. The
-  two write the same controls, so a per-app profile that was applied first
-  and then overwritten by the global profile is a per-app profile that never
-  takes effect. The order matters most after a daemon restart, which is when
-  the global profile is restored.
-- A per-app profile is written again when the platform takes its controls
-  back. The power HAL publishes its own GPU state and the stock ROM
-  re-asserts the touch rate, so a profile that was only written once was not
-  a profile that was in effect.
+- The global profile is restored before the per-app profile is applied. The two
+  write the same controls, so a per-app profile that was applied first and
+  then overwritten by the global profile is a per-app profile that never takes
+  effect. The order matters most after a daemon restart, which is when the
+  global profile is restored.
+- A per-app profile is written again when the platform takes its controls back.
+  The power HAL publishes its own GPU state and the stock ROM re-asserts the
+  touch rate, so a profile that was only written once was not a profile that
+  was in effect.
 
 ### Changed
 
-- The health report says which app holds the controls, which controls it
-  holds, and whether the hardware still has them. A profile that is listed
-  but that the platform has taken back is not in effect, and the difference
-  between the two is what could not be seen before.
+- The health report says which app holds which controls. It also says whether
+  the hardware still has them, because a profile that is listed but that the
+  platform has taken back is not in effect, and the difference between the two
+  is what could not be seen before.
 
+## 1.18.12
 
-### Fixed
-
-- The daemon only asks the vendor services for something when it can reach
-  them. The module's daemon runs in the module's own context and does not
-  see the vendor service manager, so a vendor service it asked for came
-  back as a pending binder whose completion has been seen to fault and take
-  the daemon with it. The ROM-native daemon, which runs as a system service,
-  can reach them and still asks.
-- A crash in the daemon now says where it happened. The daemon is the root
-  of every control on the device, and a fault that only showed up as the
-  module restarting it could not be found.
-- A per-app profile is written again when the platform takes its controls
-  back. The power HAL publishes its own GPU state and the stock ROM
-  re-asserts the touch rate on every screen on, so a profile that was
-  applied once was not a profile that was in effect.
-
+Pre-release.
 
 ### Fixed
 
-- The daemon no longer dies on this platform. The daemon runs in the
-  module's own context and cannot reach the vendor services, so a service
-  it asks for comes back as a pending binder, and the NDK's completion for a
-  pending binder has been seen to fault on a binder thread. Every vendor
-  interaction now happens in a forked child, and a service that is only
-  looked up is looked up without a class, so nothing can be dispatched into
-  the daemon.
-- The Novatek NT38771 panel is recognised from the touch bridge's own class
-  device and from the Novatek firmware strings, so the panel is known even
-  when the firmware version file does not name it.
+- The daemon only asks the vendor services when it can reach them. The module's
+  daemon runs in the module's own context and does not see the vendor service
+  manager, so a vendor service it asked for came back as a pending binder
+  whose completion has been seen to fault and take the daemon with it. The
+  ROM-native daemon, which runs as a system service, can reach them and still
+  asks.
+- A crash in the daemon now says where it happened. The daemon is the root of
+  every control on the device, and a fault that only showed up as the module
+  restarting it could not be found.
+
+## 1.18.11
+
+Pre-release.
+
+### Fixed
+
+- The daemon no longer dies on this platform. The daemon runs in the module's
+  own context and cannot reach the vendor services, so a service it asks for
+  comes back as a pending binder, and the NDK's completion for a pending
+  binder has been seen to fault on a binder thread. Every vendor interaction
+  now happens in a forked child, and a service that is only looked up is
+  looked up without a class, so nothing can be dispatched into the daemon.
+- The Novatek NT38771 panel is recognised from the touch bridge. It is
+  recognised from the touch bridge's own class device and from the Novatek
+  firmware strings, so the panel is known even when the firmware version file
+  does not name it.
 - The touch report rate is read back until it agrees. The node's output is
-  produced per read, and a read that lands while the value changes returns
-  a part of it, which was read as a failed write.
+  produced per read, and a read that lands while the value changes returns a
+  part of it, which was read as a failed write.
 
+## 1.18.10
+
+Pre-release.
 
 ### Fixed
 
-- The daemon no longer dies on this platform. The vendor touch service
-  transaction was faulting inside the daemon, and the daemon was restarted
-  in a loop; every restart re-applied the global profile, so a per-app
-  profile appeared and disappeared. Dash's stock ROM drives the touch
+- A fault in the vendor services no longer takes the daemon with it. The vendor
+  touch service transaction was faulting inside the daemon, and the daemon was
+  restarted in a loop; every restart re-applied the global profile, so a
+  per-app profile appeared and disappeared. Dash's stock ROM drives the touch
   feature modes, so the daemon drives only the report rate and leaves the
   modes to the ROM that owns them.
-- A vendor transaction that does fault can no longer take the daemon with
-  it. The transaction runs in a forked child and only its result is taken
-  back, so a fault in a vendor service is reported as a failed feature
-  instead of an endless restart.
-- The global guard leaves the controls a per-app profile is holding alone.
-  The guard restores the global profile, so it was writing over the per-app
-  profile's GPU, CPU and touch settings, and the per-app profile was
-  applied and then immediately overwritten.
-- The touch report rate is read back correctly. The node reads
-  `report_rate: 240`, so the value is taken from after the label.
+- A vendor transaction that does fault is reported as a failed feature. The
+  transaction runs in a forked child and only its result is taken back,
+  instead of the daemon being restarted in a loop.
+- The global guard leaves the controls a per-app profile is holding alone. The
+  guard restores the global profile, so it was writing over the per-app
+  profile's GPU, CPU and touch settings, and the per-app profile was applied
+  and then immediately overwritten.
+- The touch report rate is read back correctly. The node reads `report_rate:
+  240`, so the value is taken from after the label.
 
+## 1.18.9
+
+Pre-release.
 
 ### Added
 
@@ -103,15 +131,15 @@ Pre-release.
 
 ### Changed
 
-- The support links point at this port's repository and at the
-  @PocoX8ProMaxID Telegram community.
-- The release page reads as a page: what the build is, what changed, how to
-  install it, how to check the download, and the credits.
+- The support links point at this port's repository and at the @PocoX8ProMaxID
+  Telegram community.
+- The release page reads as a page. It says what the build is, what changed, how
+  to install it, how to check the download, and who made it.
 
 ### Fixed
 
-- The Telegram announcement is cut to the size the Telegram API accepts, so a
-  long changelog section no longer fails the release.
+- The Telegram announcement is cut to the size the Telegram API accepts. A long
+  changelog section no longer fails the release.
 
 ## 1.18.8
 
