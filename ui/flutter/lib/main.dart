@@ -3122,8 +3122,8 @@ class _HomePulseHero extends StatelessWidget {
         };
         final String profileDescription = switch (activePerf) {
           2 => 'Efficiency-first clocks and reduced power demand',
-          1 => 'Unrestricted 260–1300 MHz GPU scaling with GED boost',
-          3 => 'GPU locked at the 1300 MHz hardware ceiling',
+          1 => 'Unrestricted 338–1612 MHz GPU scaling with GED boost',
+          3 => 'GPU locked at the 1612 MHz hardware ceiling',
           _ => 'OEM-balanced performance and efficiency for everyday use',
         };
         final int onlineCores = _dashOnlineCoreCount(snapshot);
@@ -3144,7 +3144,7 @@ class _HomePulseHero extends StatelessWidget {
           3 => '1000 / 500 Hz',
           _ => 'ROM control',
         };
-        final int liveGpuFreq = backend.extendedValue(46) >= 260
+        final int liveGpuFreq = backend.extendedValue(46) >= 338
             ? backend.extendedValue(46)
             : 0;
         final String gpu = liveGpuFreq > 0 ? '$liveGpuFreq MHz' : '—';
@@ -4024,7 +4024,7 @@ class _LiveOverviewGrid extends StatelessWidget {
         final int onlineCores = _dashOnlineCoreCount(snapshot);
 
         final gpuMhz = backend.extendedValue(46);
-        final gpuValue = snapshot.ready && gpuMhz >= 260 ? '$gpuMhz MHz' : '—';
+        final gpuValue = snapshot.ready && gpuMhz >= 338 ? '$gpuMhz MHz' : '—';
         final gpuSubtitle = snapshot.ready
             ? 'Live graphics clock'
             : 'Waiting for GPU';
@@ -4386,20 +4386,20 @@ class HubsScreen extends StatelessWidget {
             : 0;
         final int rawMinFreq = backend.extendedValue(47) >= 0
             ? backend.extendedValue(47)
-            : 260;
+            : 338;
         final int rawMaxFreq = backend.extendedValue(48) >= 0
             ? backend.extendedValue(48)
-            : 1300;
+            : 1612;
         final int rawUncap = backend.extendedValue(52);
         final int activePerf = snapshot.performanceProfile >= 0
             ? snapshot.performanceProfile
             : 0;
         final bool isBeast =
-            (rawUncap == 1 && rawMinFreq == 1300 && rawMaxFreq == 1300) ||
+            (rawUncap == 1 && rawMinFreq == 1612 && rawMaxFreq == 1612) ||
             activePerf == 3;
-        final String gpuLabel = liveGpuFreq >= 260
+        final String gpuLabel = liveGpuFreq >= 338
             ? '$liveGpuFreq MHz'
-            : (isBeast ? '1300 MHz' : '$rawMaxFreq MHz');
+            : (isBeast ? '1612 MHz' : '$rawMaxFreq MHz');
         final String displayMode = switch (snapshot.displayColor) {
           0 => 'Original PRO',
           1 => 'Vivid',
@@ -5169,7 +5169,7 @@ class SupportScreen extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Engineered exclusively for Dimensity 8400-Ultra (MT6899 / dash)',
+                        'Engineered exclusively for Dimensity 9500s (MT6991 / dash)',
                         style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
@@ -8187,7 +8187,7 @@ class _CpuControlScreenState extends State<CpuControlScreen> {
                                     fit: BoxFit.scaleDown,
                                     alignment: Alignment.centerLeft,
                                     child: Text(
-                                      'Dimensity 8400-Ultra CPU',
+                                      'Dimensity 9500s CPU',
                                       style: TextStyle(
                                         fontSize: 14.5,
                                         fontWeight: FontWeight.w800,
@@ -9635,7 +9635,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
   bool _customDefaultsLoaded = false;
 
   int _densityForWidth(int nativeDensity, int width) =>
-      ((nativeDensity * width + 610) ~/ 1220);
+      ((nativeDensity * width + 640) ~/ 1280);
 
   @override
   void initState() {
@@ -9649,7 +9649,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
     setState(() => _applying = true);
 
     final bool isNative =
-        (width <= 0 || height <= 0) || (width == 1220 && height == 2712);
+        (width <= 0 || height <= 0) || (width == 1280 && height == 2772);
 
     if (isNative) {
       backend.resetDisplayResolution();
@@ -9707,7 +9707,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
             : nativeDensity;
 
         final bool isNative =
-            activeWidth <= 0 || (activeWidth == 1220 && activeHeight == 2712);
+            activeWidth <= 0 || (activeWidth == 1280 && activeHeight == 2772);
         final bool isFhd = activeWidth == 1080 && activeHeight == 2400;
         final bool isHd = activeWidth == 720 && activeHeight == 1600;
         final bool isQhd = activeWidth == 1440 && activeHeight == 3200;
@@ -9743,9 +9743,9 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
           _ResolutionPreset(
             title: 'Native 1.5K Pro',
             badge: '1.5K NATIVE',
-            resolutionText: '1220 × 2712',
-            width: 1220,
-            height: 2712,
+            resolutionText: '1280 × 2772',
+            width: 1280,
+            height: 2772,
             density: nativeDensity,
             aspectRatio: '20:9',
             description:
@@ -9803,7 +9803,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
             DetailHeader(title: 'Resolution', onBack: widget.onBack),
             const SizedBox(height: 4),
             Text(
-              'ROM-aware resolution and logical-density scaling for Dash (1220×2712 1.5K AMOLED)',
+              'ROM-aware resolution and logical-density scaling for Dash (1280×2772 1.5K AMOLED)',
               style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
             ),
             const SizedBox(height: 12),
@@ -9843,7 +9843,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                               child: Text(
                                 activeWidth > 0 && activeHeight > 0
                                     ? '$activeWidth × $activeHeight'
-                                    : '1220 × 2712',
+                                    : '1280 × 2772',
                                 style: const TextStyle(
                                   fontSize: 21,
                                   fontWeight: FontWeight.w900,
@@ -9945,7 +9945,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                         ),
                         icon: const Icon(Icons.refresh_rounded, size: 17),
                         label: const Text(
-                          'Reset to 1.5K Native (1220 × 2712)',
+                          'Reset to 1.5K Native (1280 × 2772)',
                           style: TextStyle(
                             fontWeight: FontWeight.w800,
                             fontSize: 13,
@@ -9954,8 +9954,8 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                         onPressed: _applying
                             ? null
                             : () => _applyResolution(
-                                1220,
-                                2712,
+                                1280,
+                                2772,
                                 nativeDensity,
                                 '1.5K Native',
                               ),
@@ -9981,7 +9981,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                   ),
                 ),
                 Text(
-                  '1220×2712 Physical Panel',
+                  '1280×2772 Physical Panel',
                   style: TextStyle(
                     fontSize: 10.5,
                     fontWeight: FontWeight.w600,
@@ -10118,7 +10118,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                       setState(() {
                         _customWidth = w;
                         if (_lockAspectRatio) {
-                          _customHeight = (w * 2712 ~/ 1220);
+                          _customHeight = (w * 2772 ~/ 1280);
                           _customDensity = _densityForWidth(nativeDensity, w);
                         }
                       });
@@ -10264,7 +10264,7 @@ class _ResolutionScreenState extends State<ResolutionScreen> {
                   _DiagnosticRow(
                     label: 'Physical Panel Size',
                     good: true,
-                    detail: '1220 × 2712 (1.5K AMOLED)',
+                    detail: '1280 × 2772 (1.5K AMOLED)',
                   ),
                   const Divider(height: 14),
                   _DiagnosticRow(
@@ -11929,8 +11929,8 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
     setState(() {
       _optimisticProfile = 0;
       _optimisticUncap = false;
-      _optimisticMinFreq = 260;
-      _optimisticMaxFreq = 1300;
+      _optimisticMinFreq = 338;
+      _optimisticMaxFreq = 1612;
       _optimisticGov = 4;
       _optimisticGedBoost = false;
       _optimisticPowerPolicy = 0;
@@ -11978,10 +11978,10 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
             : 0;
         final int rawMinFreq = backend.extendedValue(47) >= 0
             ? backend.extendedValue(47)
-            : 260;
+            : 338;
         final int rawMaxFreq = backend.extendedValue(48) >= 0
             ? backend.extendedValue(48)
-            : 1300;
+            : 1612;
         final int rawGovCode = backend.extendedValue(49) >= 0
             ? backend.extendedValue(49)
             : 0;
@@ -12008,8 +12008,8 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 ? snapshot.performanceProfile
                 : 0);
         final int requestedMaxFreq = switch (activePerf) {
-          3 => 1300,
-          1 => 1300,
+          3 => 1612,
+          1 => 1612,
           2 => 598,
           _ => rawMaxFreq,
         };
@@ -12017,14 +12017,14 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
         final bool isThrottledByOs =
             hasHardwareReadback &&
             ((activePerf == 3 &&
-                    ((liveCurFreq > 0 && liveCurFreq < 1300) ||
+                    ((liveCurFreq > 0 && liveCurFreq < 1612) ||
                         rawMaxFreq < requestedMaxFreq)) ||
                 ((activePerf == 1 || activePerf == 2) &&
                     rawMaxFreq < requestedMaxFreq));
         final bool isBeast =
             activePerf == 3 ||
             isUncapped ||
-            (activeMinFreq == 1300 && activeMaxFreq == 1300);
+            (activeMinFreq == 1612 && activeMaxFreq == 1612);
         final bool isGaming = !isBeast && activePerf == 1;
         final bool isBattery = !isBeast && activePerf == 2;
         final Color mainColor = isBeast
@@ -12043,16 +12043,16 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                         : Icons.balance_rounded));
         final String modeSummary = isBeast
             ? (liveCurFreq > 0
-                  ? 'Live: $liveCurFreq MHz · Fixed at 1.30 GHz'
-                  : 'Applying fixed 1.30 GHz lock')
+                  ? 'Live: $liveCurFreq MHz · Fixed at 1.61 GHz'
+                  : 'Applying fixed 1.61 GHz lock')
             : (isGaming
                   ? (liveCurFreq > 0
-                        ? 'Live: $liveCurFreq MHz · Scaling freely to 1.30 GHz'
-                        : 'Full-range scaling · 260–1300 MHz')
+                        ? 'Live: $liveCurFreq MHz · Scaling freely to 1.61 GHz'
+                        : 'Full-range scaling · 338–1612 MHz')
                   : (isBattery
                         ? (liveCurFreq > 0
                               ? 'Live: $liveCurFreq MHz · Efficiency cap at 598 MHz'
-                              : 'Efficiency range · 260–598 MHz')
+                              : 'Efficiency range · 338–598 MHz')
                         : (liveCurFreq > 0
                               ? 'Live: $liveCurFreq MHz · OEM-managed behavior'
                               : 'Vendor-managed clocks and power policy')));
@@ -12093,7 +12093,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 HeroCard(
                   icon: modeIcon,
                   accent: mainColor,
-                  title: 'Mali-G720 Graphics',
+                  title: 'Immortalis-G925 Graphics',
                   subtitle: modeSummary,
                 ),
                 const SizedBox(height: 12),
@@ -12182,7 +12182,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
     final bool isBeast =
         activeProfile == 3 ||
         isUncapped ||
-        (minFreq == 1300 && maxFreq == 1300);
+        (minFreq == 1612 && maxFreq == 1612);
     final bool isGaming = !isBeast && activeProfile == 1;
     final bool isBattery = !isBeast && activeProfile == 2;
 
@@ -12198,14 +12198,14 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
 
     final String clockSubtext = isBeast
         ? (isThrottledByOs
-              ? 'External clock limit detected · 1300 MHz remains the target'
-              : (profileVerified && liveCurFreq == 1300
-                    ? 'Fixed 1.30 GHz target verified from live hardware telemetry'
-                    : 'Fixed 1.30 GHz target requested · waiting for live verification'))
+              ? 'External clock limit detected · 1612 MHz remains the target'
+              : (profileVerified && liveCurFreq == 1612
+                    ? 'Fixed 1.61 GHz target verified from live hardware telemetry'
+                    : 'Fixed 1.61 GHz target requested · waiting for live verification'))
         : (isGaming
               ? (liveCurFreq > 0
-                    ? 'Dynamic Gaming Load ($liveCurFreq MHz · 1.30 GHz Ceiling)'
-                    : 'Standby Dynamic (260 – 1300 MHz · GED Boost Active)')
+                    ? 'Dynamic Gaming Load ($liveCurFreq MHz · 1.61 GHz Ceiling)'
+                    : 'Standby Dynamic (338 – 1612 MHz · GED Boost Active)')
               : (isBattery
                     ? (liveCurFreq > 0
                           ? 'Live $liveCurFreq MHz · $minFreq–$maxFreq MHz Battery Range'
@@ -12215,7 +12215,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                           : 'Waiting for OEM GPU telemetry')));
 
     final String badgeTitle = isBeast
-        ? '1.30 GHz FIXED TARGET'
+        ? '1.61 GHz FIXED TARGET'
         : (isGaming
               ? 'GAMING DYNAMIC BOOST'
               : (isBattery ? 'BATTERY SAVER CLAMP' : 'DYNAMIC BALANCED'));
@@ -12259,7 +12259,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                       ),
                     ),
                     Text(
-                      'Dimensity 8400-Ultra · Mali-G720 7-Core',
+                      'Dimensity 9500s · Immortalis-G925 12-Core',
                       style: TextStyle(
                         fontSize: 11.5,
                         color: colors.onSurfaceVariant,
@@ -12268,7 +12268,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                   ],
                 ),
               ),
-              if (maxFreq >= 1300)
+              if (maxFreq >= 1612)
                 Container(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 8,
@@ -12282,7 +12282,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                     ),
                   ),
                   child: const Text(
-                    '1.30 GHz Target',
+                    '1.61 GHz Target',
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.w800,
@@ -12491,7 +12491,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
   }) {
     final bool isBeast =
         activeProfile == 3 ||
-        (activeProfile < 0 && isUncapped && minFreq == 1300 && maxFreq == 1300);
+        (activeProfile < 0 && isUncapped && minFreq == 1612 && maxFreq == 1612);
     final bool isGaming = activeProfile == 1;
     final bool isBattery = activeProfile == 2;
     final bool isStock = !isBeast && !isGaming && !isBattery;
@@ -12516,18 +12516,18 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 isDark: isDark,
                 colors: colors,
                 title: 'Extreme Beast',
-                range: '1300 MHz fixed · No downclock',
+                range: '1612 MHz fixed · No downclock',
                 icon: Icons.bolt_rounded,
                 accent: const Color(0xFFFF5252),
                 isActive: isBeast,
                 onTap: () => onSelect(
                   3,
-                  1300,
-                  1300,
+                  1612,
+                  1612,
                   1,
                   true,
                   1,
-                  'Extreme Beast · Fixed 1.30 GHz',
+                  'Extreme Beast · Fixed 1.61 GHz',
                   Icons.bolt_rounded,
                   const Color(0xFFFF5252),
                 ),
@@ -12539,14 +12539,14 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 isDark: isDark,
                 colors: colors,
                 title: 'Gaming Dynamic',
-                range: '260–1300 MHz · Full-range scaling',
+                range: '338–1612 MHz · Full-range scaling',
                 icon: Icons.sports_esports_rounded,
                 accent: const Color(0xFFFFB84D),
                 isActive: isGaming,
                 onTap: () => onSelect(
                   1,
-                  260,
-                  1300,
+                  338,
+                  1612,
                   0,
                   true,
                   1,
@@ -12572,8 +12572,8 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 isActive: isStock,
                 onTap: () => onSelect(
                   0,
-                  260,
-                  1300,
+                  338,
+                  1612,
                   4,
                   false,
                   0,
@@ -12589,13 +12589,13 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 isDark: isDark,
                 colors: colors,
                 title: 'Battery Saver',
-                range: '260–598 MHz · Efficiency cap',
+                range: '338–598 MHz · Efficiency cap',
                 icon: Icons.energy_savings_leaf_rounded,
                 accent: const Color(0xFF41C98A),
                 isActive: isBattery,
                 onTap: () => onSelect(
                   2,
-                  260,
+                  338,
                   598,
                   2,
                   false,
@@ -13125,7 +13125,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
               ),
               const SizedBox(width: 8),
               Text(
-                'MediaTek Mali Architecture',
+                'MediaTek Immortalis Architecture',
                 style: TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w800,
@@ -13138,17 +13138,17 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
           _buildDetailRow(
             colors,
             'GPU Architecture',
-            'Mali-G720 7-Core r0p1 (0x0C080700)',
+            'Immortalis-G925 r0p1 (0x0C080700)',
           ),
           _buildDetailRow(
             colors,
             'Active Core Mask',
-            '0x150055 (All 7 execution clusters active)',
+            '8 cores (4x Cortex-A720 + 3x Cortex-X4 + 1x Cortex-X925)',
           ),
           _buildDetailRow(
             colors,
             'Thermal Cooling Node',
-            '/sys/class/thermal/cooling_device3',
+            'devfreq-48000000.mali (resolved by type)',
           ),
           _buildDetailRow(
             colors,
@@ -13167,7 +13167,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
           _buildDetailRow(
             colors,
             'Hardware Frequencies',
-            '41 Clock Steps (260 MHz → 1.30 GHz)',
+            '50 Clock Steps (338 MHz → 1.61 GHz)',
           ),
         ],
       ),
@@ -14259,8 +14259,8 @@ class _DashScrollPageState extends State<DashScrollPage> {
   double _lastScrollOffset = 0;
   bool _edgeLatched = false;
 
-  static const double _dashPhysicalWidth = 1220;
-  static const double _dashPhysicalHeight = 2712;
+  static const double _dashPhysicalWidth = 1280;
+  static const double _dashPhysicalHeight = 2772;
   static const double _dashPhysicalCutoutTop = 130;
 
   @override

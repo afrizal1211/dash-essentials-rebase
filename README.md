@@ -1,7 +1,8 @@
 # Dash Essential
 
 Dash Essential is a native hardware-control application for Xiaomi Dash
-(POCO X7 Pro / Redmi Turbo 4) and its MediaTek Dimensity 8400-Ultra platform.
+(POCO X8 Pro Max / Redmi Turbo 5 Max) and its MediaTek Dimensity 9500s
+(MT6991) platform.
 It combines an Android `NativeActivity`, a Flutter AOT interface, a Rust host
 runtime, and a separately privileged Rust daemon. The UI and hardware-control
 logic remain native/AOT. A small, framework-only DEX adapter provides the
@@ -16,9 +17,10 @@ installed application UID.
 ## Supported target
 
 - Device codename: `dash`
-- SoC: MediaTek MT6899 / Dimensity 8400-Ultra
-- CPU: 8× Cortex-A725 (4+3+1 policies), up to 3.25 GHz
-- GPU: Mali-G720, 7 cores, up to 1300 MHz
+- SoC: MediaTek MT6991 / Dimensity 9500s
+- CPU: 8 cores (4× Cortex-A720 + 3× Cortex-X4 + 1× Cortex-X925), 4+3+1
+  policies, up to 3.73 GHz
+- GPU: Arm Immortalis-G925, 12 cores, up to 1612 MHz
 - ABI: ARM64
 - Android: API 31 or newer
 - Kernel userspace: 16 KB page-compatible native binaries
@@ -96,10 +98,10 @@ focused panels for each subsystem.
 
 | Profile | GPU range and governor | GED / power policy | CPU behavior |
 | --- | --- | --- | --- |
-| Stock Balanced | Vendor-managed 260–1300 MHz, `dummy` | GED off, `coarse_demand` | Unchanged; controlled separately |
-| Gaming Dynamic | 260–1300 MHz, `simple_ondemand` | GED on, `always_on` | Unchanged; controlled separately |
-| Battery Saver | 260–598 MHz, `powersave` | GED off, `coarse_demand` | Unchanged; controlled separately |
-| Extreme Beast | Fixed 1300 MHz, `performance`, DVFS off | GED on, `always_on` | Unchanged; controlled separately |
+| Stock Balanced | Vendor-managed 338–1612 MHz, `dummy` | GED off, `coarse_demand` | Unchanged; controlled separately |
+| Gaming Dynamic | 338–1612 MHz, `simple_ondemand` | GED on, `always_on` | Unchanged; controlled separately |
+| Battery Saver | 338–598 MHz, `powersave` | GED off, `coarse_demand` | Unchanged; controlled separately |
+| Extreme Beast | Fixed 1612 MHz, `performance`, DVFS off | GED on, `always_on` | Unchanged; controlled separately |
 
 GPU profiles never modify CPU governors, CPU clock ranges, or CPU core state.
 Vendor CPU and platform thermal services remain running in every mode. Gaming
@@ -273,6 +275,75 @@ ui/flutter/             Flutter AOT interface
   additions and a merge tool using the porter's own ROM policy.
 - [Flutter runtime pin](docs/FLUTTER_RUNTIME.md)
 - [Commit convention](docs/COMMITS.md)
+
+## Port notes: Rodin Essential to Dash (MT6991)
+
+This tree is a port of [Rodin Essential](https://github.com/NEESCHAL-3/Rodin-Essential)
+by **NEESCHAL-3**, reworked for the MediaTek MT6991 `dash` platform. The
+upstream release it is based on is `v1.18.5`. The upstream project's licence,
+copyright notice and release history are preserved; [NOTICE](NOTICE) lists the
+modifications.
+
+The port changed the following. Every value was taken from the shipped dash
+kernel, device tree and ROM rather than carried over from MT6899.
+
+### The GPU ladder
+
+The upstream target's Mali-G720 published a uniformly spaced 26 MHz
+operating-point ladder, so an OPP index could be computed from a frequency with
+a formula. Dash's Immortalis-G925 does not:
+
+- The device tree publishes 52 operating points from 1612 MHz down to 338 MHz,
+  and the three lowest entries all report the same 338 MHz.
+- The Mali devfreq node advertises 50 frequencies, while the GPUEB's own DVFS
+  ladder has 52 slots. The same frequency therefore sits at a different index
+  in each: 598 MHz is devfreq index 39 but GPUEB index 49, and 338 MHz is
+  devfreq index 49 but GPUEB index 51.
+
+The daemon consequently resolves every operating-point index against the ladder
+the driver publishes at `/proc/gpufreqv2/gpu_working_opp_table`, and it
+publishes a floor and a ceiling the way MediaTek's own tooling does:
+`custom_boost_gpu_freq` carries the ladder position of the requested minimum,
+`custom_upbound_gpu_freq` the position of the requested maximum, and the
+`gpu_cust_boost_freq` / `gpu_cust_upbound_freq` parameters carry the
+frequencies themselves. A request the ladder cannot satisfy is reported as an
+error rather than written as a guessed index, because a wrong index moves the
+floor to an unrelated frequency.
+
+### Device baselines
+
+| Item | Upstream target | Dash |
+| --- | --- | --- |
+| GPU devfreq | `13000000.mali` | `48000000.mali` |
+| GPU ladder | 260–1300 MHz, 41 uniform steps | 338–1612 MHz, 52 uneven steps |
+| Mali cooling device | fixed `cooling_device3` | resolved by type `devfreq-48000000.mali` |
+| UFS devfreq | `112b0000.ufshci` | `16810000.ufshci` |
+| DVFSRC devfreq | `/devices/platform/soc/1c00f000.dvfsrc/...` | `/devices/platform/1c013000.dvfsrc/...` |
+| Backlight | `/sys/class/backlight/panel0-backlight` | `/sys/class/leds/lcd-backlight` |
+| Native resolution | 1220 x 2712 | 1280 x 2772 |
+| Touch panel | Goodix / FocalTech | Novatek NT38771 |
+
+The CPU cluster layout is unchanged: Dash exposes the same 4+3+1 policy
+numbering (`policy0`, `policy4`, `policy7`) with eight cores.
+
+### Thermal ownership
+
+Dash's thermal interface is the same one the upstream target used, including
+the `thermal_message/sconfig` configuration mode that suppresses the vendor's
+competing CPU policy while a custom CPU range is held. The vendor thermal
+services stay running in every mode.
+
+### Known differences
+
+- Dash's stock kernel publishes no bypass-charging node, so the bypass-charging
+  feature reports itself as unsupported rather than pretending to provide
+  direct power. The charge-current limit is still available: dash exposes
+  `constant_charge_current` on the battery power supply.
+- The charge-current tiers follow the upstream calibration. The absolute
+  ceiling comes from the vendor charger configuration, which is not part of the
+  public ROM dump, so it should be confirmed against the target hardware; the
+  daemon verifies every write against its readback and reports a clamped or
+  rejected value instead of pretending it applied.
 
 ## License
 

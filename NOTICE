@@ -1,0 +1,62 @@
+Dash Essential
+Copyright 2026 Dash Essential Project
+
+This product is a derivative of Rodin Essential:
+
+    Rodin Essential
+    Copyright 2026 Rodin Essential Project
+    https://github.com/NEESCHAL-3/Rodin-Essential
+    Licensed under the Apache License, Version 2.0
+
+Rodin Essential is the native hardware-control suite for the Xiaomi Rodin
+(POCO X7 Pro / Redmi Turbo 4, MediaTek MT6899) written and maintained by
+NEESCHAL-3. The upstream project, its licence and its notices are preserved
+in this repository; see LICENSE for the Apache License, Version 2.0 and
+CHANGELOG.md for the upstream release history.
+
+This repository reworks that project for the MediaTek MT6991 `dash` platform
+(POCO X8 Pro Max / REDMI Turbo 5 Max). The upstream release this port is based
+on is v1.18.5. The application package was renamed from
+`io.github.neeschal.rodinessential` to `io.github.neeschal.dashessential`,
+the root module id from `nees_rodin_essential_backend` to
+`nees_dash_essential_backend`, and the SELinux types, classes and helper names
+were moved into the `dash_*` namespace.
+
+What the port changed:
+
+  * The GPU actuation model. The upstream target published a uniformly spaced
+    26 MHz operating-point ladder, so an OPP index could be computed from a
+    frequency. Dash's ladder is not uniformly spaced and the GPUEB's index
+    space does not match the Mali devfreq table's, so every operating-point
+    index is now resolved against the ladder the driver publishes at
+    /proc/gpufreqv2/gpu_working_opp_table. A request the ladder cannot satisfy
+    is an error rather than a guessed index.
+
+  * The GPU device addresses and frequency ladder. Dash carries the Arm
+    Immortalis-G925 at mali@48000000 with a 338 MHz to 1612 MHz ladder, against
+    the upstream target's 13000000.mali and 260 MHz to 1300 MHz ladder. The
+    Mali cooling device is now resolved by its type rather than by a fixed
+    cooling_device index.
+
+  * The CPU, UFS, DVFSRC, backlight, touch panel and display baselines, all
+    retargeted to the values the shipped dash kernel, device tree and ROM
+    report.
+
+  * The SELinux genfs rules for the Mali devfreq, UFS devfreq and DVFSRC
+    devfreq nodes.
+
+The `dash` device tree, vendor hardware interfaces and ROM wiring this port
+was rebuilt against come from the xiaomi-mt6991 community repositories:
+
+    Device tree: https://github.com/xiaomi-mt6991/device_xiaomi_dash
+    Hardware interfaces: https://github.com/xiaomi-mt6991/hardware_xiaomi
+    Manifest overlays: https://github.com/xiaomi-mt6991/local_manifests
+    Organisation: https://github.com/xiaomi-mt6991
+
+Those works are maintained by the LineageOS Project and the xiaomi-mt6991
+maintainers and are licensed under the Apache License, Version 2.0. They are
+credited here as the hardware reference for this port; their own licences and
+notices govern those repositories.
+
+Third-party components keep their own licences: the Flutter engine
+(BSD 3-Clause, Google LLC), KernelSU Next (GPL-3.0) and Magisk (GPL-3.0).

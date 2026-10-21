@@ -1,15 +1,19 @@
 # Mali devfreq appears below /platform/soc on current Dash and below
 # /platform on some vendor ports.
-genfscon sysfs /devices/platform/soc/13000000.mali/devfreq/13000000.mali u:object_r:sysfs_dash_mali_devfreq:s0
-genfscon sysfs /devices/platform/13000000.mali/devfreq/13000000.mali u:object_r:sysfs_dash_mali_devfreq:s0
+genfscon sysfs /devices/platform/soc/48000000.mali/devfreq/48000000.mali u:object_r:sysfs_dash_mali_devfreq:s0
+genfscon sysfs /devices/platform/48000000.mali/devfreq/48000000.mali u:object_r:sysfs_dash_mali_devfreq:s0
 
-# Goodix fallback used when a port omits Xiaomi's TouchFeature service.
+# Goodix fallback used when a port omits Xiaomi's TouchFeature service. Dash
+# ships a Novatek panel, so this rule is inert here; it is kept so a ported
+# ROM that does expose the Goodix node keeps the fallback usable.
 genfscon sysfs /devices/platform/goodix_ts.0 u:object_r:sysfs_dash_touch:s0
 
 # Memory/storage: metadata is read-only, only min_freq/max_freq are writable.
 # Keep the ROM's sysfs_dvfsrc_devfreq parent label and PowerHAL ownership.
-genfscon sysfs /devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/min_freq u:object_r:sysfs_dash_subsystem_floor:s0
-genfscon sysfs /devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/max_freq u:object_r:sysfs_dash_subsystem_floor:s0
-genfscon sysfs /devices/platform/soc/112b0000.ufshci/devfreq/112b0000.ufshci u:object_r:sysfs_dash_subsystem:s0
-genfscon sysfs /devices/platform/soc/112b0000.ufshci/devfreq/112b0000.ufshci/min_freq u:object_r:sysfs_dash_subsystem_floor:s0
-genfscon sysfs /devices/platform/soc/112b0000.ufshci/devfreq/112b0000.ufshci/max_freq u:object_r:sysfs_dash_subsystem_floor:s0
+# Dash's DVFSRC node sits at the device tree root, so its platform device is
+# /devices/platform/1c013000.dvfsrc rather than a /soc child.
+genfscon sysfs /devices/platform/1c013000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/min_freq u:object_r:sysfs_dash_subsystem_floor:s0
+genfscon sysfs /devices/platform/1c013000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq/max_freq u:object_r:sysfs_dash_subsystem_floor:s0
+genfscon sysfs /devices/platform/soc/16810000.ufshci/devfreq/16810000.ufshci u:object_r:sysfs_dash_subsystem:s0
+genfscon sysfs /devices/platform/soc/16810000.ufshci/devfreq/16810000.ufshci/min_freq u:object_r:sysfs_dash_subsystem_floor:s0
+genfscon sysfs /devices/platform/soc/16810000.ufshci/devfreq/16810000.ufshci/max_freq u:object_r:sysfs_dash_subsystem_floor:s0

@@ -10,9 +10,24 @@ DASH_STAGE="$DASH_BUILD_ROOT/module"
 DASH_APP_BUILD="$DASH_BUILD_ROOT/application"
 
 DASH_VERSION="$(sed -n 's/^version=//p' "$DASH_MODULE_SOURCE/module.prop")"
-DASH_ZIP_NAME="Dash-Essential-KernelSU-Next-Magisk-${DASH_VERSION}.zip"
+
+# An official build must be signed with the release certificate recorded in
+# android/package/release-cert.sha256. A build without that key is still
+# useful, so it is allowed explicitly and is marked: the archive carries a
+# `-dev` suffix and is never written to the stable module path, and it never
+# shares a signature with a published release.
+DASH_UNOFFICIAL_SIGNING="${DASH_ALLOW_UNOFFICIAL_SIGNING:-0}"
+DASH_ZIP_SUFFIX=""
+if [ "$DASH_UNOFFICIAL_SIGNING" = "1" ]; then
+    DASH_ZIP_SUFFIX="-dev"
+elif [ "$DASH_UNOFFICIAL_SIGNING" != "0" ]; then
+    echo "DASH_ALLOW_UNOFFICIAL_SIGNING must be 0 or 1" >&2
+    exit 1
+fi
+
+DASH_ZIP_NAME="Dash-Essential-KernelSU-Next-Magisk-${DASH_VERSION}${DASH_ZIP_SUFFIX}.zip"
 DASH_ZIP="$DASH_BUILD_ROOT/$DASH_ZIP_NAME"
-DASH_STABLE_ZIP="$DASH_PROJECT_ROOT/out/Dash-Essential-KernelSU-Next-Magisk.zip"
+DASH_STABLE_ZIP="$DASH_PROJECT_ROOT/out/Dash-Essential-KernelSU-Next-Magisk${DASH_ZIP_SUFFIX}.zip"
 
 [ -n "${DASH_KEYSTORE:-}" ] || {
     echo "DASH_KEYSTORE is required for a distributable root module." >&2
@@ -154,12 +169,20 @@ DASH_EXPECTED_CERT_DIGEST="$(tr -d '[:space:]:' \
     echo "Unable to read APK signing certificate" >&2
     exit 1
 }
-[ "$DASH_CERT_DIGEST" = "$DASH_EXPECTED_CERT_DIGEST" ] || {
-    echo "Official release certificate mismatch" >&2
+if [ "$DASH_UNOFFICIAL_SIGNING" != "1" ]; then
+    [ "$DASH_CERT_DIGEST" = "$DASH_EXPECTED_CERT_DIGEST" ] || {
+        echo "Official release certificate mismatch" >&2
+        echo "expected=$DASH_EXPECTED_CERT_DIGEST" >&2
+        echo "actual=$DASH_CERT_DIGEST" >&2
+        echo "Set DASH_ALLOW_UNOFFICIAL_SIGNING=1 to build a development-signed" >&2
+        echo "archive that is marked as such and never published as a release." >&2
+        exit 1
+    }
+else
+    echo "Development build: the APK certificate is not the release certificate."
     echo "expected=$DASH_EXPECTED_CERT_DIGEST" >&2
     echo "actual=$DASH_CERT_DIGEST" >&2
-    exit 1
-}
+fi
 "$DASH_ZIPALIGN" -c -P 16 -v 4 "$DASH_STAGE/app/DashEssential.apk" >/dev/null
 ANDROID_SDK_ROOT="$DASH_SDK_ROOT" bash "$DASH_PROJECT_ROOT/tools/check-platform-dex.sh" "$DASH_STAGE/app/DashEssential.apk"
 

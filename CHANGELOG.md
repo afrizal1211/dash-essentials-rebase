@@ -2,6 +2,54 @@
 
 All notable changes are documented here.
 
+The sections below `## 1.18.5` are the upstream Rodin Essential release
+history, kept verbatim as the record of the project this tree is a port of.
+The port's own changes are at the top.
+
+## 1.18.5-dash
+
+Codename: Astraea. Port of Rodin Essential v1.18.5 to the MediaTek MT6991
+`dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).
+
+### Added
+
+- The GPU operating-point ladder is now read from the driver at
+  `/proc/gpufreqv2/gpu_working_opp_table`. Dash's ladder is unevenly spaced and
+  its index space is not the Mali devfreq table's, so the upstream 26 MHz index
+  formula was replaced with a resolution against the published ladder. A
+  request the ladder cannot satisfy is reported instead of written as a guessed
+  index.
+- The Mali cooling device is resolved by its cooling type
+  (`devfreq-48000000.mali`) instead of a fixed `cooling_device3` index, which
+  is probe-order dependent.
+
+### Changed
+
+- GPU bounds retargeted to Dash's ladder: 338-1612 MHz with a 598 MHz Battery
+  Saver ceiling, against the upstream target's 260-1300 MHz and 598 MHz.
+- The GPU devfreq node is `48000000.mali`, the UFS devfreq node is
+  `16810000.ufshci`, and the DVFSRC devfreq node lives under
+  `/devices/platform/1c013000.dvfsrc` rather than under `/soc`.
+- Panel backlight is read from `/sys/class/leds/lcd-backlight`; Dash's backlight
+  class is empty.
+- Native display baseline is 1280 x 2772 at 520 dpi, against the upstream
+  target's 1220 x 2712.
+- The Novatek NT38771 panel is recognised alongside the upstream target's
+  Goodix and FocalTech panels.
+- The application package, root module id, SELinux types and state directories
+  moved into the `dash_*` namespace.
+
+### Known issues
+
+- Dash's stock kernel publishes no bypass-charging node, so the
+  bypass-charging feature reports itself as unsupported. The charge-current
+  limit still works.
+- The charge-current tiers keep the upstream calibration. Their absolute
+  ceiling comes from the vendor charger configuration, which is not part of
+  the public ROM dump, so it needs confirming on the target hardware. The
+  daemon verifies every write against its readback and reports a clamped or
+  rejected value rather than pretending it applied.
+
 ## 1.18.5
 
 Codename: Aurora.

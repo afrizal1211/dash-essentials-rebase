@@ -25,13 +25,15 @@ impl Kind {
     fn root(self) -> PathBuf {
         PathBuf::from(match self {
             Self::Memory => "/sys/class/devfreq/mtk-dvfsrc-devfreq",
-            Self::Storage => "/sys/class/devfreq/112b0000.ufshci",
+            // Dash's UFS controller sits at ufshci@16810000, so its devfreq
+            // node carries that address rather than the upstream target's.
+            Self::Storage => "/sys/class/devfreq/16810000.ufshci",
         })
     }
     fn name(self) -> &'static str {
         match self {
             Self::Memory => "mtk-dvfsrc-devfreq",
-            Self::Storage => "112b0000.ufshci",
+            Self::Storage => "16810000.ufshci",
         }
     }
 }
@@ -478,7 +480,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("dash-clock-test-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         for (name, value) in [
-            ("name", "112b0000.ufshci"),
+            ("name", "16810000.ufshci"),
             ("available_frequencies", "273000000 499200000"),
             ("governor", "simple_ondemand"),
             ("min_freq", "273000000"),

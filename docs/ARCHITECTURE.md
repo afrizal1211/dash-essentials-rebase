@@ -112,8 +112,9 @@ its verified result independently of hardware state. See
 ## Touch paths
 
 Dash Essential first uses Xiaomi's vendor `ITouchFeature` AIDL service, which
-abstracts the supported Goodix and FocalTech panels. A Goodix sysfs path is used
-only as a fallback on ports that omit the AIDL service.
+abstracts the supported panels. Dash ships a Novatek NT38771 panel; the Goodix
+and FocalTech panels of the upstream target are recognised as well. A Goodix
+sysfs path is used only as a fallback on ports that omit the AIDL service.
 
 - 250 mode requests the native 240 Hz timing block.
 - 500 mode requests the native 480 Hz timing block.
@@ -129,7 +130,16 @@ remains restricted to the dedicated daemon domain.
 ## Performance ownership
 
 GPU profile changes are isolated transactions: GPU bounds, governor, GED state,
-power policy, and the Mali cooling constraint are applied together. CPU
+power policy, and the Mali cooling constraint are applied together.
+
+The GPU bounds are published against the ladder the driver reports at
+`/proc/gpufreqv2/gpu_working_opp_table`, not against a formula. Dash's
+operating-point ladder is unevenly spaced and its index space is not the Mali
+devfreq table's, so a floor resolves to the ladder position of the slowest
+step that is still fast enough and a ceiling to the fastest step that is still
+slow enough. A request the ladder cannot satisfy is an error, not a guessed
+index. The Mali cooling device is resolved by its cooling type rather than by a
+fixed `cooling_device` index, because that index is probe-order dependent. CPU
 governors, CPU frequency ranges, and CPU core state are controlled independently.
 A background guard compares persisted intent with live readback and reapplies
 only drifted values owned by each subsystem.
