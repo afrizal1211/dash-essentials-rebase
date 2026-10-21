@@ -5870,6 +5870,17 @@ fn gpu_profile_configured(profile: i32) -> bool {
 /// index than the target is a limit below the target.
 fn gpu_vendor_ceiling_below(target_hz: u64) -> Option<String> {
     let limits = diagnostics::gpu_vendor_limits();
+
+    // The thermal framework publishes the effective ceiling directly, in
+    // hertz, which is simpler than reading an index out of the status dump
+    // and mapping it through the ladder. The dump is still read, because it
+    // names the service that set the ceiling.
+    if let Some(ceiling) = diagnostics::gpu_thermal_ceiling_hz(gpu_floor_hz())
+        && ceiling < target_hz
+    {
+        return Some(limits.ceiling_name().to_string());
+    }
+
     let ceiling = limits.ceiling_index?;
     let ladder = gpu_ged_ladder_hz()?;
     // Without the ladder the index cannot be compared, so nothing is claimed.
@@ -6884,6 +6895,7 @@ fn diagnostics_health_json() -> serde_json::Value {
         "ladderFloorMHz": gpu_hz_to_mhz(gpu_floor_hz()),
         "vendorCeilingIndex": limits.ceiling_index,
         "vendorCeilingBy": limits.ceiling_limiter,
+        "vendorCeilingHz": diagnostics::gpu_thermal_ceiling_hz(gpu_floor_hz()),
         "vendorFloorIndex": limits.floor_index,
         "vendorFloorBy": limits.floor_limiter,
         "vendorFloorName": limits.floor_name(),

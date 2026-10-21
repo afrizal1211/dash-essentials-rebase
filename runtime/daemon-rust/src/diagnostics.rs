@@ -176,6 +176,25 @@ impl VendorLimits {
     }
 }
 
+/// The effective GPU ceiling the thermal framework publishes, in hertz.
+///
+/// The driver exposes the same ceiling twice: as an index in the PPM status
+/// dump, and directly in hertz here. The second form is simpler and does not
+/// need the status dump to be read whole, so it is preferred.
+///
+/// The file reads `<temp_mC>,<ceiling_hz>,<floor_hz>`. A ceiling below the
+/// lowest operating point is the deep-idle marker rather than a real cap.
+pub fn gpu_thermal_ceiling_hz(lowest_hz: u64) -> Option<u64> {
+    let raw = std::fs::read_to_string("/sys/kernel/thermal/gpu_info").ok()?;
+    let mut parts = raw.trim().split(',');
+    let _temperature = parts.next()?;
+    let ceiling = parts.next()?.trim().parse::<u64>().ok()?;
+    if ceiling == 0 || ceiling < lowest_hz {
+        return None;
+    }
+    Some(ceiling)
+}
+
 fn parse_limit_table(text: &str) -> Vec<(i32, &'static str)> {
     let mut names = Vec::new();
     for line in text.lines() {

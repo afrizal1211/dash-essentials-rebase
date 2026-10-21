@@ -30,7 +30,9 @@ Pre-release.
 ### Fixed
 
 - A profile that the platform holds below its target is no longer reported
-  as a failure. The MediaTek thermal and power services publish a ceiling
+  as a failure. The effective ceiling is read from the driver, in hertz, from
+  the thermal summary as well as from the power policy status. The MediaTek
+  thermal and power services publish a ceiling
   over the GPU's operating-point ladder, and on this device the thermal
   service holds the GPU at 1430 MHz while the ladder's top is 1612 MHz. The
   Extreme Beast profile was therefore never able to verify, was re-armed on
@@ -38,7 +40,9 @@ Pre-release.
   it. A profile whose own writes landed is now reported as armed and capped,
   with the service that caps it named, and the guard leaves it alone.
 - A per-app profile that selects Extreme Beast is applied instead of
-  silently falling back to the global profile, for the same reason.
+  silently falling back to the global profile, for the same reason. The
+  platform's ceiling is 1430 MHz and cannot be raised from software, so the
+  profile is reported as armed and capped rather than as broken.
 - The background guard only writes the GPU nodes that have actually
   drifted, and it records what it corrected. Rewriting the whole profile on
   every tick fought the platform's own services and hid which write had
