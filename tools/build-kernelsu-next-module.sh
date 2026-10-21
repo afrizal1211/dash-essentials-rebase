@@ -55,6 +55,7 @@ done
 "$DASH_PROJECT_ROOT/tools/test-root-module-contract.sh"
 "$DASH_PROJECT_ROOT/tools/test-release-sync.sh"
 "$DASH_PROJECT_ROOT/tools/check-android-target.sh"
+"$DASH_PROJECT_ROOT/tools/test-system-colors-native.sh"
 
 mkdir -p "$DASH_STAGE/bin" "$DASH_STAGE/app"
 
