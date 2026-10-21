@@ -593,6 +593,14 @@ impl<S: Clone> Ownership<S> {
         })
     }
 
+    /// The controls this owner holds, with the target that is in effect.
+    pub fn held(&self) -> Vec<(Control, Target)> {
+        self.applied
+            .iter()
+            .map(|(control, target)| (control.clone(), target.clone()))
+            .collect()
+    }
+
     /// A bitmask of the controls this owner currently holds.
     ///
     /// The rest of the daemon needs to know what a per-app profile is
@@ -771,6 +779,24 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(h.writes, 2);
+        assert_eq!(owner.status, Status::Active(app()));
+    }
+    #[test]
+    fn a_control_the_platform_took_back_is_written_again() {
+        let mut h = hardware();
+        let mut owner = Ownership::default();
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        let writes = h.writes;
+        // The platform's own service publishes its state over the control
+        // while the app is still in the foreground.
+        h.values.insert(Control::Gpu, Target::Gpu(2));
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        assert!(h.writes > writes, "the taken-back control was not written again");
+        assert_eq!(h.values.get(&Control::Gpu), Some(&Target::Gpu(1)));
         assert_eq!(owner.status, Status::Active(app()));
     }
     #[test]

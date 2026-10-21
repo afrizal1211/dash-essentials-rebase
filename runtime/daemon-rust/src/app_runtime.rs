@@ -853,6 +853,16 @@ fn status(r: &Runtime) -> Value {
 /// The ownership map is the part that matters: it is what tells the global
 /// controls whether a foreground app currently owns them, and it is what a
 /// user needs to see when a global control refuses to apply.
+/// Whether the hardware still holds a target.
+///
+/// The answer is about the hardware, so it is asked of the adapter rather
+/// than of the profile, and it is what tells a profile that was applied
+/// apart from a profile that is in effect.
+fn target_live(control: &super::app_controls::Control, target: &super::app_controls::Target) -> Option<bool> {
+    let mut adapter = Adapter::new();
+    adapter.is_live(control, target)
+}
+
 pub(super) fn health_json() -> Value {
     let runtime = runtime().lock().ok();
     let foreground = runtime.as_ref().and_then(|r| {
@@ -873,8 +883,36 @@ pub(super) fn health_json() -> Value {
         .and_then(|r| r.config_error.clone().or_else(|| r.error.clone()));
     let watching = runtime.as_ref().is_some_and(|r| r.watching);
     let enabled = runtime.as_ref().is_some_and(|r| r.config.enabled);
+    // The controls the foreground app is holding, and whether the hardware
+    // still has them. A profile that is listed but that the platform has
+    // taken back is a profile that is not in effect, and the difference
+    // between the two is what a user cannot see.
+    let held: Vec<Value> = runtime
+        .as_ref()
+        .map(|r| {
+            r.owner
+                .held()
+                .iter()
+                .map(|(control, target)| {
+                    json!({
+                        "control": format!("{control:?}"),
+                        "target": format!("{target:?}"),
+                        "live": crate::app_runtime::target_live(control, target),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let owner = runtime.as_ref().and_then(|r| match &r.owner.status {
+        super::app_controls::Status::Active(app) => {
+            Some(json!({"user": app.user, "package": app.package}))
+        }
+        _ => None,
+    });
 
     json!({
+        "owner": owner,
+        "held": held,
         "foreground": foreground,
         "source": runtime.as_ref().map(|r| r.source).unwrap_or("none"),
         "configuredProfiles": configured,
@@ -1093,6 +1131,14 @@ pub(super) fn start() {
     let (sender, receiver) = mpsc::sync_channel(1);
     let _ = WAKE.set(sender);
     std::thread::spawn(move || {
+        // The global profile is restored first, and the per-app profile is
+        // applied after it. The two write the same controls, so a per-app
+        // profile that is applied first and then overwritten by the global
+        // one is a per-app profile that never takes effect.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !super::global_restore_done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         // Recover prior temporary overrides before allowing foreground writes.
         let recovered = {
             let _gate = service_control::GATE.write().expect("service gate");
