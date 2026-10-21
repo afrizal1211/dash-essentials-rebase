@@ -358,6 +358,13 @@ pub(super) trait Hardware {
     fn capture(&mut self, control: &Control) -> Result<Self::Saved, String>;
     fn apply(&mut self, control: &Control, target: &Target) -> Result<(), String>;
     fn restore(&mut self, control: &Control, saved: &Self::Saved) -> Result<(), String>;
+    /// Whether the hardware still holds the target. None when the control
+    /// cannot be read back, in which case nothing is assumed either way.
+    /// The system's own services take some of these nodes back, so a
+    /// control that was applied can drift away from its target.
+    fn is_live(&mut self, _control: &Control, _target: &Target) -> Option<bool> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,7 +420,24 @@ impl<S: Clone> Ownership<S> {
             None
         };
         let targets = desired.map(|(_, p)| p.controls.clone()).unwrap_or_default();
-        if !matches!(self.status, Status::RecoveryRequired(_)) && self.settled(&targets) {
+        // A control that was applied but that the system took back is
+        // written again, because the stock ROM re-asserts the touch rate on
+        // every screen on and a profile that is only written once would
+        // quietly stop being in effect.
+        let drifted: Vec<Control> = if matches!(self.status, Status::RecoveryRequired(_)) {
+            Vec::new()
+        } else {
+            self.applied
+                .iter()
+                .filter(|(control, _)| targets.contains_key(*control))
+                .filter(|(control, target)| hardware.is_live(control, target) == Some(false))
+                .map(|(control, _)| control.clone())
+                .collect()
+        };
+        if !matches!(self.status, Status::RecoveryRequired(_))
+            && drifted.is_empty()
+            && self.settled(&targets)
+        {
             self.status = desired
                 .map(|(app, _)| Status::Active(app.clone()))
                 .unwrap_or(Status::Global);
@@ -481,6 +505,7 @@ impl<S: Clone> Ownership<S> {
                 continue;
             }
             if self.applied.get(control) == Some(target)
+                && !drifted.contains(control)
                 && !matches!(self.status, Status::RecoveryRequired(_))
             {
                 continue;
@@ -640,6 +665,9 @@ mod tests {
             }
             self.values.insert(c.clone(), s.clone());
             Ok(())
+        }
+        fn is_live(&mut self, c: &Control, t: &Target) -> Option<bool> {
+            Some(self.values.get(c) == Some(t))
         }
     }
     fn app() -> App {

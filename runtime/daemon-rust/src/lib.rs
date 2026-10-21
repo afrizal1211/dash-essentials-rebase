@@ -7063,10 +7063,103 @@ fn diagnostics_health_json() -> serde_json::Value {
     })
 }
 
+/// Where an exported report is written. The user's own Downloads folder is
+/// tried first, because that is where a report can be found without a root
+/// shell, and the daemon's own state directory is the fallback.
+fn diagnostics_report_paths() -> Vec<PathBuf> {
+    let stamp = diagnostics_report_stamp();
+    let name = format!("dash-essential-report-{stamp}.txt");
+    vec![
+        PathBuf::from("/sdcard/Download/Dash-Essential").join(&name),
+        state_dir().join("reports").join(&name),
+    ]
+}
+
+fn diagnostics_report_stamp() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // A local date and time is what a person reads in a file list, so it is
+    // built from the seconds rather than printed in UTC.
+    let mut days = (seconds / 86_400) as i64;
+    let mut rest = (seconds % 86_400) as u32;
+    let hour = rest / 3_600;
+    rest %= 3_600;
+    let minute = rest / 60;
+    let second = rest % 60;
+    // Days since the epoch to a civil date, the standard arithmetic.
+    days += 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { year + 1 } else { year };
+    format!("{year:04}-{month:02}-{day:02}-{hour:02}{minute:02}{second:02}")
+}
+
+/// The report as plain text: what the device is, what the daemon is doing,
+/// and every recorded event, newest first.
+fn diagnostics_report_text() -> String {
+    let mut out = String::new();
+    let health = diagnostics_health_json();
+    out.push_str("Dash Essential - diagnostics report\n");
+    out.push_str(&format!("generated: {}\n", diagnostics_report_stamp()));
+    out.push_str(&format!("state directory: {}\n", state_dir().display()));
+    out.push_str("\n== HEALTH ==\n");
+    if let Some(health) = health.as_object() {
+        for (key, value) in health {
+            out.push_str(&format!("{key}: {value}\n"));
+        }
+    }
+    out.push_str("\n== LOG ==\n");
+    for event in diagnostics::history() {
+        out.push_str(&format!(
+            "[{}] {}/{}/{}: {}\n",
+            event.seq, event.area, event.level, event.what, event.detail
+        ));
+    }
+    out
+}
+
+fn diagnostics_report_export() -> Result<serde_json::Value, String> {
+    let text = diagnostics_report_text();
+    let mut tried = Vec::new();
+    for path in diagnostics_report_paths() {
+        if let Some(parent) = path.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                tried.push(format!("{}: {error}", parent.display()));
+                continue;
+            }
+        }
+        match fs::write(&path, text.as_bytes()) {
+            Ok(()) => {
+                diagnostics::record(
+                    diagnostics::AREA_SERVICE,
+                    "info",
+                    "report.exported",
+                    &format!("path={}", path.display()),
+                );
+                return Ok(serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "bytes": text.len(),
+                }));
+            }
+            Err(error) => tried.push(format!("{}: {error}", path.display())),
+        }
+    }
+    Err(format!("could not write the report: {}", tried.join("; ")))
+}
+
 fn diagnostics_command(cmd: &str) -> Result<serde_json::Value, String> {
     match cmd {
         "GET logs" => Ok(diagnostics_events_json()),
         "GET health" => Ok(diagnostics_health_json()),
+        "ACTION logs.export" => diagnostics_report_export(),
         "ACTION logs.clear" => {
             diagnostics::clear();
             Ok(serde_json::json!({"cleared": true}))
@@ -7134,7 +7227,11 @@ pub fn handle_command(line: &str) -> String {
 
 fn handle_command_inner(line: &str) -> String {
     let cmd = line.trim();
-    if cmd == "GET logs" || cmd == "GET health" || cmd == "ACTION logs.clear" {
+    if cmd == "GET logs"
+        || cmd == "GET health"
+        || cmd == "ACTION logs.export"
+        || cmd == "ACTION logs.clear"
+    {
         return match diagnostics_command(cmd) {
             Ok(value) => format!("OK {value}"),
             Err(error) => format!("ERR {error}"),
@@ -7559,6 +7656,32 @@ pub fn serve_client(stream: UnixStream) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn report_stamp_is_a_readable_local_date() {
+        // The name of an exported report is what a person reads in a file
+        // list, so it has to be a real date and not a raw number of seconds.
+        let stamp = super::diagnostics_report_stamp();
+        assert_eq!(stamp.len(), 17, "unexpected stamp {stamp}");
+        let parts: Vec<&str> = stamp.split('-').collect();
+        assert_eq!(parts.len(), 4, "unexpected stamp {stamp}");
+        assert_eq!(parts[0].len(), 4);
+        assert_eq!(parts[1].len(), 2);
+        assert_eq!(parts[2].len(), 2);
+        assert_eq!(parts[3].len(), 6);
+        for part in &parts {
+            assert!(
+                part.chars().all(|c| c.is_ascii_digit()),
+                "unexpected stamp {stamp}"
+            );
+        }
+        let month: u32 = parts[1].parse().unwrap();
+        let day: u32 = parts[2].parse().unwrap();
+        assert!((1..=12).contains(&month), "unexpected stamp {stamp}");
+        assert!((1..=31).contains(&day), "unexpected stamp {stamp}");
+        let time: u32 = parts[3].parse().unwrap();
+        assert!(time < 24_000_000, "unexpected stamp {stamp}");
+    }
+
     #[test]
     fn fresh_and_partial_settings_leave_touch_and_display_to_rom() {
         for raw in ["", "charging=0\n", "touch=0\ndisplay_temp=0\ndolby=7\n"] {

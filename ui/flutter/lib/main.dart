@@ -3937,6 +3937,88 @@ class _HomeShortcutRow extends StatelessWidget {
   }
 }
 
+/// Who made this, and who made what it is made of. The upstream project, the
+/// line it was ported along, this port, and the community that tests it.
+class _CreditsCard extends StatelessWidget {
+  const _CreditsCard();
+
+  static const List<List<String>> _credits = <List<String>>[
+    <String>[
+      'NEESCHAL-3',
+      'Rodin Essential, the upstream project this app is a port of',
+    ],
+    <String>[
+      'Saan',
+      'The SaanOS line of the port that carried the daemon to the next device',
+    ],
+    <String>[
+      'afrizal1211',
+      'This port to the MediaTek MT6991 dash platform',
+    ],
+    <String>[
+      '@PocoX8ProMaxID',
+      'The Telegram community that tests every build on real hardware',
+    ],
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isDark
+            ? const Color(0xFF141416).withValues(alpha: 0.85)
+            : Colors.white.withValues(alpha: 0.85),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: colors.outline.withValues(alpha: 0.16),
+          width: 1.2,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          for (int i = 0; i < _credits.length; i++) ...<Widget>[
+            if (i > 0) const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                SizedBox(
+                  width: 108,
+                  child: Text(
+                    _credits[i][0],
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: colors.primary,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _credits[i][1],
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.45,
+                      fontWeight: FontWeight.w500,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _DisclaimerCard extends StatelessWidget {
   const _DisclaimerCard();
 
@@ -5220,7 +5302,7 @@ class SupportScreen extends StatelessWidget {
         _CommunityCard(
           title: 'GitHub Repository',
           subtitle: 'Star, fork, and inspect the open-source code',
-          badge: 'NEESCHAL-3',
+          badge: 'afrizal1211',
           iconWidget: GithubIcon(color: colors.primary, size: 22),
           accent: colors.primary,
           onTap: () => _openLink(0),
@@ -5231,7 +5313,7 @@ class SupportScreen extends StatelessWidget {
         _CommunityCard(
           title: 'Telegram Community',
           subtitle: 'Join device discussions, chat & get instant support',
-          badge: '@PocoX7ProNepalChat',
+          badge: '@PocoX8ProMaxID',
           iconWidget: const Icon(
             Icons.send_rounded,
             size: 20,
@@ -5240,6 +5322,10 @@ class SupportScreen extends StatelessWidget {
           accent: const Color(0xFF26A5E4),
           onTap: () => _openLink(1),
         ),
+        const SizedBox(height: 16),
+        const SectionLabel('Credits'),
+        const SizedBox(height: 8),
+        const _CreditsCard(),
 
         const SizedBox(height: 16),
         const SectionLabel('System Integration Architecture'),
@@ -5257,7 +5343,7 @@ class SupportScreen extends StatelessWidget {
                 alignment: WrapAlignment.center,
                 children: <Widget>[
                   Text(
-                    'Crafted for the community by ',
+                    'Built by ',
                     style: TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w500,
@@ -5265,11 +5351,19 @@ class SupportScreen extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    'NEESCHAL 🇳🇵',
+                    'afrizal1211',
                     style: TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w800,
                       color: colors.primary,
+                    ),
+                  ),
+                  Text(
+                    ' for the Poco X8 Pro Max (dash)',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w500,
+                      color: colors.onSurfaceVariant,
                     ),
                   ),
                 ],

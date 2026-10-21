@@ -6,9 +6,23 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.8
+## 1.18.9
 
 Pre-release.
+
+- The health and log screen can write the report to a text file. The daemon
+  writes it, because it holds the state and the history, and it writes it to
+  the Downloads folder under `Dash-Essential`, or to its own state directory
+  when the storage is not there. The path is shown and put on the clipboard.
+- The support links point at this port's own repository and at the
+  @PocoX8ProMaxID Telegram community.
+- The support screen carries the credits: Rodin Essential by NEESCHAL-3, the
+  SaanOS line by Saan, this port by afrizal1211, and the community that tests
+  every build on real hardware.
+- The release page is laid out as a page: what the build is, what changed,
+  how to install it, how to check the download, what the platform does to the
+  GPU clock, and the credits.
+
 
 - A per-app profile is applied control by control. A control the hardware
   refuses no longer takes the whole profile down with it, so a profile that

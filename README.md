@@ -279,10 +279,14 @@ ui/flutter/             Flutter AOT interface
 ## Port notes: Rodin Essential to Dash (MT6991)
 
 This tree is a port of [Rodin Essential](https://github.com/NEESCHAL-3/Rodin-Essential)
-by **NEESCHAL-3**, reworked for the MediaTek MT6991 `dash` platform. The
-upstream release it is based on is `v1.18.5`. The upstream project's licence,
-copyright notice and release history are preserved; [NOTICE](NOTICE) lists the
-modifications.
+by **NEESCHAL-3**, reworked for the MediaTek MT6991 `dash` platform by
+**afrizal1211**, and carried along the SaanOS line of the same project by
+**Saan**. The upstream release it is based on is `v1.18.5`. The upstream
+project's licence, copyright notice and release history are preserved;
+[NOTICE](NOTICE) lists the modifications.
+
+The port is tested on real hardware by the
+[@PocoX8ProMaxID](https://t.me/PocoX8ProMaxID) Telegram community.
 
 The port changed the following. Every value was taken from the shipped dash
 kernel, device tree and ROM rather than carried over from MT6899.

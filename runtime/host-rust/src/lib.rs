@@ -529,8 +529,8 @@ pub extern "C" fn dash_host_haptic_ready() -> i32 {
 
 pub fn dash_host_open_url_jni(code: i32) -> bool {
     let url = match code {
-        0 => "https://github.com/NEESCHAL-3",
-        1 => "https://t.me/PocoX7ProNepalChat",
+        0 => "https://github.com/afrizal1211/dash-essentials-rebase",
+        1 => "https://t.me/PocoX8ProMaxID",
         _ => return false,
     };
 

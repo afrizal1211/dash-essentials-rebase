@@ -248,34 +248,35 @@ jobs:
           [ "${#sum[@]}" -eq 1 ] || { echo "expected one checksum, found ${#sum[@]}" >&2; exit 1; }
           [ "${#apk[@]}" -eq 1 ] || { echo "expected one application, found ${#apk[@]}" >&2; exit 1; }
 
-          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
-          ### KernelSU Next / Magisk module
-
-          Flash the ZIP from KernelSU Next, KernelSU or Magisk. The installer also
-          installs the bundled application; a copy signed with a different
-          certificate is removed once, and the settings under
-          `/data/adb/dash-essential` are kept.
-
-          `Dash-Essential.apk` is the same application the module installs, kept
-          for sideloading or inspection.
-
-          NOTES
-
-          # Include this release's CHANGELOG section in the release body, matching
-          # the same `## X.Y.Z` block the Telegram step announces. The sections
-          # above are static; this keeps the notes in lockstep with CHANGELOG.md
-          # so no separate API patch is ever needed.
+          # The release body is built in one piece, so the page reads in a
+          # fixed order: what the build is, what changed, how to install it,
+          # how to check it, who made it.
           version="${GITHUB_REF_NAME#v}"
           changelog="$(awk -v want="${version%%-*}" '
             index($0, "## " want) == 1 { capture = 1 }
             capture && /^## / && index($0, "## " want) != 1 { exit }
             capture { print }
           ' CHANGELOG.md)"
-          if [ -n "$changelog" ]; then
-            printf '%s\n\n' "$changelog" >> "$RUNNER_TEMP/notes.md"
-          else
+          if [ -z "$changelog" ]; then
             echo "no CHANGELOG section for $version; notes left without it" >&2
           fi
+
+          # The version heading of the section is one level too deep for a
+          # release body, and the bare "Pre-release." line says nothing the
+          # header does not say better.
+          changelog_body="$(printf '%s\n' "$changelog" | sed -e '1s/^## /### /' -e '/^Pre-release\.$/d')"
+
+          {
+            printf '## Dash Essential %s\n\n' "$GITHUB_REF_NAME"
+            printf 'A port of [Rodin Essential](https://github.com/NEESCHAL-3/Rodin-Essential) for the MediaTek MT6991 `dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).\n\n'
+            if printf '%s\n' "$changelog" | grep -qi 'pre-release'; then
+              printf '> This build is published as a **pre-release**.\n\n'
+            fi
+            printf '### What is in this build\n\n'
+            if [ -n "$changelog_body" ]; then
+              printf '%s\n\n' "$changelog_body"
+            fi
+          } > "$RUNNER_TEMP/notes.md"
 
           # A release whose CHANGELOG section is marked "Pre-release" is
           # published as a GitHub pre-release, so it is not handed to users as
@@ -306,16 +307,45 @@ jobs:
           fi
 
           cat >> "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ### Install
+
+          **KernelSU Next / Magisk module.** Flash the ZIP from KernelSU Next,
+          KernelSU or Magisk and reboot. The installer also installs the bundled
+          application; a copy signed with a different certificate is removed
+          once, and the settings under `/data/adb/dash-essential` are kept.
+
+          **Application.** `Dash-Essential.apk` is the same application the
+          module installs, kept for sideloading or inspection.
+
           ### Verify the download
 
           ```sh
           sha256sum -c Dash-Essential-KernelSU-Next-Magisk-*.zip.sha256
           ```
 
-          Signed with this port's release certificate, recorded in
-          `android/package/release-cert.sha256`. A port of Rodin Essential
-          v1.18.5 by NEESCHAL-3 for the MediaTek MT6991 `dash` platform; see
-          NOTICE and the repository README for credits.
+          The module is signed with this port's release certificate, recorded
+          in `android/package/release-cert.sha256`.
+
+          ### Platform notes
+
+          - The GPU ladder is 52 uneven steps from 1612 MHz to 338 MHz. Every
+            operating-point index is resolved against the ladder the driver
+            publishes, so a request the ladder cannot satisfy is an error
+            rather than a guessed index.
+          - The platform's own thermal service holds the GPU at or below
+            1430 MHz. That ceiling cannot be raised from software, so a
+            profile that the platform caps is reported as armed and capped
+            rather than as broken.
+          - The touch panel is driven through Dash's own high touch sampling
+            rate knob, the same node the stock ROM's power HAL uses.
+
+          ### Credits
+
+          - **NEESCHAL-3** — Rodin Essential, the upstream project.
+          - **Saan** — the SaanOS line of the port.
+          - **afrizal1211** — this port to the MediaTek MT6991 `dash` platform.
+          - **@PocoX8ProMaxID** — the Telegram community that tests every
+            build on real hardware.
 
           ### Checksum
 
