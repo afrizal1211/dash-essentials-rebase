@@ -5431,6 +5431,46 @@ fn charging_power_supply_event_loop() {
     }
 }
 
+/// The file the crash report is written to.
+///
+/// It is opened before any fault can happen and kept open, because a fault
+/// handler cannot open a file and cannot take a lock: a fault that happened
+/// while the log was being written would deadlock in the handler.
+static CRASH_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// The open crash log. It is kept open for the life of the daemon: a fault
+/// handler cannot open a file, and a closed handle would be a report that
+/// goes nowhere.
+static CRASH_FILE: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+fn crash_log_path() -> std::path::PathBuf {
+    state_dir().join("crash.log")
+}
+
+/// Open the crash log and keep it open.
+fn open_crash_log() {
+    use std::os::unix::io::AsRawFd;
+
+    let path = crash_log_path();
+    if let Some(parent) = path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        eprintln!("DASH_CRASH_LOG_DIR_FAIL {error}");
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path);
+    match file {
+        Ok(file) => {
+            let fd = file.as_raw_fd();
+            let _ = CRASH_FILE.set(file);
+            CRASH_FD.store(fd, Ordering::Release);
+        }
+        Err(error) => eprintln!("DASH_CRASH_LOG_OPEN_FAIL {path:?} {error}"),
+    }
+}
+
 /// Report a fatal signal with the place it happened.
 ///
 /// A fault in the daemon used to show up only as the module restarting it,
@@ -5438,6 +5478,7 @@ fn charging_power_supply_event_loop() {
 fn install_crash_reporter() {
     unsafe extern "C" {
         fn signal(signum: i32, handler: usize) -> usize;
+        fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
     }
     const SIGSEGV: i32 = 11;
     const SIGABRT: i32 = 6;
@@ -5447,8 +5488,18 @@ fn install_crash_reporter() {
     const SIGTRAP: i32 = 5;
 
     extern "C" fn report(signal_number: i32) {
-        eprintln!("DASH_CRASH signal={signal_number}");
-        eprintln!("{}", std::backtrace::Backtrace::force_capture());
+        // The report is written to the open file with write(), because a
+        // fault handler cannot take a lock. A fault that happened while the
+        // log was locked would otherwise deadlock here, and a daemon that
+        // never dies is a device with no controls at all.
+        let fd = CRASH_FD.load(Ordering::Acquire);
+        if fd >= 0 {
+            let header = format!("DASH_CRASH signal={signal_number}\n");
+            unsafe { write(fd, header.as_ptr().cast(), header.len()) };
+            let trace = std::backtrace::Backtrace::force_capture().to_string();
+            unsafe { write(fd, trace.as_ptr().cast(), trace.len()) };
+            unsafe { write(fd, b"\n".as_ptr().cast(), 1) };
+        }
         unsafe {
             // SIG_DFL: let the fault happen again, so the system records the
             // crash the way it always did.
@@ -5466,6 +5517,7 @@ fn install_crash_reporter() {
 }
 
 pub fn start_background_services() {
+    open_crash_log();
     install_crash_reporter();
     #[cfg(target_os = "android")]
     std::thread::spawn(bypass_monitor_loop);
@@ -7384,6 +7436,14 @@ fn diagnostics_report_text() -> String {
             "[{}] {}/{}/{}: {}\n",
             event.seq, event.area, event.level, event.what, event.detail
         ));
+    }
+    // The crash log is the answer to "where did it crash", and it is the
+    // only place that answer exists.
+    if let Ok(crash) = fs::read_to_string(crash_log_path())
+        && !crash.trim().is_empty()
+    {
+        out.push_str("\n== CRASH ==\n");
+        out.push_str(&crash);
     }
     out
 }
