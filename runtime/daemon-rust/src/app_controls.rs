@@ -371,6 +371,11 @@ pub(super) enum Status {
 pub(super) struct Ownership<S> {
     baseline: BTreeMap<Control, S>,
     applied: BTreeMap<Control, Target>,
+    /// Controls that were asked for and could not be applied, with the reason.
+    /// A control that cannot be applied must not take the rest of the profile
+    /// down with it: the profile is applied control by control, and the ones
+    /// that failed are reported.
+    refused: BTreeMap<Control, (Target, String)>,
     pub status: Status,
 }
 
@@ -379,6 +384,7 @@ impl<S> Default for Ownership<S> {
         Self {
             baseline: BTreeMap::new(),
             applied: BTreeMap::new(),
+            refused: BTreeMap::new(),
             status: Status::Global,
         }
     }
@@ -407,26 +413,36 @@ impl<S: Clone> Ownership<S> {
             None
         };
         let targets = desired.map(|(_, p)| p.controls.clone()).unwrap_or_default();
-        if !matches!(self.status, Status::RecoveryRequired(_)) && targets == self.applied {
+        if !matches!(self.status, Status::RecoveryRequired(_)) && self.settled(&targets) {
             self.status = desired
                 .map(|(app, _)| Status::Active(app.clone()))
                 .unwrap_or(Status::Global);
             return Ok(());
         }
-        // Read all originals before making any new write. Capture failure is
-        // harmless and cannot leave a partially applied profile behind.
+        // Read all originals before making any new write. A control whose
+        // original cannot be read is reported and left alone; the rest of the
+        // profile is still applied.
         let mut captures = BTreeMap::new();
-        for control in targets.keys() {
-            if !self.baseline.contains_key(control) {
-                let saved = match hardware.capture(control) {
-                    Ok(saved) => saved,
-                    // A new app must not inherit the old app's override when
-                    // one of its own originals cannot be read.
-                    Err(error) => return self.rollback(hardware, error),
-                };
-                captures.insert(control.clone(), saved);
+        let mut uncapturable = BTreeMap::new();
+        for (control, target) in &targets {
+            if self.baseline.contains_key(control) {
+                continue;
+            }
+            match hardware.capture(control) {
+                Ok(saved) => {
+                    captures.insert(control.clone(), saved);
+                }
+                // A new app must not inherit the old app's override when one
+                // of its own originals cannot be read.
+                Err(error) => {
+                    uncapturable.insert(control.clone(), (target.clone(), error));
+                }
             }
         }
+        // The controls whose original was read just now. A control that was
+        // captured for this attempt is given back if it cannot be applied;
+        // one that was already owned keeps whatever it had.
+        let captured_now: Vec<Control> = captures.keys().cloned().collect();
         self.baseline.extend(captures);
         let releasing: Vec<_> = self
             .baseline
@@ -435,28 +451,71 @@ impl<S: Clone> Ownership<S> {
             .cloned()
             .collect();
         for control in releasing {
-            let saved = &self.baseline[&control];
-            if let Err(error) = hardware.restore(&control, saved) {
+            let saved = self.baseline[&control].clone();
+            if let Err(error) = hardware.restore(&control, &saved) {
                 return self.rollback(hardware, error);
             }
             self.baseline.remove(&control);
             self.applied.remove(&control);
         }
+        // A refusal that no longer belongs to the target set is stale.
+        let stale: Vec<_> = self
+            .refused
+            .keys()
+            .filter(|control| !targets.contains_key(*control))
+            .cloned()
+            .collect();
+        for control in stale {
+            self.refused.remove(&control);
+        }
         for (control, target) in &targets {
+            if let Some((_, error)) = uncapturable.get(control) {
+                super::diagnostics::record(
+                    super::diagnostics::AREA_PER_APP,
+                    "error",
+                    "control.capture",
+                    &format!("control={control:?} target={target:?} error={error}"),
+                );
+                self.refused.insert(control.clone(), (target.clone(), error.clone()));
+                self.applied.remove(control);
+                continue;
+            }
             if self.applied.get(control) == Some(target)
                 && !matches!(self.status, Status::RecoveryRequired(_))
             {
                 continue;
             }
             if let Err(error) = hardware.apply(control, target) {
+                // The control is given back on its own and the reason is
+                // recorded. The other controls of the profile are still
+                // applied, because a control the hardware cannot take must
+                // not silence the whole profile.
                 super::diagnostics::record(
                     super::diagnostics::AREA_PER_APP,
                     "error",
                     "control.apply",
                     &format!("control={control:?} target={target:?} error={error}"),
                 );
-                return self.rollback(hardware, error);
+                let fresh = captured_now.contains(control);
+                if fresh {
+                    if let Some(saved) = self.baseline.get(control).cloned() {
+                        if let Err(restore_error) = hardware.restore(control, &saved) {
+                            // The control could not be given back, so the
+                            // state of the hardware is unknown. That is not a
+                            // profile that can be reported as applied.
+                            return self.rollback(
+                                hardware,
+                                format!("{error}; restore failed: {restore_error}"),
+                            );
+                        }
+                        self.baseline.remove(control);
+                    }
+                }
+                self.refused.insert(control.clone(), (target.clone(), error));
+                self.applied.remove(control);
+                continue;
             }
+            self.refused.remove(control);
             self.applied.insert(control.clone(), target.clone());
         }
         self.status = desired
@@ -475,6 +534,34 @@ impl<S: Clone> Ownership<S> {
             );
         }
         Ok(())
+    }
+
+    /// Whether every requested control is already in its final state and
+    /// nothing is left owned that the targets do not ask for.
+    fn settled(&self, targets: &BTreeMap<Control, Target>) -> bool {
+        if self
+            .baseline
+            .keys()
+            .chain(self.applied.keys())
+            .any(|control| !targets.contains_key(control))
+        {
+            return false;
+        }
+        targets.iter().all(|(control, target)| {
+            self.applied.get(control) == Some(target)
+                || self
+                    .refused
+                    .get(control)
+                    .is_some_and(|(refused, _)| refused == target)
+        })
+    }
+
+    /// The controls that were asked for and could not be applied.
+    pub fn refused(&self) -> Vec<(String, String)> {
+        self.refused
+            .iter()
+            .map(|(control, (_, error))| (format!("{control:?}"), error.clone()))
+            .collect()
     }
 
     fn rollback<H: Hardware<Saved = S>>(
@@ -680,23 +767,29 @@ mod tests {
         }
     }
     #[test]
-    fn capture_failure_makes_no_writes() {
+    fn capture_failure_leaves_that_control_alone_and_applies_the_rest() {
         let mut h = hardware();
         h.fail_capture = Some(Control::Gpu);
         let mut owner = Ownership::default();
-        assert!(
-            owner
-                .transition(&mut h, Some(&app()), Some(&profile()), true, true)
-                .is_err()
-        );
-        assert_eq!(h.writes, 0);
-        assert!(!owner.owns(&Control::Touch));
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        // The control whose original could not be read is not written at all.
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
+        assert!(!owner.owns(&Control::Gpu));
+        // The rest of the profile is applied.
+        assert_eq!(h.values[&Control::Touch], Target::Touch(2));
+        assert_eq!(owner.status, Status::Active(app()));
+        // And the refusal is reported, not swallowed.
+        let refused = owner.refused();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, "Gpu");
+        assert!(!refused[0].1.is_empty());
     }
 
     #[test]
-    fn new_app_capture_failure_releases_previous_app_instead_of_leaking_it() {
+    fn new_app_capture_failure_does_not_leak_the_previous_app() {
         let mut h = hardware();
-        let originals = h.values.clone();
         let mut owner = Ownership::default();
         let first = Profile::parse(&json!({"enabled":true,"touch":2})).unwrap();
         owner
@@ -704,27 +797,38 @@ mod tests {
             .unwrap();
         h.fail_capture = Some(Control::Gpu);
         let other = App::new(0, "com.example.social").unwrap();
-        assert!(
-            owner
-                .transition(&mut h, Some(&other), Some(&profile()), true, true)
-                .is_err()
-        );
-        assert_eq!(h.values, originals);
+        owner
+            .transition(&mut h, Some(&other), Some(&profile()), true, true)
+            .unwrap();
+        // The GPU was never captured for the new app, so it is not written
+        // and it does not inherit the previous app's override.
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
+        // The new app's own control is in place.
+        assert_eq!(h.values[&Control::Touch], Target::Touch(2));
+        assert_eq!(owner.status, Status::Active(other.clone()));
+        // Leaving releases what was borrowed.
+        owner.transition(&mut h, None, None, true, true).unwrap();
+        assert_eq!(h.values[&Control::Touch], Target::Touch(0));
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
         assert_eq!(owner.status, Status::Global);
     }
     #[test]
-    fn failed_apply_rolls_back_including_partially_written_control() {
+    fn failed_apply_gives_that_control_back_and_keeps_the_rest() {
         let mut h = hardware();
-        let original = h.values.clone();
         h.fail_apply = Some(Control::Gpu);
         let mut owner = Ownership::default();
-        assert!(
-            owner
-                .transition(&mut h, Some(&app()), Some(&profile()), true, true)
-                .is_err()
-        );
-        assert_eq!(h.values, original);
-        assert_eq!(owner.status, Status::Global);
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        // The control that could not be written is back at its own original.
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
+        assert!(!owner.owns(&Control::Gpu));
+        // The rest of the profile is in place.
+        assert_eq!(h.values[&Control::Touch], Target::Touch(2));
+        assert_eq!(owner.status, Status::Active(app()));
+        let refused = owner.refused();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, "Gpu");
     }
     #[test]
     fn failed_restore_retains_owner_and_recovers_without_false_active() {
@@ -732,6 +836,9 @@ mod tests {
         h.fail_apply = Some(Control::Gpu);
         h.fail_restore = Some(Control::Gpu);
         let mut owner = Ownership::default();
+        // The control that could not be written could not be given back
+        // either, so the state is unknown and the profile is not reported
+        // as applied.
         assert!(
             owner
                 .transition(&mut h, Some(&app()), Some(&profile()), true, true)

@@ -783,7 +783,16 @@ fn status(r: &Runtime) -> Value {
         .foreground
         .as_ref()
         .map(|app| json!({"user":app.user,"package":app.package}));
-    json!({"config":r.config.json(),"status":state,"owner":owner,"foreground":foreground,"controls":controls,"error":r.config_error.as_ref().or(r.error.as_ref()),"watching":r.watching,"serviceEnabled":service_control::enabled()})
+    // The controls that were asked for and that the hardware refused. They
+    // are reported one by one, because a control the hardware cannot take
+    // must not hide the controls that did land.
+    let refused: Vec<_> = r
+        .owner
+        .refused()
+        .into_iter()
+        .map(|(control, error)| json!({"control":control,"error":error}))
+        .collect();
+    json!({"config":r.config.json(),"status":state,"owner":owner,"foreground":foreground,"controls":controls,"refused":refused,"error":r.config_error.as_ref().or(r.error.as_ref()),"watching":r.watching,"serviceEnabled":service_control::enabled()})
 }
 /// A per-app health summary for the diagnostics view.
 ///
