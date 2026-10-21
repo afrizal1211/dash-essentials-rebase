@@ -298,6 +298,20 @@ impl Hardware for Adapter {
             _ => Err("invalid per-app target".into()),
         }
     }
+    /// Whether the hardware still holds the target.
+    ///
+    /// The platform's own services take these nodes back: the power HAL
+    /// publishes its own GPU state, and the stock ROM re-asserts the touch
+    /// rate on every screen on. A profile that was applied once and then
+    /// taken back is not a profile that is in effect, so the control is
+    /// written again when it has drifted.
+    fn is_live(&mut self, c: &Control, target: &Target) -> Option<bool> {
+        match (c, target) {
+            (Control::Gpu, Target::Gpu(v)) => Some(gpu_profile_configured(*v as i32)),
+            (Control::Touch, Target::Touch(v)) => Some(touch_profile_is_live(*v as i32)),
+            _ => None,
+        }
+    }
     fn restore(&mut self, c: &Control, saved: &Saved) -> Result<(), String> {
         let _temporary = Temporary::begin();
         match c {
