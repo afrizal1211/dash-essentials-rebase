@@ -445,6 +445,12 @@ impl<S: Clone> Ownership<S> {
                 continue;
             }
             if let Err(error) = hardware.apply(control, target) {
+                super::diagnostics::record(
+                    super::diagnostics::AREA_PER_APP,
+                    "error",
+                    "control.apply",
+                    &format!("control={control:?} target={target:?} error={error}"),
+                );
                 return self.rollback(hardware, error);
             }
             self.applied.insert(control.clone(), target.clone());
@@ -452,6 +458,18 @@ impl<S: Clone> Ownership<S> {
         self.status = desired
             .map(|(app, _)| Status::Active(app.clone()))
             .unwrap_or(Status::Global);
+        if let Some((app, _)) = &desired {
+            super::diagnostics::record(
+                super::diagnostics::AREA_PER_APP,
+                "info",
+                "profile.applied",
+                &format!(
+                    "app={} controls={:?}",
+                    app.package,
+                    targets.keys().collect::<Vec<_>>()
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -473,8 +491,20 @@ impl<S: Clone> Ownership<S> {
         }
         if errors.is_empty() {
             self.status = Status::Global;
+            super::diagnostics::record(
+                super::diagnostics::AREA_PER_APP,
+                "warn",
+                "profile.rolled_back",
+                &format!("cause={cause} restored=true"),
+            );
         } else {
             self.status = Status::RecoveryRequired(errors.join("; "));
+            super::diagnostics::record(
+                super::diagnostics::AREA_PER_APP,
+                "error",
+                "profile.rolled_back",
+                &format!("cause={cause} restore_pending={}", errors.join("; ")),
+            );
         }
         Err(match &self.status {
             Status::RecoveryRequired(error) => format!("{cause}; restore pending: {error}"),

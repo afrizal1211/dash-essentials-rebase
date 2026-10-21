@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart' show Drag;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/physics.dart';
@@ -31,6 +32,7 @@ import 'surface_lines.dart';
 
 part 'system_colors.dart';
 part 'per_app_controls.dart';
+part 'diagnostics_logs.dart';
 part 'easter_eggs.dart';
 part 'aurora_drift.dart';
 part 'subsystem_clocks.dart';
@@ -74,6 +76,7 @@ enum DashScreen {
   systemColors,
   perAppControls,
   subsystemClocks,
+  healthLogs,
 }
 
 extension DashScreenName on DashScreen {
@@ -111,6 +114,8 @@ extension DashScreenName on DashScreen {
         return 'Per-App Controls';
       case DashScreen.subsystemClocks:
         return 'Memory DVFS & UFS';
+      case DashScreen.healthLogs:
+        return 'Health & Logs';
     }
   }
 
@@ -840,6 +845,8 @@ class _DashShellState extends State<DashShell>
         return PerAppControlsScreen(onBack: _back);
       case DashScreen.subsystemClocks:
         return SubsystemClocksScreen(onBack: _back);
+      case DashScreen.healthLogs:
+        return DiagnosticsLogsScreen(onBack: _back);
       default:
         return _rootPager();
     }
@@ -3831,6 +3838,14 @@ class _HomeShortcutPanel extends StatelessWidget {
           ),
           divider(),
           _HomeShortcutRow(
+            title: 'Health & Logs',
+            subtitle: 'Why a control did not take effect',
+            icon: Icons.receipt_long_rounded,
+            accent: const Color(0xFF74E6C6),
+            onTap: () => onOpen(DashScreen.healthLogs),
+          ),
+          divider(),
+          _HomeShortcutRow(
             title: 'Resolution',
             subtitle: 'Canvas size, density and refresh details',
             icon: Icons.aspect_ratio_rounded,
@@ -4581,6 +4596,20 @@ class HubsScreen extends StatelessWidget {
                   icon: Icons.monitor_heart_rounded,
                   accent: const Color(0xFF74E6C6),
                   onTap: () => onOpen(DashScreen.diagnostics),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _HubReveal(
+              duration: 700,
+              child: SurfaceCard(
+                padding: const EdgeInsets.all(11),
+                child: _HubControlRow(
+                  title: 'Health & Logs',
+                  subtitle: 'Why a control did not take effect',
+                  icon: Icons.receipt_long_rounded,
+                  accent: const Color(0xFF74E6C6),
+                  onTap: () => onOpen(DashScreen.healthLogs),
                 ),
               ),
             ),

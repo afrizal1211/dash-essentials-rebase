@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 mod app_controls;
 mod app_runtime;
 mod bypass_policy;
+mod diagnostics;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;
@@ -1961,6 +1962,27 @@ fn gpu_saver_ceiling_hz() -> u64 {
 /// The positions are resolved against the ladder the driver publishes. A
 /// request the ladder cannot satisfy is an error rather than a guessed
 /// index, because a wrong index moves the floor to an unrelated frequency.
+/// Read a GED ladder index node.
+fn gpu_ged_index(node: &str) -> Option<i32> {
+    fs::read_to_string(node)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Publish a GPU floor and ceiling the way MediaTek's own tooling does.
+///
+/// `custom_boost_gpu_freq` carries the ladder position of the requested
+/// minimum and `custom_upbound_gpu_freq` the position of the requested
+/// maximum. The boost node is a floor: the lowest step the GPU may not go
+/// below. The frequency parameters carry the frequencies themselves.
+///
+/// The positions are resolved against the ladder the driver publishes. A
+/// request the ladder cannot satisfy is an error rather than a guessed
+/// index, because a wrong index moves the floor to an unrelated frequency.
+///
+/// Only a node that has actually drifted is written. The background guard
+/// calls this on every tick, and rewriting the whole pair each time both
+/// fought the vendor's own services and hid which write had mattered.
 fn write_gpu_bounds(floor_hz: u64, ceiling_hz: u64) -> Result<(), String> {
     let ladder = gpu_ged_ladder_hz().ok_or_else(|| {
         format!("GPU ladder is unavailable at {DASH_GPU_GED_LADDER}")
@@ -1979,46 +2001,74 @@ fn write_gpu_bounds(floor_hz: u64, ceiling_hz: u64) -> Result<(), String> {
         )
     })?;
 
-    service_control::write(
-        "/sys/kernel/ged/hal/custom_boost_gpu_freq",
-        floor_index.to_string(),
-    )
-    .map_err(|error| format!("GPU floor index write failed: {error}"))?;
-    service_control::write(
-        "/sys/kernel/ged/hal/custom_upbound_gpu_freq",
-        ceiling_index.to_string(),
-    )
-    .map_err(|error| format!("GPU ceiling index write failed: {error}"))?;
+    if gpu_ged_index("/sys/kernel/ged/hal/custom_boost_gpu_freq") != Some(floor_index as i32) {
+        service_control::write(
+            "/sys/kernel/ged/hal/custom_boost_gpu_freq",
+            floor_index.to_string(),
+        )
+        .map_err(|error| format!("GPU floor index write failed: {error}"))?;
+    }
+    if gpu_ged_index("/sys/kernel/ged/hal/custom_upbound_gpu_freq") != Some(ceiling_index as i32) {
+        service_control::write(
+            "/sys/kernel/ged/hal/custom_upbound_gpu_freq",
+            ceiling_index.to_string(),
+        )
+        .map_err(|error| format!("GPU ceiling index write failed: {error}"))?;
+    }
 
     // Only the custom floor and ceiling carry the user's request. The
     // `gpu_bottom_freq` parameter is the driver's own voltage-derived floor
     // on Dash and is left alone.
-    let floor_khz = floor_hz / 1_000;
-    let ceiling_khz = ceiling_hz / 1_000;
-    let _ = service_control::write(
-        "/sys/module/ged/parameters/gpu_cust_boost_freq",
-        floor_khz.to_string(),
-    );
-    let _ = service_control::write(
-        "/sys/module/ged/parameters/gpu_cust_upbound_freq",
-        ceiling_khz.to_string(),
-    );
+    let floor_khz = (floor_hz / 1_000).to_string();
+    let ceiling_khz = (ceiling_hz / 1_000).to_string();
+    if read_trimmed("/sys/module/ged/parameters/gpu_cust_boost_freq").ok().as_deref()
+        != Some(floor_khz.as_str())
+    {
+        let _ = service_control::write(
+            "/sys/module/ged/parameters/gpu_cust_boost_freq",
+            floor_khz,
+        );
+    }
+    if read_trimmed("/sys/module/ged/parameters/gpu_cust_upbound_freq").ok().as_deref()
+        != Some(ceiling_khz.as_str())
+    {
+        let _ = service_control::write(
+            "/sys/module/ged/parameters/gpu_cust_upbound_freq",
+            ceiling_khz,
+        );
+    }
 
     Ok(())
 }
 
 fn write_beast_gpu_constraints() {
-    let _ = service_control::write("/sys/class/misc/mali0/device/power_policy", "always_on");
-    let _ = service_control::write("/sys/kernel/ged/hal/gpu_boost_level", "2");
-    let _ = service_control::write("/sys/module/ged/parameters/ged_boost_enable", "1");
-    let _ = service_control::write("/sys/module/ged/parameters/boost_gpu_enable", "1");
-    let _ = service_control::write("/sys/module/ged/parameters/ged_smart_boost", "1");
+    // Only a node that has drifted is written. The guard calls this on every
+    // tick, and rewriting the whole profile each time fought the vendor's
+    // own services and hid which write had actually mattered.
+    if gpu_get_power_policy() != "always_on" {
+        let _ = service_control::write("/sys/class/misc/mali0/device/power_policy", "always_on");
+    }
+    if read_trimmed("/sys/kernel/ged/hal/gpu_boost_level").ok().as_deref() != Some("2") {
+        let _ = service_control::write("/sys/kernel/ged/hal/gpu_boost_level", "2");
+    }
+    if !gpu_boost_pipeline_matches(true) {
+        let _ = service_control::write("/sys/module/ged/parameters/ged_boost_enable", "1");
+        let _ = service_control::write("/sys/module/ged/parameters/boost_gpu_enable", "1");
+        let _ = service_control::write("/sys/module/ged/parameters/ged_smart_boost", "1");
+    }
 
     let top = gpu_top_hz();
+    let top_mhz = gpu_hz_to_mhz(top);
     let _ = write_gpu_bounds(top, top);
-    let _ = gpu_write_devfreq("max_freq", &top.to_string());
-    let _ = gpu_write_devfreq("min_freq", &top.to_string());
-    let _ = gpu_write_devfreq("governor", "performance");
+    if gpu_get_max_freq_mhz() != top_mhz {
+        let _ = gpu_write_devfreq("max_freq", &top.to_string());
+    }
+    if gpu_get_min_freq_mhz() != top_mhz {
+        let _ = gpu_write_devfreq("min_freq", &top.to_string());
+    }
+    if gpu_get_governor() != "performance" {
+        let _ = gpu_write_devfreq("governor", "performance");
+    }
 }
 
 // Beast must never disable DVFS while the GPU is still running a previous
@@ -2215,18 +2265,86 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
     PERFORMANCE_PROFILE_VERIFIED.store(1, Ordering::Release);
     PERFORMANCE_PROFILE_OK.store(if verified { 1 } else { 0 }, Ordering::Release);
 
-    if verified || gpu_profile_configured(profile) {
-        Ok(())
+    // A game in the foreground competes for the same GPU controls, so the
+    // conflict is recorded with the transition rather than left to be
+    // inferred later.
+    let games = diagnostics::game_services();
+    let game_note = if games.active() {
+        format!(" game_services={}", games.summary())
     } else {
-        Err(format!(
-            "GPU profile {profile} verify failed: min={} max={} governor={} GED={} policy={}",
-            gpu_get_min_freq_mhz(),
-            gpu_get_max_freq_mhz(),
-            gpu_get_governor(),
-            gpu_get_ged_boost(),
-            gpu_get_power_policy(),
-        ))
+        String::new()
+    };
+
+    if verified {
+        diagnostics::record(
+            diagnostics::AREA_GPU,
+            "info",
+            "profile.transition",
+            &format!(
+                "profile={profile} result=applied min={} max={} governor={} policy={}{game_note}",
+                gpu_get_min_freq_mhz(),
+                gpu_get_max_freq_mhz(),
+                gpu_get_governor(),
+                gpu_get_power_policy(),
+            ),
+        );
+        return Ok(());
     }
+
+    // The writes landed but the platform is holding the GPU below the target.
+    // That is a vendor limit, not a failed request, and treating it as a
+    // failure is what makes a working profile look broken.
+    let capped = gpu_vendor_ceiling_below(gpu_profile_target_hz(profile));
+    let configured = gpu_profile_configured(profile);
+    if configured {
+        if let Some(limiter) = capped {
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "warn",
+                "profile.capped",
+                &format!(
+                    "profile={profile} result=armed_but_capped by={limiter} target_mhz={} live_mhz={}",
+                    gpu_hz_to_mhz(gpu_profile_target_hz(profile)),
+                    gpu_get_cur_freq_mhz(),
+                ),
+            );
+        } else {
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "profile.transition",
+                &format!(
+                    "profile={profile} result=armed min={} max={} governor={} policy={}",
+                    gpu_get_min_freq_mhz(),
+                    gpu_get_max_freq_mhz(),
+                    gpu_get_governor(),
+                    gpu_get_power_policy(),
+                ),
+            );
+        }
+        return Ok(());
+    }
+
+    // The transition itself did not take effect. Record what was written and
+    // what is live, so the reason is visible instead of guessed at.
+    let detail = format!(
+        "profile={profile} result=failed min={} max={} governor={} GED={} policy={} dvfs={}",
+        gpu_get_min_freq_mhz(),
+        gpu_get_max_freq_mhz(),
+        gpu_get_governor(),
+        gpu_get_ged_boost(),
+        gpu_get_power_policy(),
+        gpu_get_dvfs_enabled(),
+    );
+    diagnostics::record(diagnostics::AREA_GPU, "error", "profile.transition", &detail);
+    Err(format!(
+        "GPU profile {profile} verify failed: min={} max={} governor={} GED={} policy={}",
+        gpu_get_min_freq_mhz(),
+        gpu_get_max_freq_mhz(),
+        gpu_get_governor(),
+        gpu_get_ged_boost(),
+        gpu_get_power_policy(),
+    ))
 }
 
 /// Identify the touch panel from the vendor firmware version.
@@ -4512,24 +4630,57 @@ fn reassert_persisted_governors() {
             "simple_ondemand"
         };
 
+        // The guard only writes what has actually drifted, and it says so.
+        // A silent re-assert every tick is indistinguishable from a profile
+        // that is being fought, which is the opposite of what is wanted.
         if gpu_get_governor() != target_gpu {
             let _ = set_gpu_governor(target_gpu);
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "guard.reassert",
+                &format!("governor -> {target_gpu}"),
+            );
         }
         if state.gpu_min_freq_mhz > 0 && gpu_get_min_freq_mhz() != state.gpu_min_freq_mhz {
             let _ = set_gpu_min_freq(state.gpu_min_freq_mhz);
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "guard.reassert",
+                &format!("min -> {} MHz", state.gpu_min_freq_mhz),
+            );
         }
         if state.gpu_max_freq_mhz > 0 && gpu_get_max_freq_mhz() != state.gpu_max_freq_mhz {
             let _ = set_gpu_max_freq(state.gpu_max_freq_mhz);
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "guard.reassert",
+                &format!("max -> {} MHz", state.gpu_max_freq_mhz),
+            );
         }
         if !state.gpu_power_policy.is_empty() && gpu_get_power_policy() != state.gpu_power_policy {
             let _ = set_gpu_power_policy(&state.gpu_power_policy);
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "guard.reassert",
+                &format!("power policy -> {}", state.gpu_power_policy),
+            );
         }
 
         if state.gpu_uncap == 1 {
             // Do not freeze a lower boot OPP. This step leaves DVFS enabled
             // until the live frequency reaches the ladder's top operating
             // point, then locks it.
-            let _ = arm_or_lock_beast_gpu();
+            //
+            // A vendor ceiling below the target means that point can never
+            // be reached, so the lock is not attempted and the profile is
+            // reported as armed and capped instead of being fought over.
+            if gpu_profile_capped(state.perf).is_none() {
+                let _ = arm_or_lock_beast_gpu();
+            }
         } else if gpu_get_dvfs_enabled() != 1 {
             let _ = service_control::write("/sys/module/ged/parameters/gpu_dvfs_enable", "1");
         }
@@ -5663,7 +5814,6 @@ fn gpu_profile_configured(profile: i32) -> bool {
     let governor = gpu_get_governor();
     let dvfs = gpu_get_dvfs_enabled();
     let power_policy = gpu_get_power_policy();
-    let thermal_limited = gpu_get_thermal_state() > 0;
     let top = gpu_hz_to_mhz(gpu_top_hz());
     let floor = gpu_hz_to_mhz(gpu_floor_hz());
     let saver = gpu_hz_to_mhz(gpu_saver_ceiling_hz());
@@ -5672,15 +5822,19 @@ fn gpu_profile_configured(profile: i32) -> bool {
         3 => {
             min == top
                 && max == top
-                && gpu_get_cur_freq_mhz() == top
                 && governor == "performance"
                 && gpu_boost_pipeline_matches(true)
-                && dvfs == 0
+                // DVFS is only frozen once the GPU actually reaches the
+                // target. When a vendor ceiling holds the GPU below it, the
+                // clock can never be reached, and freezing DVFS would lock the
+                // GPU at a speed the platform has already ruled out.
+                && (dvfs == 0 || gpu_profile_capped(3).is_some())
                 && power_policy == "always_on"
         }
         1 => {
             min == floor
-                && (max == top || (thermal_limited && (floor..top).contains(&max)))
+                && (max == top
+                    || (gpu_profile_capped(1).is_some() && (floor..top).contains(&max)))
                 && governor == "simple_ondemand"
                 && gpu_boost_pipeline_matches(true)
                 && dvfs == 1
@@ -5688,7 +5842,8 @@ fn gpu_profile_configured(profile: i32) -> bool {
         }
         2 => {
             min == floor
-                && (max == saver || (thermal_limited && max < saver))
+                && (max == saver
+                    || (gpu_profile_capped(2).is_some() && max < saver))
                 && governor == "powersave"
                 && gpu_boost_pipeline_matches(false)
                 && dvfs == 1
@@ -5700,6 +5855,49 @@ fn gpu_profile_configured(profile: i32) -> bool {
                 && dvfs == 1
                 && power_policy == "coarse_demand"
         }
+    }
+}
+
+/// The service that holds the GPU below the target a profile asked for.
+///
+/// A ceiling published by the vendor's thermal or power service is not a
+/// failed request: the daemon's own writes landed, and the platform then
+/// decided the GPU must run slower. Reporting that as a failure makes a
+/// profile that is armed look broken, and makes the per-app path fall back
+/// to the global profile for no reason.
+///
+/// The ladder is ordered fastest first, so a vendor ceiling with a larger
+/// index than the target is a limit below the target.
+fn gpu_vendor_ceiling_below(target_hz: u64) -> Option<String> {
+    let limits = diagnostics::gpu_vendor_limits();
+    let ceiling = limits.ceiling_index?;
+    let ladder = gpu_ged_ladder_hz()?;
+    // Without the ladder the index cannot be compared, so nothing is claimed.
+    let target_index = gpu_ged_index_for_ceiling(target_hz, &ladder)?;
+    if vendor_ceiling_caps_target(ceiling, target_index as i32) {
+        Some(limits.ceiling_name().to_string())
+    } else {
+        None
+    }
+}
+
+/// Whether a vendor ceiling holds the GPU below a target.
+///
+/// The ladder is ordered fastest first, so a larger index is a lower clock.
+fn vendor_ceiling_caps_target(ceiling_index: i32, target_index: i32) -> bool {
+    ceiling_index > target_index
+}
+
+/// The vendor service holding this profile's target, if any.
+fn gpu_profile_capped(profile: i32) -> Option<String> {
+    gpu_vendor_ceiling_below(gpu_profile_target_hz(profile))
+}
+
+/// The target a profile asks the GPU to reach.
+fn gpu_profile_target_hz(profile: i32) -> u64 {
+    match profile {
+        2 => gpu_saver_ceiling_hz(),
+        _ => gpu_top_hz(),
     }
 }
 
@@ -6618,7 +6816,7 @@ fn transition_service(cmd: &str) -> Result<(), String> {
         service_control::set_release_pending(false)?;
         service_control::set_intent(true, service_control::configured())?;
         restore_persisted_state();
-        app_runtime::wake();
+        app_runtime::wake(app_runtime::Wake::Changed);
         return Ok(());
     }
     // Persist inactive intent first: a process crash/reboot cannot resume guards
@@ -6640,8 +6838,155 @@ fn transition_service(cmd: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The recorded diagnostic history, as the application sees it.
+fn diagnostics_events_json() -> serde_json::Value {
+    let events = diagnostics::recent(200);
+    serde_json::json!({
+        "events": events
+            .iter()
+            .map(|event| serde_json::json!({
+                "seq": event.seq,
+                "at": event.at_ms,
+                "area": event.area,
+                "level": event.level,
+                "what": event.what,
+                "detail": event.detail,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// A per-feature health summary.
+///
+/// The point of this is that a user who cannot tell which feature is broken
+/// can be told, and why, without a cable and a logcat.
+fn diagnostics_health_json() -> serde_json::Value {
+    let limits = diagnostics::gpu_vendor_limits();
+    let games = diagnostics::game_services();
+    let profile = PERFORMANCE_STATE.load(Ordering::Acquire);
+    let target = gpu_profile_target_hz(profile.max(0));
+    let capped = gpu_vendor_ceiling_below(target);
+
+    let gpu = serde_json::json!({
+        "profile": profile,
+        "verified": gpu_profile_verified(profile.max(0)),
+        "armed": gpu_profile_configured(profile.max(0)),
+        "cappedBy": capped,
+        "targetMHz": gpu_hz_to_mhz(target),
+        "liveMHz": gpu_get_cur_freq_mhz(),
+        "minMHz": gpu_get_min_freq_mhz(),
+        "maxMHz": gpu_get_max_freq_mhz(),
+        "governor": gpu_get_governor(),
+        "powerPolicy": gpu_get_power_policy(),
+        "gedBoost": gpu_get_ged_boost(),
+        "dvfsEnabled": gpu_get_dvfs_enabled(),
+        "ladderTopMHz": gpu_hz_to_mhz(gpu_top_hz()),
+        "ladderFloorMHz": gpu_hz_to_mhz(gpu_floor_hz()),
+        "vendorCeilingIndex": limits.ceiling_index,
+        "vendorCeilingBy": limits.ceiling_limiter,
+        "vendorFloorIndex": limits.floor_index,
+        "vendorFloorBy": limits.floor_limiter,
+        "vendorFloorName": limits.floor_name(),
+    });
+
+    let game = serde_json::json!({
+        "active": games.active(),
+        "summary": games.summary(),
+        "gpuMaxLimitKHz": games.gpu_max_limit_khz,
+        "gpuMinLimitKHz": games.gpu_min_limit_khz,
+        "expectedFps": games.expected_fps,
+        "turboPid": games.turbo_pid,
+        "schedulerTasks": games.loom_tasks,
+    });
+
+    let per_app = app_runtime::health_json();
+
+    serde_json::json!({
+        "gpu": gpu,
+        "gameServices": game,
+        "perApp": per_app,
+        "serviceEnabled": service_control::enabled(),
+        "events": diagnostics::history().len(),
+    })
+}
+
+fn diagnostics_command(cmd: &str) -> Result<serde_json::Value, String> {
+    match cmd {
+        "GET logs" => Ok(diagnostics_events_json()),
+        "GET health" => Ok(diagnostics_health_json()),
+        "ACTION logs.clear" => {
+            diagnostics::clear();
+            Ok(serde_json::json!({"cleared": true}))
+        }
+        _ => Err("unknown diagnostics command".into()),
+    }
+}
+
+/// The feature a command belongs to, for the diagnostic history.
+fn diagnostics_area(cmd: &str) -> &'static str {
+    if cmd.starts_with("SET touch ") || cmd.starts_with("ACTION touch") {
+        diagnostics::AREA_TOUCH
+    } else if cmd.starts_with("SET display.") || cmd.starts_with("SET system.colors") {
+        diagnostics::AREA_DISPLAY
+    } else if cmd.starts_with("SET charging") || cmd.starts_with("SET bypass") {
+        diagnostics::AREA_CHARGING
+    } else if cmd.starts_with("SET cpu.") || cmd.starts_with("ACTION cpu.") {
+        diagnostics::AREA_CPU
+    } else if cmd.starts_with("SET service.") || cmd.starts_with("ACTION service.") {
+        diagnostics::AREA_SERVICE
+    } else if cmd.starts_with("SET app.") || cmd.starts_with("ACTION app.") {
+        diagnostics::AREA_PER_APP
+    } else if cmd.starts_with("SET perf") || cmd.starts_with("SET gpu.") || cmd.starts_with("ACTION gpu.") {
+        diagnostics::AREA_GPU
+    } else {
+        diagnostics::AREA_SERVICE
+    }
+}
+
 pub fn handle_command(line: &str) -> String {
+    let response = handle_command_inner(line);
     let cmd = line.trim();
+    // Every control the app owns is recorded with its outcome, so a user who
+    // cannot tell which feature is broken can see which command failed and
+    // what the daemon answered.
+    if (cmd.starts_with("SET ") || cmd.starts_with("ACTION "))
+        && !cmd.starts_with("ACTION logs.")
+    {
+        let ok = response.starts_with("OK");
+        diagnostics::record(
+            diagnostics_area(cmd),
+            if ok { "info" } else { "error" },
+            if ok { "command" } else { "command.failed" },
+            &format!("{cmd} -> {}", response.trim()),
+        );
+
+        // The platform's game services publish their own GPU limits and
+        // change the scheduling of the foreground app. A control issued while
+        // they are active competes with them, so the conflict is recorded.
+        let area = diagnostics_area(cmd);
+        if matches!(area, diagnostics::AREA_GPU | diagnostics::AREA_CPU) {
+            let games = diagnostics::game_services();
+            if games.active() {
+                diagnostics::record(
+                    diagnostics::AREA_CONFLICT,
+                    "warn",
+                    "game_services.active",
+                    &format!("{cmd} while the game services hold {}", games.summary()),
+                );
+            }
+        }
+    }
+    response
+}
+
+fn handle_command_inner(line: &str) -> String {
+    let cmd = line.trim();
+    if cmd == "GET logs" || cmd == "GET health" || cmd == "ACTION logs.clear" {
+        return match diagnostics_command(cmd) {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     if subsystem_clocks::is_command(cmd) {
         let _gate = match service_control::GATE.write() {
             Ok(gate) => gate,
@@ -7145,6 +7490,7 @@ mod tests {
         parse_gpu_ged_ladder, parse_ged_current_frequency_mhz, persisted_cpu_ranges_active,
         profile_uses_ged_boost,
         scaled_display_density, tcp_client_uid_from_table, touch_hal_profile_sequence,
+        vendor_ceiling_caps_target,
         valid_charging_profile, valid_mi_thermal_config_mode, validate_cpu_frequency_range_against,
     };
 
@@ -7427,6 +7773,17 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         assert_eq!(DASH_GPU_TOP_MHZ, 1612);
         assert_eq!(DASH_GPU_FLOOR_MHZ, 338);
         assert_eq!(DASH_GPU_SAVER_CEILING_MHZ, 598);
+    }
+
+    #[test]
+    fn a_vendor_ceiling_caps_only_a_lower_target() {
+        // The ladder is ordered fastest first, so a larger index is a lower
+        // clock. A ceiling below the target means the platform is holding the
+        // GPU under the requested speed.
+        assert!(vendor_ceiling_caps_target(49, 0));
+        assert!(vendor_ceiling_caps_target(7, 0));
+        assert!(!vendor_ceiling_caps_target(0, 0));
+        assert!(!vendor_ceiling_caps_target(0, 49));
     }
 
     #[test]

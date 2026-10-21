@@ -496,6 +496,9 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         || command.starts_with("SET app.enabled ")
         || command.starts_with("ACTION app.reset ")
         || command == "ACTION app.reset_all"
+        || command == "GET logs"
+        || command == "GET health"
+        || command == "ACTION logs.clear"
         || command == "GET subsystem.clocks"
         || command == "ACTION subsystem.clocks.reset"
         || command == "ACTION subsystem.clocks.trial memory"
