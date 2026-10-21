@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(target_os = "android")]
 use std::io::{BufRead, BufReader};
 use std::sync::{atomic::AtomicBool, mpsc};
 
@@ -1089,7 +1088,14 @@ pub(super) fn start() {
         }
     });
 }
-#[cfg(target_os = "android")]
+// The reader is compiled on every target so that a mistake in it is caught
+// by the ordinary build rather than only by the Android cross build. Only the
+// reader itself is Android specific: it watches the framework's activity
+// events, and the host has no such log.
+//
+// The function is only called on Android, so the ordinary build reports it as
+// unused. That is expected.
+#[allow(dead_code)]
 fn event_reader() {
     loop {
         let child = ProcessCommand::new("/system/bin/logcat")
@@ -1117,7 +1123,7 @@ fn event_reader() {
                 if let Ok(mut r) = runtime().lock() {
                     r.watching = true;
                 }
-                wake();
+                wake(Wake::Changed);
                 if let Some(output) = child.stdout.take() {
                     for line in BufReader::new(output).lines().map_while(Result::ok) {
                         // A resume event names the app that took the
