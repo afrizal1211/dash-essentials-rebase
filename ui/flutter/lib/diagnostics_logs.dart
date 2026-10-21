@@ -109,6 +109,30 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
     );
   }
 
+  /// Write the report to a text file. The daemon writes it, because it holds
+  /// the state and the history, and it writes it where a person can find it
+  /// again without a root shell.
+  Future<void> _export() async {
+    try {
+      final dynamic result = await PerAppBackend.instance.command(
+        'ACTION logs.export',
+      );
+      if (!mounted) return;
+      final String path = result is Map ? '${result['path']}' : '$result';
+      await Clipboard.setData(ClipboardData(text: path));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Report written to $path (the path is on the clipboard)'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = '$error');
+    }
+  }
+
   Map<String, dynamic> _section(String name) {
     final Object? value = _health?[name];
     if (value is Map) return Map<String, dynamic>.from(value);
@@ -150,6 +174,14 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
               ),
             ),
           ],
+        ),
+        const SizedBox(height: 10),
+        _HubControlRow(
+          title: 'Export to a text file',
+          subtitle: 'Write the report and the log to a .txt file',
+          icon: Icons.description_outlined,
+          accent: const Color(0xFF74E6C6),
+          onTap: _export,
         ),
         const SizedBox(height: 10),
         _HubControlRow(

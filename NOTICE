@@ -15,7 +15,9 @@ in this repository; see LICENSE for the Apache License, Version 2.0 and
 CHANGELOG.md for the upstream release history.
 
 This repository reworks that project for the MediaTek MT6991 `dash` platform
-(POCO X8 Pro Max / REDMI Turbo 5 Max). The upstream release this port is based
+(POCO X8 Pro Max / REDMI Turbo 5 Max) by afrizal1211, along the SaanOS line
+of the same project by Saan. The port is tested on real hardware by the
+@PocoX8ProMaxID Telegram community. The upstream release this port is based
 on is v1.18.5. The application package was renamed from
 `io.github.neeschal.rodinessential` to `io.github.neeschal.dashessential`,
 the root module id from `nees_rodin_essential_backend` to
