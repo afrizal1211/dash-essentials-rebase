@@ -10,89 +10,92 @@ The port's own changes are at the top.
 
 Pre-release.
 
-- The health and log screen can write the report to a text file. The daemon
-  writes it, because it holds the state and the history, and it writes it to
-  the Downloads folder under `Dash-Essential`, or to its own state directory
-  when the storage is not there. The path is shown and put on the clipboard.
-- The support links point at this port's own repository and at the
-  @PocoX8ProMaxID Telegram community.
-- The support screen carries the credits: Rodin Essential by NEESCHAL-3, the
-  SaanOS line by Saan, this port by afrizal1211, and the community that tests
-  every build on real hardware.
-- The release page is laid out as a page: what the build is, what changed,
-  how to install it, how to check the download, what the platform does to the
-  GPU clock, and the credits.
+### Added
 
+- Export the diagnostics report to a text file. The daemon writes it to
+  `Downloads/Dash-Essential`, or to its own state directory when the storage
+  is not there, and the path is shown and copied.
+- Credits on the support screen and on the release page.
+
+### Changed
+
+- The support links point at this port's repository and at the
+  @PocoX8ProMaxID Telegram community.
+- The release page reads as a page: what the build is, what changed, how to
+  install it, how to check the download, and the credits.
+
+### Fixed
+
+- The Telegram announcement is cut to the size the Telegram API accepts, so a
+  long changelog section no longer fails the release.
+
+## 1.18.8
+
+Pre-release.
+
+### Fixed
 
 - A per-app profile is applied control by control. A control the hardware
-  refuses no longer takes the whole profile down with it, so a profile that
-  asks for a GPU setting and a touch setting no longer loses the GPU setting
-  because the touch setting could not be taken. The controls that were
-  refused are reported by name and reason, in the per-app status and in the
-  logs, and a control whose original could not be read is never written.
-- Touch profiles use Dash's own high touch sampling rate knob,
-  `/proc/xm_htc_report_rate`, the node the stock ROM's power HAL and
-  Settings toggle drive. The panel is a Novatek NT38771 and has no THP
-  timing block, so the old search for one could only fail, and the failure
-  used to roll the per-app profile back. The report rate is read back after
-  the write, and the stock value is put back on release.
-- The touch feature modes that Dash's own ROM uses, game and active, are the
+  refuses no longer takes the whole profile down with it, so a profile asking
+  for a GPU setting and a touch setting no longer loses the GPU setting
+  because the touch setting could not be taken. The refused controls are
+  reported by name and reason, in the per-app status and in the logs, and a
+  control whose original could not be read is never written.
+- Touch profiles drive the panel through Dash's own high touch sampling rate
+  knob, `/proc/xm_htc_report_rate`, the node the stock ROM's power HAL and
+  Settings toggle use. The Novatek panel has no THP timing block, so the
+  search for one could only fail, and that failure used to roll the per-app
+  profile back.
+- The touch feature modes Dash's own ROM uses, game and active, are the
   required ones. The response calibration and super touch modes are Xiaomi
-  panel extras that the Novatek panel may not implement: they are still
-  requested, and the ones the HAL refuses are reported instead of taken as
-  a failure.
-- The effective GPU ceiling is read from the driver directly, in hertz, from
-  the thermal summary as well as from the power policy status.
+  panel extras that this panel may not implement, so they are requested but
+  not required, and the ones the HAL refuses are reported.
+- The effective GPU ceiling is read from the driver in hertz, from the
+  thermal summary as well as from the power policy status.
+
+## 1.18.7
+
+Pre-release.
 
 ### Added
 
 - A Health & Logs screen. The daemon keeps a bounded, ordered history of
   every control it applies, every command the app issues and every failure,
-  and the screen shows it together with the live state of each feature. The
-  history can be copied to the clipboard or cleared. Nothing on the screen
-  changes a setting.
+  and the screen shows it with the live state of each feature. Nothing on
+  the screen changes a setting.
 - A per-feature health report: the GPU profile and whether it is applied,
   armed or capped, the platform's own GPU ceiling and the service that set
   it, the state of the per-app controls, and what the platform's game
-  services are currently holding.
+  services are holding.
 - The platform's game services are reported. MediaTek's game driver and
-  Xiaomi's task turbo publish their own GPU limits and change the
-  scheduling of the foreground app, so a per-app profile and a game in the
-  foreground compete for the same nodes. The conflict is now recorded with
-  the command that ran into it.
+  Xiaomi's task turbo publish their own GPU limits, so a per-app profile and
+  a game in the foreground compete for the same nodes. The conflict is now
+  recorded with the command that ran into it.
 
 ### Fixed
 
-- A profile that the platform holds below its target is no longer reported
-  as a failure. The effective ceiling is read from the driver, in hertz, from
-  the thermal summary as well as from the power policy status. The MediaTek
-  thermal and power services publish a ceiling
-  over the GPU's operating-point ladder, and on this device the thermal
-  service holds the GPU at 1430 MHz while the ladder's top is 1612 MHz. The
-  Extreme Beast profile was therefore never able to verify, was re-armed on
-  every guard tick, and kept the GPU profile from being changed away from
+- A profile the platform holds below its target is no longer reported as a
+  failure. The thermal service holds the GPU at 1430 MHz while the ladder's
+  top is 1612 MHz, so the Extreme Beast profile never verified, was re-armed
+  on every guard tick, and kept the GPU profile from being changed away from
   it. A profile whose own writes landed is now reported as armed and capped,
   with the service that caps it named, and the guard leaves it alone.
 - A per-app profile that selects Extreme Beast is applied instead of
-  silently falling back to the global profile, for the same reason. The
-  platform's ceiling is 1430 MHz and cannot be raised from software, so the
-  profile is reported as armed and capped rather than as broken.
-- The background guard only writes the GPU nodes that have actually
-  drifted, and it records what it corrected. Rewriting the whole profile on
-  every tick fought the platform's own services and hid which write had
-  mattered.
+  silently falling back to the global profile, for the same reason.
+- The background guard only writes the GPU nodes that have actually drifted,
+  and it records what it corrected. Rewriting the whole profile on every tick
+  fought the platform's own services and hid which write had mattered.
 - Foreground detection for per-app profiles no longer waits on the
   framework. A resume event names the app that took the foreground, and it
-  is now used directly, so a profile applies as the app opens rather than
-  after the framework has been asked and answered. The framework's own
-  summary is still read when an event cannot describe what changed.
+  is used directly, so a profile applies as the app opens. The framework's
+  own summary is still read when an event cannot describe what changed.
 
 ## 1.18.6
 
 Pre-release.
 
-Codename: Astraea. Port of Rodin Essential v1.18.5 to the MediaTek MT6991
-`dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).
+Codename: Astraea. The first port of Rodin Essential v1.18.5 to the
+MediaTek MT6991 `dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).
 
 This is a pre-release: it is built from this tree and published so the port
 can be exercised on hardware. It carries a development signing identity, so
@@ -101,20 +104,20 @@ the latest stable build.
 
 ### Added
 
-- The GPU operating-point ladder is now read from the driver at
-  `/proc/gpufreqv2/gpu_working_opp_table`. Dash's ladder is unevenly spaced and
-  its index space is not the Mali devfreq table's, so the upstream 26 MHz index
-  formula was replaced with a resolution against the published ladder. A
-  request the ladder cannot satisfy is reported instead of written as a guessed
-  index.
+- The GPU operating-point ladder is read from the driver at
+  `/proc/gpufreqv2/gpu_working_opp_table`. Dash's ladder is unevenly spaced
+  and its index space is not the Mali devfreq table's, so the upstream 26 MHz
+  index formula was replaced with a resolution against the published ladder.
+  A request the ladder cannot satisfy is reported instead of written as a
+  guessed index.
 - The Mali cooling device is resolved by its cooling type
-  (`devfreq-48000000.mali`) instead of a fixed `cooling_device3` index, which
-  is probe-order dependent.
+  (`devfreq-48000000.mali`) instead of a fixed `cooling_device3` index,
+  which is probe-order dependent.
 - The ladder's 24 middle slots all report 1430 MHz, so a 1430 MHz floor
   resolves to the last of them and a 1430 MHz ceiling to the first. The
-  MediaTek firmware's `THERMAL_EB` thermal row caps at the first of those
-  slots, so the firmware's thermal ceiling is 1430 MHz even though the
-  ladder's top operating point is 1612 MHz.
+  MediaTek firmware's `THERMAL_EB` row caps at the first of those slots, so
+  the firmware's thermal ceiling is 1430 MHz while the ladder's top
+  operating point is 1612 MHz.
 
 ### Changed
 
@@ -123,14 +126,14 @@ the latest stable build.
 - The GPU devfreq node is `48000000.mali`, the UFS devfreq node is
   `16810000.ufshci`, and the DVFSRC devfreq node lives under
   `/devices/platform/1c013000.dvfsrc` rather than under `/soc`.
-- Panel backlight is read from `/sys/class/leds/lcd-backlight`; Dash's backlight
-  class is empty.
+- Panel backlight is read from `/sys/class/leds/lcd-backlight`; Dash's
+  backlight class is empty.
 - Native display baseline is 1280 x 2772 at 520 dpi, against the upstream
   target's 1220 x 2712.
 - The Novatek NT38771 panel is recognised alongside the upstream target's
   Goodix and FocalTech panels.
-- The application package, root module id, SELinux types and state directories
-  moved into the `dash_*` namespace.
+- The application package, root module id, SELinux types and state
+  directories moved into the `dash_*` namespace.
 
 ### Known issues
 

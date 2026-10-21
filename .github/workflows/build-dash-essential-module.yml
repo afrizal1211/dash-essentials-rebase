@@ -264,7 +264,7 @@ jobs:
           # The version heading of the section is one level too deep for a
           # release body, and the bare "Pre-release." line says nothing the
           # header does not say better.
-          changelog_body="$(printf '%s\n' "$changelog" | sed -e '1s/^## /### /' -e '/^Pre-release\.$/d')"
+          changelog_body="$(printf '%s\n' "$changelog" | sed -e '1s/^## /### /' -e '/^Pre-release\.$/d' | sed -e '/^$/N;/^\n$/D')"
 
           {
             printf '## Dash Essential %s\n\n' "$GITHUB_REF_NAME"
