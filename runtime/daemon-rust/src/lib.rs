@@ -207,6 +207,20 @@ mod vendor_binder {
         raw as *const AIBinder_Class
     }
 
+    /// Look a service up without associating a class with it.
+    ///
+    /// A class makes the NDK treat incoming transactions to the proxy as
+    /// local ones and dispatch them into the class. A daemon that only
+    /// wants to know whether a service is there must not do that: the
+    /// dispatch has been seen to fault, and it faults on a binder thread.
+    fn find_service(service: &'static [u8]) -> Option<*mut AIBinder> {
+        let binder = service_manager_check_service(service.as_ptr().cast());
+        if binder.is_null() {
+            return None;
+        }
+        Some(binder)
+    }
+
     fn check_service(
         service: &'static [u8],
         descriptor: &'static [u8],
@@ -226,35 +240,77 @@ mod vendor_binder {
         Some(binder)
     }
 
-    pub fn touch_available() -> bool {
+    /// What the service manager answered the last time it was asked.
+    ///
+    /// The answer is kept for a while: the daemon cannot reach the vendor
+    /// services from the module's context, and every attempt to ask for one
+    /// is a fork, so the answer is not asked for again until it is worth
+    /// asking.
+    static AVAILABILITY: OnceLock<
+        std::sync::Mutex<(Option<std::time::Instant>, bool, bool)>,
+    > = OnceLock::new();
+    const AVAILABILITY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    fn touch_available_inner() -> bool {
         const SERVICE: &[u8] = b"vendor.xiaomi.hw.touchfeature.ITouchFeature/default\0";
-        const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hw.touchfeature.ITouchFeature\0";
-        let Some(binder) = check_service(SERVICE, DESCRIPTOR, &TOUCH_CLASS) else {
+        let Some(binder) = find_service(SERVICE) else {
             return false;
         };
         unsafe { AIBinder_decStrong(binder) };
         true
+    }
+
+    fn display_available_inner() -> bool {
+        const SERVICE: &[u8] =
+            b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
+        let Some(binder) = find_service(SERVICE) else {
+            return false;
+        };
+        unsafe { AIBinder_decStrong(binder) };
+        true
+    }
+
+    /// Whether the vendor services can be reached, answered in a child.
+    ///
+    /// The daemon runs in the module's own context and cannot see the
+    /// vendor service manager, so a service it asks for comes back as a
+    /// pending binder. The NDK's completion for a pending binder has been
+    /// seen to fault, and it faults on a binder thread, which takes the
+    /// whole daemon with it. The question is therefore asked in a child,
+    /// and the answer is kept for a while.
+    fn vendor_availability() -> (bool, bool) {
+        let cache = AVAILABILITY.get_or_init(|| std::sync::Mutex::new((None, false, false)));
+        let Ok(mut guard) = cache.lock() else {
+            return (false, false);
+        };
+        let now = std::time::Instant::now();
+        if let Some(at) = guard.0
+            && now.duration_since(at) < AVAILABILITY_TTL
+        {
+            return (guard.1, guard.2);
+        }
+        let touch = guarded_call(touch_available_inner);
+        let display = guarded_call(display_available_inner);
+        *guard = (Some(now), touch, display);
+        (touch, display)
+    }
+
+    pub fn touch_available() -> bool {
+        vendor_availability().0
     }
 
     pub fn display_available() -> bool {
-        const SERVICE: &[u8] =
-            b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
-        const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature\0";
-        let Some(binder) = check_service(SERVICE, DESCRIPTOR, &DISPLAY_CLASS) else {
-            return false;
-        };
-        unsafe { AIBinder_decStrong(binder) };
-        true
+        vendor_availability().1
     }
 
-    /// Run a vendor transaction in a child process.
+    /// Run a vendor call in a child process.
     ///
     /// The vendor services and the NDK's own machinery have been seen to
     /// fault on this platform. A fault in the daemon would take the whole
     /// service down and leave the device with no controls at all, so the
-    /// transaction runs in a forked child and only its result is taken
-    /// back. A child that dies is reported as a failure.
-    fn guarded_transaction(call: impl FnOnce() -> bool) -> bool {
+    /// call runs in a forked child and only its result is taken back. A
+    /// child that dies is reported as a failure.
+    fn guarded_call(call: impl FnOnce() -> bool) -> bool {
         unsafe extern "C" {
             fn pipe(fds: *mut i32) -> i32;
             fn fork() -> i32;
@@ -313,7 +369,7 @@ mod vendor_binder {
     }
 
     pub fn set_touch_mode(display_id: i32, mode: i32, value: i32) -> bool {
-        guarded_transaction(|| touch_mode_transaction(display_id, mode, value))
+        guarded_call(|| touch_mode_transaction(display_id, mode, value))
     }
 
     fn touch_mode_transaction(display_id: i32, mode: i32, value: i32) -> bool {
@@ -368,7 +424,7 @@ mod vendor_binder {
     }
 
     pub fn set_display_feature(case_id: i32, mode_id: i32, cookie: i32) -> bool {
-        guarded_transaction(|| display_feature_transaction(case_id, mode_id, cookie))
+        guarded_call(|| display_feature_transaction(case_id, mode_id, cookie))
     }
 
     fn display_feature_transaction(case_id: i32, mode_id: i32, cookie: i32) -> bool {
@@ -2431,7 +2487,11 @@ fn classify_touch_panel_version(version: &str) -> i32 {
         1
     } else if version.contains("focal") || version.contains("fts") || version.contains("ft3683") {
         2
-    } else if version.contains("novatek") || version.contains("nvt") {
+    } else if version.contains("novatek")
+        || version.contains("nt38771")
+        || version.contains("nt36")
+        || version.contains("nvt")
+    {
         3
     } else {
         0
@@ -2442,9 +2502,21 @@ fn touch_panel_code() -> i32 {
     let version = fs::read_to_string("/proc/tp_fw_version").unwrap_or_default();
     let detected = classify_touch_panel_version(&version);
     if detected != 0 {
-        detected
-    } else if Path::new("/sys/devices/platform/goodix_ts.0").exists() {
+        return detected;
+    }
+    // Dash's Xiaomi touch bridge (`xiaomi_touch_dash.ko`) exposes the touch
+    // supplier through its own class device instead of /proc/tp_fw_version.
+    if let Ok(vendor) = fs::read_to_string("/sys/class/touch/touch_dev/panel_vendor") {
+        let detected = classify_touch_panel_version(&vendor);
+        if detected != 0 {
+            return detected;
+        }
+    }
+    if Path::new("/sys/devices/platform/goodix_ts.0").exists() {
         1
+    } else if Path::new("/sys/class/touch/touch_dev").exists() {
+        // The Xiaomi touch class device only exists on Novatek NT38771 Dash.
+        3
     } else {
         0
     }
@@ -2727,21 +2799,19 @@ fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
     };
     write_verified(Path::new(DASH_HTSR_NODE), expected)
         .map_err(|e| format!("touch rate write: {e}"))?;
-    if dash_htsr_rate() != Some(rate) {
-        return Err(format!(
-            "touch rate readback mismatch: wrote {expected}, read {:?}",
-            dash_htsr_rate()
-        ));
-    }
-    for _ in 0..4 {
+    // The node's output is produced per read, so a read that lands while
+    // the value changes can return a part of it. The rate is therefore read
+    // again until it agrees, rather than judged on the first read.
+    let mut live = None;
+    for _ in 0..5 {
         std::thread::sleep(Duration::from_millis(20));
-        if dash_htsr_rate() == Some(rate) {
+        live = dash_htsr_rate();
+        if live == Some(rate) {
             return Ok(rate);
         }
     }
     Err(format!(
-        "touch rate verify failed: requested {rate}, live {:?}",
-        dash_htsr_rate()
+        "touch rate verify failed: requested {rate}, live {live:?}"
     ))
 }
 

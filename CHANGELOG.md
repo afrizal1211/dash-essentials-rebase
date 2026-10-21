@@ -6,9 +6,26 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.10
+## 1.18.11
 
 Pre-release.
+
+### Fixed
+
+- The daemon no longer dies on this platform. The daemon runs in the
+  module's own context and cannot reach the vendor services, so a service
+  it asks for comes back as a pending binder, and the NDK's completion for a
+  pending binder has been seen to fault on a binder thread. Every vendor
+  interaction now happens in a forked child, and a service that is only
+  looked up is looked up without a class, so nothing can be dispatched into
+  the daemon.
+- The Novatek NT38771 panel is recognised from the touch bridge's own class
+  device and from the Novatek firmware strings, so the panel is known even
+  when the firmware version file does not name it.
+- The touch report rate is read back until it agrees. The node's output is
+  produced per read, and a read that lands while the value changes returns
+  a part of it, which was read as a failed write.
+
 
 ### Fixed
 
