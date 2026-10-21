@@ -6,9 +6,19 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.13
+## 1.18.14
 
 Pre-release.
+
+### Fixed
+
+- A crash in the daemon is written to a crash log that is kept open, with
+  write() only, so the report cannot deadlock in a fault that happened
+  while a lock was held. A daemon that never dies is a device with no
+  controls at all, which is worse than a daemon that restarts.
+- The exported report carries the crash log, so the answer to "where did it
+  crash" is in the report the user already knows how to make.
+
 
 ### Fixed
 
