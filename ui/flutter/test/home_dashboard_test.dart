@@ -36,7 +36,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('8400-Ultra'), findsNothing);
+      expect(find.text('9500s'), findsNothing);
       expect(find.text('GPU PROFILE'), findsNothing);
       expect(find.text('DEVICE PULSE'), findsOneWidget);
       final error = tester.takeException();

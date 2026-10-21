@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dash_essential_ui/bottom_feedback.dart';
 
-const message = 'Applied Gaming Dynamic · Full Range (260–1300 MHz)';
+const message = 'Applied Gaming Dynamic · Full Range (338–1612 MHz)';
 
 Widget harness({
   double inset = 0,

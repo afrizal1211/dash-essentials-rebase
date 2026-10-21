@@ -289,7 +289,7 @@ impl Hardware for Adapter {
                 let min = saved.state.gpu_min_freq_mhz;
                 let max = saved.state.gpu_max_freq_mhz;
                 if min > 0 && max >= min {
-                    set_gpu_min_freq(260)?;
+                    set_gpu_min_freq(338)?;
                     set_gpu_max_freq(max)?;
                     set_gpu_min_freq(min)?;
                 }
@@ -1145,11 +1145,11 @@ mod tests {
             (-1, -1, 0.0)
         );
         assert!(preferred_mode("Command not supported").is_err());
-        assert!(preferred_mode("User preferred display mode: 1220 2712 NaN").is_err());
+        assert!(preferred_mode("User preferred display mode: 1280 2772 NaN").is_err());
     }
     #[test]
     fn physical_mode_matches_a_supported_rate_and_not_canvas_size() {
-        assert_eq!(physical_mode("supportedModes [{id=1, width=1220, height=2712, fps=60.0}, {id=3, width=1220, height=2712, fps=120.00001}]",120).unwrap(),(1220,2712));
-        assert!(physical_mode("{width=1220, height=2712, fps=60.0}", 90).is_err());
+        assert_eq!(physical_mode("supportedModes [{id=1, width=1280, height=2772, fps=60.0}, {id=3, width=1280, height=2772, fps=120.00001}]",120).unwrap(),(1280,2772));
+        assert!(physical_mode("{width=1280, height=2772, fps=60.0}", 90).is_err());
     }
 }

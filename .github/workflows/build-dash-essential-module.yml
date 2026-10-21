@@ -1,0 +1,334 @@
+name: Dash Essential module
+
+# Builds the KernelSU Next / Magisk root module on a GitHub-hosted x86_64
+# runner.
+#
+# The project cannot be built on the target phone. The Android NDK ships a
+# linux-x86_64 host toolchain only, and `flutter assemble` AOT-compiles
+# libapp.so with a host gen_snapshot that Flutter publishes for x86_64 hosts
+# only, so a normal x86_64 Linux machine (or this workflow) is required.
+#
+# The pinned custom Flutter runtime is installed by
+# tools/fetch-flutter-engine-prebuilt.sh: Flutter 3.44.8 stable, engine
+# 0cd61071..., which is the engine runtime/flutter-engine/include/embedder.h
+# and runtime/host-rust were written against. Do not change one without the
+# other.
+#
+# Signing. Releases are signed with this port's own key, which is never
+# committed: add the base64 PKCS#12 keystore as the DASH_RELEASE_KEYSTORE_BASE64
+# secret, its password as DASH_RELEASE_KEY_PASS, and optionally its alias as
+# DASH_RELEASE_KEY_ALIAS (default `dash-essential`). The APK certificate must
+# then match android/package/release-cert.sha256 exactly, so a stale or
+# misconfigured key fails the build instead of producing a fake release.
+#
+# Without those secrets the workflow falls back to a throwaway development key
+# and sets DASH_ALLOW_UNOFFICIAL_SIGNING=1. The resulting ZIP is a `-dev`
+# build: it is never written to the stable module path and never shares a
+# signature with a published release. Add a base64 JKS as the
+# DASH_DEV_KEYSTORE_BASE64 secret (alias `dash-essential-development`, store and
+# key password `android`) to keep one stable development signature across runs
+# so `adb install -r` style updates keep working.
+#
+# Announcements. A published release is posted to the project's Telegram channel
+# when the optional TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID secrets are set (the
+# bot must be an admin of the target channel). Without them the announcement is
+# skipped and the build still succeeds.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  DASH_FLUTTER_VERSION: "3.44.8"
+  DASH_DEV_KEY_ALIAS: dash-essential-development
+  DASH_DEV_KEY_PASS: android
+
+jobs:
+  module:
+    name: KernelSU Next / Magisk module
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    # Only this job publishes a release, so only this job may write.
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android/sdk/system-images \
+            /usr/share/dotnet \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost
+          df -h /
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Flutter SDK ${{ env.DASH_FLUTTER_VERSION }}
+        run: |
+          set -euo pipefail
+          archive="flutter_linux_${DASH_FLUTTER_VERSION}-stable.tar.xz"
+          url="https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/$archive"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$archive" "$url"
+          mkdir -p "$RUNNER_TEMP/flutter"
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/flutter" --strip-components=1
+          rm -f "$RUNNER_TEMP/$archive"
+          git config --global --add safe.directory "$RUNNER_TEMP/flutter"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Android SDK platform 36, build-tools and NDK
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}"
+          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
+          sdkmanager="$(ls -d "$sdk"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1)"
+          if [ -z "$sdkmanager" ]; then
+            echo "sdkmanager not found under $sdk" >&2
+            ls -la "$sdk" >&2 || true
+            exit 1
+          fi
+          yes | "$sdkmanager" --licenses >/dev/null 2>&1 || true
+          newest() {
+            "$sdkmanager" --list 2>/dev/null \
+              | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $1); print $1}' \
+              | grep -E "^$1;[0-9]" \
+              | sort -V \
+              | tail -1
+          }
+          [ -d "$sdk/platforms/android-36" ] || "$sdkmanager" "platforms;android-36"
+          if ! find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
+            "$sdkmanager" "$(newest build-tools)"
+          fi
+          if ! find "$sdk/ndk" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
+            "$sdkmanager" "$(newest ndk)"
+          fi
+          echo "platforms: $(ls "$sdk/platforms")"
+          echo "build-tools: $(ls "$sdk/build-tools")"
+          echo "ndk: $(ls "$sdk/ndk")"
+
+      - name: Pinned Flutter engine prebuilt
+        run: tools/fetch-flutter-engine-prebuilt.sh
+
+      - name: Flutter packages and engine artifacts
+        run: |
+          set -euo pipefail
+          flutter --version
+          flutter config --no-analytics >/dev/null
+          flutter precache --android
+          (cd ui/flutter && flutter pub get)
+
+      - name: Signing key
+        env:
+          DASH_RELEASE_KEYSTORE_BASE64: ${{ secrets.DASH_RELEASE_KEYSTORE_BASE64 }}
+          DASH_RELEASE_KEY_PASS: ${{ secrets.DASH_RELEASE_KEY_PASS }}
+          DASH_RELEASE_KEY_ALIAS: ${{ secrets.DASH_RELEASE_KEY_ALIAS }}
+          DASH_DEV_KEYSTORE_BASE64: ${{ secrets.DASH_DEV_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          # Release path: the port ships its own signing certificate, recorded in
+          # android/package/release-cert.sha256. The build fails if the APK is not
+          # signed with exactly that certificate, so a stolen or misconfigured
+          # secret cannot produce something that looks like a release.
+          if [ -n "${DASH_RELEASE_KEYSTORE_BASE64:-}" ]; then
+            keystore="$RUNNER_TEMP/dash-essential-release.p12"
+            printf '%s' "$DASH_RELEASE_KEYSTORE_BASE64" | base64 -d > "$keystore"
+            chmod 600 "$keystore"
+            [ -n "${DASH_RELEASE_KEY_PASS:-}" ] || {
+              echo "DASH_RELEASE_KEY_PASS is required with DASH_RELEASE_KEYSTORE_BASE64" >&2
+              exit 1
+            }
+            {
+              echo "DASH_KEYSTORE=$keystore"
+              echo "DASH_KEYSTORE_PASS=$DASH_RELEASE_KEY_PASS"
+              echo "DASH_KEY_PASS=$DASH_RELEASE_KEY_PASS"
+              echo "DASH_KEY_ALIAS=${DASH_RELEASE_KEY_ALIAS:-dash-essential}"
+              echo "DASH_ALLOW_UNOFFICIAL_SIGNING=0"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Development fallback. Every development artefact carries the `-dev`
+          # suffix and refuses to publish the stable module path.
+          keystore="$RUNNER_TEMP/dash-essential-development.jks"
+          if [ -n "${DASH_DEV_KEYSTORE_BASE64:-}" ]; then
+            printf '%s' "$DASH_DEV_KEYSTORE_BASE64" | base64 -d > "$keystore"
+          else
+            keytool -genkeypair \
+              -keystore "$keystore" \
+              -storetype JKS \
+              -storepass "$DASH_DEV_KEY_PASS" \
+              -keypass "$DASH_DEV_KEY_PASS" \
+              -alias "$DASH_DEV_KEY_ALIAS" \
+              -keyalg RSA -keysize 4096 -validity 10000 \
+              -dname "CN=Dash Essential Development,O=Dash Essential,C=NP"
+          fi
+          {
+            echo "DASH_KEYSTORE=$keystore"
+            echo "DASH_KEYSTORE_PASS=$DASH_DEV_KEY_PASS"
+            echo "DASH_KEY_PASS=$DASH_DEV_KEY_PASS"
+            echo "DASH_KEY_ALIAS=$DASH_DEV_KEY_ALIAS"
+            echo "DASH_ALLOW_UNOFFICIAL_SIGNING=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Build module
+        run: tools/build-kernelsu-next-module.sh
+
+      - name: Upload module
+        uses: actions/upload-artifact@v4
+        with:
+          name: dash-essential-kernelsu-magisk
+          path: |
+            out/kernelsu-next/*/*.zip
+            out/kernelsu-next/*/*.sha256
+            out/kernelsu-next/*/application/Dash-Essential.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # Workflow artifacts are internal to Actions and expire, so a tag that
+      # produced a release-signed archive also has to become a public release or
+      # there is nothing for a user to download. A development-signed build
+      # never publishes one.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v') && env.DASH_ALLOW_UNOFFICIAL_SIGNING == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          zip=(out/kernelsu-next/*/Dash-Essential-KernelSU-Next-Magisk-*.zip)
+          sum=(out/kernelsu-next/*/Dash-Essential-KernelSU-Next-Magisk-*.zip.sha256)
+          apk=(out/kernelsu-next/*/application/Dash-Essential.apk)
+          sha256sum "${apk[0]}" > "${apk[0]}.sha256"
+          [ -f "${apk[0]}.sha256" ] || { echo "missing APK checksum" >&2; exit 1; }
+          [ "${#zip[@]}" -eq 1 ] || { echo "expected one module zip, found ${#zip[@]}" >&2; exit 1; }
+          [ "${#sum[@]}" -eq 1 ] || { echo "expected one checksum, found ${#sum[@]}" >&2; exit 1; }
+          [ "${#apk[@]}" -eq 1 ] || { echo "expected one application, found ${#apk[@]}" >&2; exit 1; }
+
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ### KernelSU Next / Magisk module
+
+          Flash the ZIP from KernelSU Next, KernelSU or Magisk. The installer also
+          installs the bundled application; a copy signed with a different
+          certificate is removed once, and the settings under
+          `/data/adb/dash-essential` are kept.
+
+          `Dash-Essential.apk` is the same application the module installs, kept
+          for sideloading or inspection.
+
+          NOTES
+
+          # Include this release's CHANGELOG section in the release body, matching
+          # the same `## X.Y.Z` block the Telegram step announces. The sections
+          # above are static; this keeps the notes in lockstep with CHANGELOG.md
+          # so no separate API patch is ever needed.
+          version="${GITHUB_REF_NAME#v}"
+          changelog="$(awk -v want="${version%%-*}" '
+            index($0, "## " want) == 1 { capture = 1 }
+            capture && /^## / && index($0, "## " want) != 1 { exit }
+            capture { print }
+          ' CHANGELOG.md)"
+          if [ -n "$changelog" ]; then
+            printf '%s\n\n' "$changelog" >> "$RUNNER_TEMP/notes.md"
+          else
+            echo "no CHANGELOG section for $version; notes left without it" >&2
+          fi
+
+          cat >> "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ### Verify the download
+
+          ```sh
+          sha256sum -c Dash-Essential-KernelSU-Next-Magisk-*.zip.sha256
+          ```
+
+          Signed with this port's release certificate, recorded in
+          `android/package/release-cert.sha256`. A port of Rodin Essential
+          v1.18.5 by NEESCHAL-3 for the MediaTek MT6991 `dash` platform; see
+          NOTICE and the repository README for credits.
+
+          ### Checksum
+
+          ```text
+          NOTES
+          cat "${sum[0]}" >> "$RUNNER_TEMP/notes.md"
+          printf '```\n' >> "$RUNNER_TEMP/notes.md"
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "Dash Essential $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/notes.md"
+            gh release upload "$GITHUB_REF_NAME" --clobber \
+              "${zip[@]}" "${sum[@]}" "${apk[@]}" "${apk[0]}.sha256"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Dash Essential $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "${zip[@]}" "${sum[@]}" "${apk[@]}" "${apk[0]}.sha256"
+          fi
+
+      # Announce the release to the project's Telegram channel. This runs the
+      # same way the release does: only for a signed v* tag, never for a
+      # development build. The secrets are optional, so a fork or a repository
+      # without them skips the announcement instead of failing the build.
+      - name: Announce on Telegram
+        if: startsWith(github.ref, 'refs/tags/v') && env.DASH_ALLOW_UNOFFICIAL_SIGNING == '0'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "Telegram secrets are not configured; skipping announcement" >&2
+            exit 0
+          fi
+
+          version="${GITHUB_REF_NAME#v}"
+          body="$(awk -v want="${version%%-*}" '
+            index($0, "## " want) == 1 {inside=1; next}
+            inside && /^## / {exit}
+            inside {print}
+          ' CHANGELOG.md)"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+
+          {
+            printf 'Dash Essential %s is out.\n' "$GITHUB_REF_NAME"
+            if [ -n "$body" ]; then
+              printf '\n%s\n' "$body"
+            fi
+            printf '\n%s\n' "$release_url"
+          } > "$RUNNER_TEMP/telegram.txt"
+
+          curl -fsS --retry 3 \
+            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text@$RUNNER_TEMP/telegram.txt" \
+            --data-urlencode "disable_web_page_preview=false" >/dev/null
+          echo "Announced $GITHUB_REF_NAME on Telegram"
+

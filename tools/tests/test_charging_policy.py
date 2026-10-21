@@ -27,7 +27,7 @@ class ChargingPolicyTests(unittest.TestCase):
         self.assertNotIn("'Unexpected DEX'", source)
 
     def test_ram_parent_label_is_preserved(self):
-        ram = '/devices/platform/soc/1c00f000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq'
+        ram = '/devices/platform/1c013000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq'
         source = (ROOT / 'android/unpacked/dash-native.cil').read_text()
         self.assertNotIn(f'(genfscon sysfs "{ram}" ', source)
         self.assertIn(f'(genfscon sysfs "{ram}/min_freq" ', source)

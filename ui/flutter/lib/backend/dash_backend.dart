@@ -722,14 +722,14 @@ final class DashBackend {
   }
 
   bool setDisplayResolution(int width, int height, [int density = 0]) {
-    if (width <= 0 || height <= 0 || (width == 1220 && height == 2712)) {
+    if (width <= 0 || height <= 0 || (width == 1280 && height == 2772)) {
       return resetDisplayResolution();
     }
     final int detectedDensity = extendedValue(78);
     final int nativeDensity = detectedDensity > 0 ? detectedDensity : 520;
     final int safeDensity = density > 0
         ? density
-        : ((nativeDensity * width + 610) ~/ 1220);
+        : ((nativeDensity * width + 640) ~/ 1280);
     return setExtendedOperation(
       9,
       width,

@@ -101,7 +101,7 @@ try:
                         live.shell('input swipe 650 1900 650 500 450')
                         time.sleep(1)
                         check_gpu_health()
-                    print('GPU READBACK: ' + live.shell('cat /sys/class/misc/mali0/device/devfreq/13000000.mali/min_freq; cat /sys/class/misc/mali0/device/devfreq/13000000.mali/max_freq; cat /sys/class/misc/mali0/device/devfreq/13000000.mali/governor; cat /sys/class/misc/mali0/device/power_policy', root=True), flush=True)
+                    print('GPU READBACK: ' + live.shell('cat /sys/class/misc/mali0/device/devfreq/48000000.mali/min_freq; cat /sys/class/misc/mali0/device/devfreq/48000000.mali/max_freq; cat /sys/class/misc/mali0/device/devfreq/48000000.mali/governor; cat /sys/class/misc/mali0/device/power_policy', root=True), flush=True)
             if 'cores' in controls:
                 assert live.shell('cat /sys/devices/system/cpu/online', root=True) == '0,2-7'
             if 'cpu' in controls:

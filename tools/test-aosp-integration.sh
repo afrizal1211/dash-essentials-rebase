@@ -131,7 +131,7 @@ grep -Fq 'allow dash_daemon hal_touchfeature_xiaomi_service:service_manager find
 grep -Fq 'allow dash_daemon hal_touchfeature_xiaomi_default:process ptrace;' "$DASH_VENDOR_POLICY"
 grep -Fq 'allow dash_daemon hal_touchfeature_xiaomi_default:dir search;' "$DASH_VENDOR_POLICY"
 grep -Fq 'typeattribute dash_daemon dash_native_touch_access;' "$DASH_PRODUCT_PRIVATE/dash_daemon.te"
-grep -Fq '/devices/platform/soc/13000000.mali/devfreq/13000000.mali' "$DASH_GENFS"
+grep -Fq '/devices/platform/soc/48000000.mali/devfreq/48000000.mali' "$DASH_GENFS"
 grep -Fq '/devices/platform/goodix_ts.0' "$DASH_GENFS"
 
 grep -Fq 'user root' "$DASH_AOSP/dash_daemon.rc"

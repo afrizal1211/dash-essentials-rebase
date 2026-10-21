@@ -183,14 +183,24 @@ The bundled policy assigns dedicated types only to the generic sysfs paths that
 Dash Essential must write:
 
 ```text
-/sys/devices/platform/soc/13000000.mali/devfreq/13000000.mali
-/sys/devices/platform/13000000.mali/devfreq/13000000.mali
+/sys/devices/platform/soc/48000000.mali/devfreq/48000000.mali
+/sys/devices/platform/48000000.mali/devfreq/48000000.mali
 /sys/devices/platform/goodix_ts.0
 ```
 
 The first two cover the Mali devfreq layouts seen across Dash vendor bases.
 The last path is the Goodix fallback used only when a port omits Xiaomi's touch
-AIDL service.
+AIDL service; Dash itself ships a Novatek panel, so that rule is inert here.
+
+The UFS and DVFSRC devfreq nodes are labelled by the same template:
+
+```text
+/sys/devices/platform/soc/16810000.ufshci/devfreq/16810000.ufshci
+/sys/devices/platform/1c013000.dvfsrc/mtk-dvfsrc-devfreq/devfreq/mtk-dvfsrc-devfreq
+```
+
+Dash's DVFSRC node sits at the device tree root rather than under `/soc`, so
+its platform device path has no `/soc` component.
 
 Never grant the coredomain generic `sysfs:file` write access. If the target
 device tree already labels one of these exact paths, reconcile the duplicate
@@ -240,7 +250,7 @@ the exact vendor image used by the ROM:
 ```bash
 adb shell ps -AZ | grep -E 'touchfeature|displayfeature'
 adb shell ls -lZ \
-  /sys/class/devfreq/13000000.mali/governor \
+  /sys/class/devfreq/48000000.mali/governor \
   /sys/class/misc/mali0/device/power_policy \
   /sys/kernel/ged/hal/gpu_boost_level \
   /sys/module/ged/parameters/ged_boost_enable \
