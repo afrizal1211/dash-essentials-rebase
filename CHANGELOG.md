@@ -6,6 +6,49 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.7
+
+Pre-release.
+
+### Added
+
+- A Health & Logs screen. The daemon keeps a bounded, ordered history of
+  every control it applies, every command the app issues and every failure,
+  and the screen shows it together with the live state of each feature. The
+  history can be copied to the clipboard or cleared. Nothing on the screen
+  changes a setting.
+- A per-feature health report: the GPU profile and whether it is applied,
+  armed or capped, the platform's own GPU ceiling and the service that set
+  it, the state of the per-app controls, and what the platform's game
+  services are currently holding.
+- The platform's game services are reported. MediaTek's game driver and
+  Xiaomi's task turbo publish their own GPU limits and change the
+  scheduling of the foreground app, so a per-app profile and a game in the
+  foreground compete for the same nodes. The conflict is now recorded with
+  the command that ran into it.
+
+### Fixed
+
+- A profile that the platform holds below its target is no longer reported
+  as a failure. The MediaTek thermal and power services publish a ceiling
+  over the GPU's operating-point ladder, and on this device the thermal
+  service holds the GPU at 1430 MHz while the ladder's top is 1612 MHz. The
+  Extreme Beast profile was therefore never able to verify, was re-armed on
+  every guard tick, and kept the GPU profile from being changed away from
+  it. A profile whose own writes landed is now reported as armed and capped,
+  with the service that caps it named, and the guard leaves it alone.
+- A per-app profile that selects Extreme Beast is applied instead of
+  silently falling back to the global profile, for the same reason.
+- The background guard only writes the GPU nodes that have actually
+  drifted, and it records what it corrected. Rewriting the whole profile on
+  every tick fought the platform's own services and hid which write had
+  mattered.
+- Foreground detection for per-app profiles no longer waits on the
+  framework. A resume event names the app that took the foreground, and it
+  is now used directly, so a profile applies as the app opens rather than
+  after the framework has been asked and answered. The framework's own
+  summary is still read when an event cannot describe what changed.
+
 ## 1.18.6
 
 Pre-release.

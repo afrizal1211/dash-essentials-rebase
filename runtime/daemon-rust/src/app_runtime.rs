@@ -36,7 +36,19 @@ struct Saved {
 }
 static ORIGINALS: OnceLock<Mutex<BTreeMap<String, Saved>>> = OnceLock::new();
 static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
-static WAKE: OnceLock<mpsc::SyncSender<()>> = OnceLock::new();
+/// What the reader learned about a foreground change.
+#[derive(Clone, Debug)]
+pub(super) enum Wake {
+    /// A resume event named the app that took the foreground. The event
+    /// carries the user and the component, so the foreground is known without
+    /// asking the framework for it.
+    Resumed(App),
+    /// The foreground may have changed and the authoritative source has to be
+    /// read.
+    Changed,
+}
+
+static WAKE: OnceLock<mpsc::SyncSender<Wake>> = OnceLock::new();
 static STARTED: AtomicBool = AtomicBool::new(false);
 static RECOVERY_READY: AtomicBool = AtomicBool::new(false);
 
@@ -47,6 +59,9 @@ struct Runtime {
     foreground: Option<App>,
     error: Option<String>,
     watching: bool,
+    /// Where the last foreground answer came from. A resume event names the
+    /// app outright; anything else had to be read from the framework.
+    source: &'static str,
 }
 fn runtime() -> &'static Mutex<Runtime> {
     RUNTIME.get_or_init(|| {
@@ -59,6 +74,7 @@ fn runtime() -> &'static Mutex<Runtime> {
             foreground: None,
             error: None,
             watching: false,
+            source: "none",
         })
     })
 }
@@ -708,19 +724,33 @@ fn parse_foreground(raw: &str) -> Result<Option<App>, String> {
     )
     .map(Some)
 }
-fn reconcile(r: &mut Runtime) -> Result<(), String> {
+fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
     if r.config_error.is_some() {
         return Err("per-app configuration is damaged; reset profiles to recover".into());
     }
     if service_control::enabled() && r.config.enabled {
-        r.foreground = match foreground() {
-            Ok(app) => app,
-            Err(error) => {
-                r.owner
-                    .transition(&mut Adapter::new(), None, None, false, false)?;
-                r.foreground = None;
-                return Err(error);
+        // A resume event already names the app that took the foreground, so
+        // the framework is only asked when the event could not say. Reading
+        // the framework costs hundreds of milliseconds, and a per-app profile
+        // that lands half a second late is a per-app profile that appears
+        // broken.
+        r.foreground = match hint {
+            Wake::Resumed(app) => {
+                r.source = "resume-event";
+                Some(app)
             }
+            Wake::Changed => match foreground() {
+                Ok(app) => {
+                    r.source = "framework-summary";
+                    app
+                }
+                Err(error) => {
+                    r.owner
+                        .transition(&mut Adapter::new(), None, None, false, false)?;
+                    r.foreground = None;
+                    return Err(error);
+                }
+            },
         };
     } else {
         r.foreground = None;
@@ -756,6 +786,44 @@ fn status(r: &Runtime) -> Value {
         .map(|app| json!({"user":app.user,"package":app.package}));
     json!({"config":r.config.json(),"status":state,"owner":owner,"foreground":foreground,"controls":controls,"error":r.config_error.as_ref().or(r.error.as_ref()),"watching":r.watching,"serviceEnabled":service_control::enabled()})
 }
+/// A per-app health summary for the diagnostics view.
+///
+/// The ownership map is the part that matters: it is what tells the global
+/// controls whether a foreground app currently owns them, and it is what a
+/// user needs to see when a global control refuses to apply.
+pub(super) fn health_json() -> Value {
+    let runtime = runtime().lock().ok();
+    let foreground = runtime.as_ref().and_then(|r| {
+        r.foreground
+            .as_ref()
+            .map(|app| json!({"user":app.user,"package":app.package}))
+    });
+    let owned = originals()
+        .lock()
+        .map(|entries| entries.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let configured = runtime
+        .as_ref()
+        .map(|r| r.config.profiles.len())
+        .unwrap_or(0);
+    let error = runtime
+        .as_ref()
+        .and_then(|r| r.config_error.clone().or_else(|| r.error.clone()));
+    let watching = runtime.as_ref().is_some_and(|r| r.watching);
+    let enabled = runtime.as_ref().is_some_and(|r| r.config.enabled);
+
+    json!({
+        "foreground": foreground,
+        "source": runtime.as_ref().map(|r| r.source).unwrap_or("none"),
+        "configuredProfiles": configured,
+        "ownedControls": owned,
+        "watching": watching,
+        "enabled": enabled,
+        "serviceEnabled": service_control::enabled(),
+        "error": error,
+    })
+}
+
 pub(super) fn is_command(cmd: &str) -> bool {
     cmd == "GET app.controls"
         || cmd == "GET app.capabilities"
@@ -855,8 +923,8 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if r.config.enabled && !r.config.profiles.is_empty() && service_control::enabled() {
         service_control::set_intent(true, true)?;
     }
-    r.error = reconcile(&mut r).err();
-    wake();
+    r.error = reconcile(&mut r, Wake::Changed).err();
+    wake(Wake::Changed);
     Ok(status(&r))
 }
 pub(super) fn check_global_command(cmd: &str) -> Result<(), String> {
@@ -916,9 +984,25 @@ pub(super) fn reset_all() -> Result<(), String> {
     r.config_error = None;
     Ok(())
 }
-pub(super) fn wake() {
+/// The hint that carries the most information.
+///
+/// A resume event names the app that took the foreground, so it is preferred
+/// over a bare change that only says something moved.
+fn stronger_hint(current: Wake, next: Wake) -> Wake {
+    match (current, next) {
+        (Wake::Resumed(_), Wake::Resumed(other)) => Wake::Resumed(other),
+        (Wake::Resumed(app), Wake::Changed) => Wake::Resumed(app),
+        (Wake::Changed, Wake::Resumed(app)) => Wake::Resumed(app),
+        (Wake::Changed, Wake::Changed) => Wake::Changed,
+    }
+}
+
+pub(super) fn wake(hint: Wake) {
     if let Some(sender) = WAKE.get() {
-        let _ = sender.try_send(());
+        // The channel holds one pending hint. A full channel means a change
+        // is already waiting to be handled, and the pending one is replaced
+        // by the stronger hint.
+        let _ = sender.try_send(hint);
     }
 }
 fn recover() -> Result<(), String> {
@@ -960,16 +1044,33 @@ pub(super) fn start() {
         RECOVERY_READY.store(true, Ordering::Release);
         #[cfg(target_os = "android")]
         std::thread::spawn(event_reader);
-        wake();
-        while receiver.recv().is_ok() {
-            // Coalesce the early resumed/focused events until the framework
-            // publishes its focused activity. No periodic activity polling.
+        wake(Wake::Changed);
+        while let Ok(first) = receiver.recv() {
+            // Keep the strongest hint while events arrive. A resume event
+            // names the app outright, so it is preferred over a bare change.
+            let mut hint = first;
             let settle = Instant::now();
-            while settle.elapsed() < Duration::from_millis(250)
-                && receiver.recv_timeout(Duration::from_millis(60)).is_ok()
-            {}
-            // Vendor events may precede the authoritative focused summary.
-            // Bounded read-only settling checks, not a permanent polling loop.
+            while settle.elapsed() < Duration::from_millis(120) {
+                match receiver.recv_timeout(Duration::from_millis(40)) {
+                    Ok(next) => hint = stronger_hint(hint, next),
+                    Err(_) => break,
+                }
+            }
+
+            // A named app is applied straight away. Only a change the event
+            // could not describe needs the framework's own summary, and that
+            // is read with a bounded settling window rather than a poll.
+            if let Wake::Resumed(app) = hint {
+                let _gate = service_control::GATE.write().expect("service gate");
+                if let Ok(mut r) = runtime().lock() {
+                    r.error = reconcile(&mut r, Wake::Resumed(app)).err();
+                    if !r.config.enabled || !service_control::enabled() {
+                        break;
+                    }
+                }
+                continue;
+            }
+
             for delay in [0, 150, 350] {
                 if delay > 0 {
                     if receiver.recv_timeout(Duration::from_millis(delay)).is_ok() {
@@ -979,7 +1080,7 @@ pub(super) fn start() {
                 }
                 let _gate = service_control::GATE.write().expect("service gate");
                 if let Ok(mut r) = runtime().lock() {
-                    r.error = reconcile(&mut r).err();
+                    r.error = reconcile(&mut r, Wake::Changed).err();
                     if !r.config.enabled || !service_control::enabled() {
                         break;
                     }
@@ -1019,14 +1120,20 @@ fn event_reader() {
                 wake();
                 if let Some(output) = child.stdout.take() {
                     for line in BufReader::new(output).lines().map_while(Result::ok) {
-                        if super::app_controls::resumed_app(&line).is_some()
-                            || line.contains("wm_on_top_resumed_gained_called")
+                        // A resume event names the app that took the
+                        // foreground. Carrying it through avoids a round
+                        // trip to the framework for the common case.
+                        if let Some(app) = super::app_controls::resumed_app(&line) {
+                            wake(Wake::Resumed(app));
+                            continue;
+                        }
+                        if line.contains("wm_on_top_resumed_gained_called")
                             || line.contains("wm_focused_root_task")
                             || line.contains("wm_pause_activity")
                             || line.contains("wm_stop_activity")
                             || line.contains("wm_on_top_resumed_lost_called")
                         {
-                            wake();
+                            wake(Wake::Changed);
                         }
                     }
                 }
@@ -1066,6 +1173,29 @@ mod tests {
         );
         assert!(refresh_modes("display unavailable").is_empty());
     }
+    #[test]
+    fn a_named_resume_event_is_preferred_over_a_bare_change() {
+        let app = App::new(0, "com.example.game").expect("app");
+        assert!(matches!(
+            stronger_hint(Wake::Changed, Wake::Resumed(app.clone())),
+            Wake::Resumed(_)
+        ));
+        assert!(matches!(
+            stronger_hint(Wake::Resumed(app.clone()), Wake::Changed),
+            Wake::Resumed(_)
+        ));
+        assert!(matches!(
+            stronger_hint(Wake::Changed, Wake::Changed),
+            Wake::Changed
+        ));
+        // The most recent named event wins over an earlier one.
+        let other = App::new(0, "com.example.other").expect("app");
+        assert!(matches!(
+            stronger_hint(Wake::Resumed(app), Wake::Resumed(other.clone())),
+            Wake::Resumed(ref current) if current.package == "com.example.other"
+        ));
+    }
+
     #[test]
     fn foreground_requires_user_and_full_package() {
         assert_eq!(
