@@ -29,6 +29,11 @@ the latest stable build.
 - The Mali cooling device is resolved by its cooling type
   (`devfreq-48000000.mali`) instead of a fixed `cooling_device3` index, which
   is probe-order dependent.
+- The ladder's 24 middle slots all report 1430 MHz, so a 1430 MHz floor
+  resolves to the last of them and a 1430 MHz ceiling to the first. The
+  MediaTek firmware's `THERMAL_EB` thermal row caps at the first of those
+  slots, so the firmware's thermal ceiling is 1430 MHz even though the
+  ladder's top operating point is 1612 MHz.
 
 ### Changed
 
