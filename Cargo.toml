@@ -14,4 +14,9 @@ license = "Apache-2.0"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+# The symbol table is kept, and the debug info is not stripped, so a crash
+# in the daemon can be reported with the place it happened. The daemon is
+# the root of every control on the device, and a fault that only shows up
+# as the module restarting it cannot be found.
+strip = "debuginfo"
+debug = 1
