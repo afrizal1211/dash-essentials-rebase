@@ -333,6 +333,26 @@ the `thermal_message/sconfig` configuration mode that suppresses the vendor's
 competing CPU policy while a custom CPU range is held. The vendor thermal
 services stay running in every mode.
 
+### The platform's GPU ceiling
+
+Dash's ladder has a plateau. Its 24 middle slots all report 1430 MHz, so a
+1430 MHz floor resolves to the last of them and a 1430 MHz ceiling to the
+first, and both name the same clock. The MediaTek firmware's own `THERMAL_EB`
+row caps at the first of those slots, so the firmware's thermal ceiling is
+1430 MHz even though the ladder's top operating point is 1612 MHz.
+
+That ceiling **cannot be raised from software.** The limit table the thermal
+framework arbitrates through is read-only on this ROM, and the platform's
+power service holds the GPU at or below 1430 MHz regardless. The app
+therefore reports the cap rather than fighting it: a profile whose own writes
+landed is shown as *armed and capped by THERMAL_EB*, with the effective
+ceiling read from the driver, and it is not re-applied on every tick.
+
+The effective ceiling is read twice, because the driver publishes it twice:
+as an index in the power policy status dump, and directly in hertz in
+`/sys/kernel/thermal/gpu_info`. The second form is simpler and does not need
+the status dump to be read whole.
+
 ### Known differences
 
 - Dash's stock kernel publishes no bypass-charging node, so the bypass-charging
