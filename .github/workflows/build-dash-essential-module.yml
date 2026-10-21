@@ -214,8 +214,13 @@ jobs:
       # produced a release-signed archive also has to become a public release or
       # there is nothing for a user to download. A development-signed build
       # never publishes one.
+      # A tag always produces a release. Whether that release is a stable one
+      # is decided by the signing state and by the CHANGELOG section: a
+      # development-signed build is always published as a pre-release, because
+      # its identity differs from every published release and Android will not
+      # accept it as an update over one.
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/v') && env.DASH_ALLOW_UNOFFICIAL_SIGNING == '0'
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -260,6 +265,34 @@ jobs:
             echo "no CHANGELOG section for $version; notes left without it" >&2
           fi
 
+          # A release whose CHANGELOG section is marked "Pre-release" is
+          # published as a GitHub pre-release, so it is not handed to users as
+          # the latest stable one. The flag is set explicitly in both
+          # directions: without it a release that used to be a pre-release
+          # would keep the flag when it is re-published.
+          prerelease_flag=--prerelease=false
+          if printf '%s\n' "$changelog" | grep -qi 'pre-release'; then
+            prerelease_flag=--prerelease
+            echo "publishing $GITHUB_REF_NAME as a pre-release" >&2
+          fi
+
+          # A development-signed build is never handed out as a stable
+          # release. Its identity differs from every published release, so it
+          # cannot update over one and it must not be the "latest release".
+          if [ "${DASH_ALLOW_UNOFFICIAL_SIGNING:-0}" = "1" ]; then
+            prerelease_flag=--prerelease
+            cat >> "$RUNNER_TEMP/notes.md" <<'NOTES'
+          ### Development build
+
+          This archive is signed with a development identity, not the release
+          certificate recorded in `android/package/release-cert.sha256`. It
+          cannot update a release-signed installation, and it is published as
+          a pre-release so it is never offered as the latest stable build.
+
+          NOTES
+            echo "publishing $GITHUB_REF_NAME as a development pre-release" >&2
+          fi
+
           cat >> "$RUNNER_TEMP/notes.md" <<'NOTES'
           ### Verify the download
 
@@ -282,13 +315,15 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" \
               --title "Dash Essential $GITHUB_REF_NAME" \
-              --notes-file "$RUNNER_TEMP/notes.md"
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "$prerelease_flag"
             gh release upload "$GITHUB_REF_NAME" --clobber \
               "${zip[@]}" "${sum[@]}" "${apk[@]}" "${apk[0]}.sha256"
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag \
               --title "Dash Essential $GITHUB_REF_NAME" \
               --notes-file "$RUNNER_TEMP/notes.md" \
+              "$prerelease_flag" \
               "${zip[@]}" "${sum[@]}" "${apk[@]}" "${apk[0]}.sha256"
           fi
 
