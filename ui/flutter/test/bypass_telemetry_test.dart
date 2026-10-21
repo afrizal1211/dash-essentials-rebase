@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rodin_essential_ui/backend/bypass_telemetry.dart';
+import 'package:dash_essential_ui/backend/bypass_telemetry.dart';
 
 void main() {
   bool confirmed({

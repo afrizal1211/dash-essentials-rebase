@@ -10,11 +10,11 @@ class SystemColorsScreen extends StatefulWidget {
 
 class _SystemColorsScreenState extends State<SystemColorsScreen>
     with WidgetsBindingObserver {
-  final RodinBackend _backend = RodinBackend.instance;
-  StreamSubscription<RodinBackendSnapshot>? _subscription;
-  late RodinSystemColorsState _palette;
-  late RodinConnectionState _connection;
-  RodinSystemColorsSelection? _selection;
+  final DashBackend _backend = DashBackend.instance;
+  StreamSubscription<DashBackendSnapshot>? _subscription;
+  late DashSystemColorsState _palette;
+  late DashConnectionState _connection;
+  DashSystemColorsSelection? _selection;
 
   @override
   void initState() {
@@ -23,13 +23,13 @@ class _SystemColorsScreenState extends State<SystemColorsScreen>
     _connection = _backend.latest.connection;
     _selection = _backend.systemColorsSelection;
     WidgetsBinding.instance.addObserver(this);
-    _subscription = _backend.snapshots.listen((RodinBackendSnapshot snapshot) {
+    _subscription = _backend.snapshots.listen((DashBackendSnapshot snapshot) {
       if (!mounted) return;
-      final RodinSystemColorsState next = _backend.systemColors;
-      final RodinSystemColorsSelection? selection =
+      final DashSystemColorsState next = _backend.systemColors;
+      final DashSystemColorsSelection? selection =
           _backend.systemColorsSelection;
       final bool connected =
-          _connection != RodinConnectionState.online && snapshot.ready;
+          _connection != DashConnectionState.online && snapshot.ready;
       if (next.revision != _palette.revision ||
           next.operationState != _palette.operationState ||
           next.contrastRevision != _palette.contrastRevision ||
@@ -71,7 +71,7 @@ class _SystemColorsScreenState extends State<SystemColorsScreen>
 
   @override
   Widget build(BuildContext context) {
-    return RodinScrollPage(
+    return DashScrollPage(
       children: <Widget>[
         DetailHeader(title: 'System Colors', onBack: widget.onBack),
         const SizedBox(height: 12),
@@ -127,7 +127,7 @@ class SystemColorsPanel extends StatefulWidget {
     required this.onRefresh,
     this.onRefreshContrast,
     this.onSetContrast,
-    this.onSelectionFeedback = RodinHaptics.segment,
+    this.onSelectionFeedback = DashHaptics.segment,
     this.isNativeBusy,
     this.selection,
     this.previewBuilder,
@@ -135,16 +135,16 @@ class SystemColorsPanel extends StatefulWidget {
     super.key,
   });
 
-  final RodinSystemColorsState palette;
-  final RodinConnectionState connection;
-  bool get backendOnline => connection == RodinConnectionState.online;
+  final DashSystemColorsState palette;
+  final DashConnectionState connection;
+  bool get backendOnline => connection == DashConnectionState.online;
   final bool Function(bool wallpaper, int seed, int style) onApply;
   final bool Function() onRefresh;
   final bool Function()? onRefreshContrast;
   final bool Function(int level)? onSetContrast;
   final VoidCallback onSelectionFeedback;
   final bool Function()? isNativeBusy;
-  final RodinSystemColorsSelection? selection;
+  final DashSystemColorsSelection? selection;
   final Widget Function(int seed, int style, bool dark, bool scrubbing)?
   previewBuilder;
   final bool enableLibrary;
@@ -173,7 +173,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   int _hapticStep = -1;
   final Stopwatch _hapticClock = Stopwatch()..start();
   int _lastHapticMs = -100;
-  final RodinSystemColorsLibrary _library = RodinSystemColorsLibrary();
+  final DashSystemColorsLibrary _library = DashSystemColorsLibrary();
   bool _libraryLoaded = false;
   Future<void>? _libraryLoading;
 
@@ -209,8 +209,8 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   }
 
   void _syncDraft() {
-    final RodinSystemColorsSelection? selection =
-        RodinSystemColorsSelection.fromNative(widget.palette) ??
+    final DashSystemColorsSelection? selection =
+        DashSystemColorsSelection.fromNative(widget.palette) ??
         widget.selection;
     if (selection == null) return;
     // Preserve the unrounded HSL draft and reset point when Android confirms
@@ -229,7 +229,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   @override
   void didUpdateWidget(SystemColorsPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final RodinSystemColorsState palette = widget.palette;
+    final DashSystemColorsState palette = widget.palette;
     if (!widget.backendOnline) _applyQueued = false;
     if (!_edited &&
         !palette.hasReadback &&
@@ -271,9 +271,9 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   bool get _selectionKnown =>
       _edited ||
       widget.selection != null ||
-      RodinSystemColorsSelection.fromNative(widget.palette) != null;
+      DashSystemColorsSelection.fromNative(widget.palette) != null;
   bool get _matchesCurrent {
-    final RodinSystemColorsState palette = widget.palette;
+    final DashSystemColorsState palette = widget.palette;
     if (!palette.hasReadback) return false;
     return _wallpaper
         ? palette.mode == 0 && palette.style == 0
@@ -296,7 +296,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
     widget.onSelectionFeedback();
     _edit(update);
     debugPrint(
-      'RODIN_SYSTEM_COLORS_SELECT wallpaper=$_wallpaper seed=$_seed '
+      'DASH_SYSTEM_COLORS_SELECT wallpaper=$_wallpaper seed=$_seed '
       'style=$_style revision=${widget.palette.revision}',
     );
     _scheduleApply();
@@ -369,7 +369,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   }
 
   void _applySelection() {
-    final RodinSystemColorsState palette = widget.palette;
+    final DashSystemColorsState palette = widget.palette;
     if (!widget.backendOnline ||
         palette.failed ||
         (palette.hasReadback && !palette.supported)) {
@@ -391,7 +391,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
     }
     final int revision = widget.palette.revision;
     if (widget.onApply(_wallpaper, _seed, _style)) {
-      debugPrint('RODIN_SYSTEM_COLORS_SUBMIT revision=$revision');
+      debugPrint('DASH_SYSTEM_COLORS_SUBMIT revision=$revision');
       setState(() {
         _pendingRevision = revision;
         _notice = null;
@@ -413,7 +413,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
       final int now = _hapticClock.elapsedMilliseconds;
       if (now - _lastHapticMs >= 45) {
         _lastHapticMs = now;
-        RodinHaptics.frequentSegment();
+        DashHaptics.frequentSegment();
       }
     }
     _edit(() {
@@ -563,7 +563,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
-    final RodinSystemColorsState palette = widget.palette;
+    final DashSystemColorsState palette = widget.palette;
     final bool dark =
         _previewDark ?? Theme.of(context).brightness == Brightness.dark;
     final int previewSeed = _wallpaper && palette.hasReadback
@@ -600,7 +600,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
           const SizedBox(height: 8),
           Text(
             'Use Android’s native Monet palette across compatible system '
-            'surfaces, apps and keyboards. Separate from Rodin’s own theme.',
+            'surfaces, apps and keyboards. Separate from Dash’s own theme.',
             style: description,
           ),
           const SizedBox(height: 18),
@@ -806,7 +806,7 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
                       spacing: 8,
                       runSpacing: 8,
                       children: <Widget>[
-                        for (final RodinSavedPalette item in _library.saved)
+                        for (final DashSavedPalette item in _library.saved)
                           InputChip(
                             avatar: CircleAvatar(
                               backgroundColor: _paletteColor(item.seed),
@@ -959,14 +959,14 @@ class _SystemColorsPanelState extends State<SystemColorsPanel> {
             _PaletteNotice(
               icon: Icons.info_outline_rounded,
               text: !widget.backendOnline
-                  ? widget.connection == RodinConnectionState.connecting
+                  ? widget.connection == DashConnectionState.connecting
                         ? 'Connecting to the system service. You can preview colors while it connects.'
                         : 'Preview only — the system service is offline. The updated '
-                              'Rodin backend is needed to apply colors.'
+                              'Dash backend is needed to apply colors.'
                   : palette.failed
                   ? palette.errorMessage
                   : 'This ROM does not expose Android’s native Material You '
-                        'update path. Preview remains available, but Rodin will '
+                        'update path. Preview remains available, but Dash will '
                         'not claim or fabricate a system-wide result.',
             ),
             const SizedBox(height: 12),
@@ -1467,7 +1467,7 @@ class _PaletteSourceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
-    final Color accent = RodinAppearanceScope.of(context).activeAccent;
+    final Color accent = DashAppearanceScope.of(context).activeAccent;
     return Semantics(
       button: true,
       selected: selected,
@@ -1475,7 +1475,7 @@ class _PaletteSourceTile extends StatelessWidget {
         enableHaptics: false,
         onTap: onTap,
         child: AnimatedContainer(
-          duration: RodinInteractionSettings.motionDuration(220),
+          duration: DashInteractionSettings.motionDuration(220),
           width: double.infinity,
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
@@ -1610,11 +1610,11 @@ class _SystemPalettePreviewPane extends StatefulWidget {
 }
 
 class _SystemPalettePreviewPaneState extends State<_SystemPalettePreviewPane> {
-  final RodinPalettePreviewWorker _worker = RodinPalettePreviewWorker();
-  final Map<RodinPaletteKey, (ColorScheme, List<List<int>>)> _cache =
-      <RodinPaletteKey, (ColorScheme, List<List<int>>)>{};
-  late RodinPaletteKey _wanted;
-  RodinPaletteKey? _shown;
+  final DashPalettePreviewWorker _worker = DashPalettePreviewWorker();
+  final Map<DashPaletteKey, (ColorScheme, List<List<int>>)> _cache =
+      <DashPaletteKey, (ColorScheme, List<List<int>>)>{};
+  late DashPaletteKey _wanted;
+  DashPaletteKey? _shown;
   ColorScheme? _scheme;
   List<List<int>>? _tones;
   bool _running = false;
@@ -1653,11 +1653,11 @@ class _SystemPalettePreviewPaneState extends State<_SystemPalettePreviewPane> {
       // Only one job runs at a time; intermediate drag positions are replaced
       // by the latest key, never accumulated into a delayed preview backlog.
       while (mounted && _shown != _wanted) {
-        final RodinPaletteKey key = _wanted;
+        final DashPaletteKey key = _wanted;
         final List<int> colors = await _worker.generate(key);
         if (!mounted) return;
-        final ColorScheme scheme = rodinPreviewScheme(colors, key.$3);
-        final List<List<int>> tones = rodinPreviewTonalFamilies(colors);
+        final ColorScheme scheme = dashPreviewScheme(colors, key.$3);
+        final List<List<int>> tones = dashPreviewTonalFamilies(colors);
         if (_cache.length >= 24) _cache.remove(_cache.keys.first);
         _cache[key] = (scheme, tones);
         if (key == _wanted) {
@@ -1672,7 +1672,7 @@ class _SystemPalettePreviewPaneState extends State<_SystemPalettePreviewPane> {
     } catch (error) {
       if (mounted) {
         setState(() => _failed = true);
-        debugPrint('RODIN_PALETTE_PREVIEW_FAIL $error');
+        debugPrint('DASH_PALETTE_PREVIEW_FAIL $error');
       }
     } finally {
       _running = false;
@@ -1760,7 +1760,7 @@ class _PaletteLabState extends State<_PaletteLab> {
             onTap: widget.families == null
                 ? null
                 : () {
-                    RodinHaptics.segment();
+                    DashHaptics.segment();
                     setState(() => _expanded = !_expanded);
                   },
             child: Padding(
@@ -1789,7 +1789,7 @@ class _PaletteLabState extends State<_PaletteLab> {
                   ),
                   AnimatedRotation(
                     turns: _expanded ? 0.5 : 0,
-                    duration: RodinInteractionSettings.motionDuration(180),
+                    duration: DashInteractionSettings.motionDuration(180),
                     child: const Icon(Icons.keyboard_arrow_down_rounded),
                   ),
                 ],
@@ -1797,7 +1797,7 @@ class _PaletteLabState extends State<_PaletteLab> {
             ),
           ),
           AnimatedSize(
-            duration: RodinInteractionSettings.motionDuration(220),
+            duration: DashInteractionSettings.motionDuration(220),
             curve: Curves.easeOutCubic,
             child: !_expanded || widget.families == null
                 ? const SizedBox.shrink()
@@ -1877,7 +1877,7 @@ class _SystemPalettePreview extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedContainer(
       duration: animate
-          ? RodinInteractionSettings.motionDuration(180)
+          ? DashInteractionSettings.motionDuration(180)
           : Duration.zero,
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(

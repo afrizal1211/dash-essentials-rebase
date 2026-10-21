@@ -111,7 +111,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rodin-essential-daemon"
+name = "dash-essential-daemon"
 version = "1.18.5"
 dependencies = [
  "serde",
@@ -119,7 +119,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rodin-essential-host"
+name = "dash-essential-host"
 version = "1.18.5"
 dependencies = [
  "jni",

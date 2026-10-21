@@ -2,10 +2,10 @@
 
 For the ROM integration package, follow
 [the step-by-step porter guide](UNPACKED_ROM_PORTER_GUIDE.md). The archive contains
-only Rodin Essential policy additions. Its merger uses the target ROM's complete
+only Dash Essential policy additions. Its merger uses the target ROM's complete
 split policy; no platform/vendor policy from another ROM is distributed.
 
-This workflow is for porters editing extracted Rodin ROM images on a PC. It is
+This workflow is for porters editing extracted Dash ROM images on a PC. It is
 separate from AOSP source integration and from the KernelSU/Magisk module.
 The resulting ROM uses an init-managed daemon; the user does not grant root to
 the APK and does not need a root manager. The daemon itself is a privileged
@@ -27,7 +27,7 @@ Provide the following from the **same ROM build being repacked**:
 - The kitchen's file-context and fs-config metadata for each affected image,
   its mount-point convention, and the partition size/group information.
 - Target Android version, build fingerprint, and the actual vendor HAL/sysfs
-  labels. Source templates assume Xiaomi Rodin labels; ports can rename them.
+  labels. Source templates assume Xiaomi Dash labels; ports can rename them.
 - One synchronized, signed APK + daemon + public certificate set. Do not mix
   an old daemon with a newer APK, or copy a root-module policy into a ROM.
 
@@ -41,13 +41,13 @@ ROM update. The current source integration is described in
 Prefer product unless the target ROM requires another system partition:
 
 ```text
-product/app/RodinEssential/RodinEssential.apk
-product/bin/rodin_daemon
-product/etc/init/rodin_daemon.rc
+product/app/DashEssential/DashEssential.apk
+product/bin/dash_daemon
+product/etc/init/dash_daemon.rc
 ```
 
-Use the current `android/aosp/rodin_daemon.rc` without changing its startup or
-state directory. Its executable is `/product/bin/rodin_daemon`. If installing
+Use the current `android/aosp/dash_daemon.rc` without changing its startup or
+state directory. Its executable is `/product/bin/dash_daemon`. If installing
 under system_ext or system instead, change the service executable, restorecon
 path and executable file-context rule **together**. Do not install duplicate
 service definitions or binaries in multiple partitions.
@@ -60,11 +60,11 @@ Required ownership and modes for new files/directories:
 
 | Runtime path | Owner | Mode | Label |
 | --- | --- | --- | --- |
-| `/product/app/RodinEssential` | root:root | 0755 | target ROM's normal system-app directory type |
-| `/product/app/RodinEssential/RodinEssential.apk` | root:root | 0644 | target ROM's normal system-app APK type |
-| `/product/bin/rodin_daemon` | root:root | 0755 | `rodin_daemon_exec` |
-| `/product/etc/init/rodin_daemon.rc` | root:root | 0644 | target ROM's normal init configuration file type |
-| `/data/system/rodin-essential` | root:root | 0700 | `rodin_daemon_data_file` |
+| `/product/app/DashEssential` | root:root | 0755 | target ROM's normal system-app directory type |
+| `/product/app/DashEssential/DashEssential.apk` | root:root | 0644 | target ROM's normal system-app APK type |
+| `/product/bin/dash_daemon` | root:root | 0755 | `dash_daemon_exec` |
+| `/product/etc/init/dash_daemon.rc` | root:root | 0644 | target ROM's normal init configuration file type |
+| `/data/system/dash-essential` | root:root | 0700 | `dash_daemon_data_file` |
 
 Init creates the data directory after data is mounted. Do not include a data
 partition, users' state or a private signing key in the bake ZIP.
@@ -73,10 +73,10 @@ For kitchens using Android fs-config text, merge these entries once, with the
 kitchen's exact path-prefix convention:
 
 ```text
-product/app/RodinEssential 0 0 0755
-product/app/RodinEssential/RodinEssential.apk 0 0 0644
-product/bin/rodin_daemon 0 0 0755
-product/etc/init/rodin_daemon.rc 0 0 0644
+product/app/DashEssential 0 0 0755
+product/app/DashEssential/DashEssential.apk 0 0 0644
+product/bin/dash_daemon 0 0 0755
+product/etc/init/dash_daemon.rc 0 0 0644
 ```
 
 Do not replace the original full fs-config with this four-line fragment.
@@ -86,8 +86,8 @@ Do not replace the original full fs-config with this four-line fragment.
 These runtime file-context additions are required:
 
 ```text
-/product/bin/rodin_daemon                     u:object_r:rodin_daemon_exec:s0
-/data/system/rodin-essential(/.*)?            u:object_r:rodin_daemon_data_file:s0
+/product/bin/dash_daemon                     u:object_r:dash_daemon_exec:s0
+/data/system/dash-essential(/.*)?            u:object_r:dash_daemon_data_file:s0
 ```
 
 Merge them into the target's product file contexts and the kitchen's labeling
@@ -100,7 +100,7 @@ The following parts must be merged as one coherent target-policy change:
 1. Dedicated daemon, executable, data and app type declarations, domain
    attributes, init transition and owned-state access.
 2. The certificate-bound package entry in the product MAC-permissions XML.
-   `@RODIN_ESSENTIAL` is a **source-build placeholder**, not a usable signature
+   `@DASH_ESSENTIAL` is a **source-build placeholder**, not a usable signature
    in an extracted ROM. Replace it with the exact APK signer's DER X.509
    certificate encoded as hexadecimal, not its SHA-256 fingerprint. Preserve
    all existing XML entries. Inspect existing entries for this package/signing
@@ -108,10 +108,10 @@ The following parts must be merged as one coherent target-policy change:
 3. This exact app assignment in the target product seapp contexts:
 
    ```text
-   user=_app seinfo=rodin_essential name=io.github.neeschal.rodinessential domain=rodin_app type=app_data_file levelFrom=all
+   user=_app seinfo=dash_essential name=io.github.neeschal.dashessential domain=dash_app type=app_data_file levelFrom=all
    ```
 
-4. Only `rodin_app` can connect to the daemon's production socket; the daemon
+4. Only `dash_app` can connect to the daemon's production socket; the daemon
    has the MLS attribute needed to accept the app's user categories.
 5. Framework Binder requests **and reply pipe/FD access**, hardware/HAL rules,
    charging uevent access and exact sysfs genfs labels.
@@ -123,10 +123,10 @@ The following parts must be merged as one coherent target-policy change:
 To extract a public certificate from a verified APK using Android build tools:
 
 ```bash
-apksigner verify --print-certs-pem RodinEssential.apk \
+apksigner verify --print-certs-pem DashEssential.apk \
   | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' \
-  > RodinEssential.x509.pem
-openssl x509 -in RodinEssential.x509.pem -outform DER \
+  > DashEssential.x509.pem
+openssl x509 -in DashEssential.x509.pem -outform DER \
   | od -An -v -tx1 | tr -d ' \n'
 ```
 
@@ -136,7 +136,7 @@ also need a compatible APK signing identity; no policy change bypasses Android's
 signature checks.
 
 `.te` files contain source macros; they cannot be pasted into CIL. A new
-`rodin_essential.cil` placed beside the policy files is **not automatically
+`dash_essential.cil` placed beside the policy files is **not automatically
 loaded**. The reviewed CIL must be merged into canonical policy files selected
 by this ROM's init, normally `product_sepolicy.cil` and `vendor_sepolicy.cil`
 with any required platform changes. Avoid duplicate type/genfs declarations.
@@ -221,15 +221,15 @@ On a development build with an authorized root shell, collect:
 
 ```bash
 adb shell getenforce
-adb shell getprop init.svc.rodin_daemon
-adb shell ls -lZ /product/bin/rodin_daemon
-adb shell ps -AZ | grep -E 'rodin_daemon|rodinessential'
-adb shell dumpsys package io.github.neeschal.rodinessential
-adb shell logcat -b all -d > rodin-bake-logcat.txt
+adb shell getprop init.svc.dash_daemon
+adb shell ls -lZ /product/bin/dash_daemon
+adb shell ps -AZ | grep -E 'dash_daemon|dashessential'
+adb shell dumpsys package io.github.neeschal.dashessential
+adb shell logcat -b all -d > dash-bake-logcat.txt
 ```
 
-Expect enforcing SELinux, a running init service, `rodin_daemon_exec` on the
-binary, `rodin_daemon` on its process, and `rodin_app` on the APK process.
+Expect enforcing SELinux, a running init service, `dash_daemon_exec` on the
+binary, `dash_daemon` on its process, and `dash_app` on the APK process.
 Do not toggle a permissive development ROM to enforcing without its owner's
 approval and a complete ROM policy test. A permissive-only boot does not verify
 the integration.

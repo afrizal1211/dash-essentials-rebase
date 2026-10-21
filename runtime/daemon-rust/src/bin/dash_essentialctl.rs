@@ -1,10 +1,10 @@
-use rodin_essential_backend::{SOCKET_NAME, connect_stream};
+use dash_essential_backend::{SOCKET_NAME, connect_stream};
 use std::io::{Read, Write};
 
 fn main() {
     let command = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
     if command.is_empty() {
-        eprintln!("usage: rodin_essentialctl <command>");
+        eprintln!("usage: dash_essentialctl <command>");
         return;
     }
     let mut stream = match connect_stream(SOCKET_NAME) {

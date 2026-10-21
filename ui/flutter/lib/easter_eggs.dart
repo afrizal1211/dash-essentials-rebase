@@ -4,21 +4,21 @@ part of 'main.dart';
 //     [ CPU ]  [ GPU ]
 //         \\    /
 //       ( snack )       No frequency tables were harmed making this sandwich.
-class RodinVersionSecret extends StatefulWidget {
-  const RodinVersionSecret({required this.version, super.key});
+class DashVersionSecret extends StatefulWidget {
+  const DashVersionSecret({required this.version, super.key});
   final String version;
   @override
-  State<RodinVersionSecret> createState() => _RodinVersionSecretState();
+  State<DashVersionSecret> createState() => _DashVersionSecretState();
 }
 
-class _RodinVersionSecretState extends State<RodinVersionSecret> {
+class _DashVersionSecretState extends State<DashVersionSecret> {
   int _taps = 0;
   Timer? _reset;
   bool _open = false;
 
   void _tap() {
     if (_open) return;
-    RodinHaptics.confirm();
+    DashHaptics.confirm();
     _reset?.cancel();
     _reset = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _taps = 0);
@@ -36,8 +36,8 @@ class _RodinVersionSecretState extends State<RodinVersionSecret> {
         barrierColor: Colors.black.withValues(alpha: 0.5),
         transitionDuration: MediaQuery.disableAnimationsOf(context)
             ? Duration.zero
-            : RodinInteractionSettings.motionDuration(340),
-        pageBuilder: (_, _, _) => const RodinSecretRoom(),
+            : DashInteractionSettings.motionDuration(340),
+        pageBuilder: (_, _, _) => const DashSecretRoom(),
         transitionBuilder: (_, Animation<double> animation, _, Widget child) =>
             FadeTransition(
               opacity: animation,
@@ -65,7 +65,7 @@ class _RodinVersionSecretState extends State<RodinVersionSecret> {
   @override
   Widget build(BuildContext context) => Semantics(
     button: true,
-    label: 'Rodin Essential version ${widget.version}',
+    label: 'Dash Essential version ${widget.version}',
     hint: 'Tap four times to discover a secret',
     child: PressScale(
       enableHaptics: false,
@@ -76,7 +76,7 @@ class _RodinVersionSecretState extends State<RodinVersionSecret> {
           scale: 1 + _taps * 0.025,
           duration: MediaQuery.disableAnimationsOf(context)
               ? Duration.zero
-              : RodinInteractionSettings.motionDuration(160),
+              : DashInteractionSettings.motionDuration(160),
           curve: Curves.easeOutCubic,
           child: StatusPill(
             label: widget.version,
@@ -88,13 +88,13 @@ class _RodinVersionSecretState extends State<RodinVersionSecret> {
   );
 }
 
-class RodinSecretRoom extends StatefulWidget {
-  const RodinSecretRoom({super.key});
+class DashSecretRoom extends StatefulWidget {
+  const DashSecretRoom({super.key});
   @override
-  State<RodinSecretRoom> createState() => _RodinSecretRoomState();
+  State<DashSecretRoom> createState() => _DashSecretRoomState();
 }
 
-class _RodinSecretRoomState extends State<RodinSecretRoom>
+class _DashSecretRoomState extends State<DashSecretRoom>
     with TickerProviderStateMixin {
   static const List<String> _jokes = <String>[
     'Four taps. Zero secret overclock.',
@@ -140,16 +140,16 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
           duration: const Duration(milliseconds: 900),
         )..addStatusListener((AnimationStatus status) {
           if (status == AnimationStatus.completed && _holding && mounted) {
-            RodinHaptics.confirm();
+            DashHaptics.confirm();
             setState(() => _ready = true);
           }
         });
-    RodinNestedBackController.attach(this, _close);
+    DashNestedBackController.attach(this, _close);
   }
 
   bool get _animate =>
       !MediaQuery.disableAnimationsOf(context) &&
-      RodinInteractionSettings.motionDuration(1100) != Duration.zero;
+      DashInteractionSettings.motionDuration(1100) != Duration.zero;
 
   @override
   void didChangeDependencies() {
@@ -191,11 +191,11 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
       _ready = false;
       _playing = launch;
     });
-    if (launch) RodinHaptics.confirm();
+    if (launch) DashHaptics.confirm();
   }
 
   void _next() {
-    RodinHaptics.confirm();
+    DashHaptics.confirm();
     setState(() => _joke = (_joke + 1) % _jokes.length);
     if (_animate) {
       _burst.forward(from: 0);
@@ -204,7 +204,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
 
   @override
   void dispose() {
-    RodinNestedBackController.detach(this);
+    DashNestedBackController.detach(this);
     _burst.dispose();
     _hold.dispose();
     super.dispose();
@@ -259,7 +259,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                           IconButton(
                             tooltip: 'Close secret room',
                             onPressed: () {
-                              RodinHaptics.confirm();
+                              DashHaptics.confirm();
                               _close();
                             },
                             icon: const Icon(Icons.close_rounded),
@@ -269,7 +269,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                       Align(
                         alignment: Alignment.centerLeft,
                         child: Text(
-                          '$rodinReleaseCodename · a little less serious.',
+                          '$dashReleaseCodename · a little less serious.',
                           style: TextStyle(
                             fontSize: 12,
                             height: 1.5,
@@ -289,7 +289,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                                   child: AnimatedBuilder(
                                     animation: _burst,
                                     builder: (_, _) => CustomPaint(
-                                      painter: _RodinSparkles(
+                                      painter: _DashSparkles(
                                         _burst.value,
                                         colors.primary,
                                         colors.secondary,
@@ -306,7 +306,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                               ]),
                               child: Semantics(
                                 button: true,
-                                label: 'Rodin Essential logo',
+                                label: 'Dash Essential logo',
                                 hint:
                                     'Tap for a joke. Hold, then release to play Aurora Drift.',
                                 child: GestureDetector(
@@ -318,7 +318,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                                   onLongPressCancel: () {
                                     if (_holding) _endHold(cancelled: true);
                                   },
-                                  child: _RodinAppEmblem(
+                                  child: _DashAppEmblem(
                                     size: 72,
                                     color: colors.primary,
                                   ),
@@ -371,13 +371,13 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                         joke
                       else
                         AnimatedSize(
-                          duration: RodinInteractionSettings.motionDuration(
+                          duration: DashInteractionSettings.motionDuration(
                             280,
                           ),
                           curve: Curves.easeOutCubic,
                           child: AnimatedSwitcher(
                             duration: _animate
-                                ? RodinInteractionSettings.motionDuration(260)
+                                ? DashInteractionSettings.motionDuration(260)
                                 : Duration.zero,
                             transitionBuilder:
                                 (Widget child, Animation<double> animation) =>
@@ -408,7 +408,7 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
                       ),
                       TextButton(
                         onPressed: () {
-                          RodinHaptics.confirm();
+                          DashHaptics.confirm();
                           setState(() => _playing = true);
                         },
                         child: const Text('Play Aurora Drift'),
@@ -442,8 +442,8 @@ class _RodinSecretRoomState extends State<RodinSecretRoom>
   }
 }
 
-class _RodinSparkles extends CustomPainter {
-  const _RodinSparkles(this.progress, this.primary, this.secondary);
+class _DashSparkles extends CustomPainter {
+  const _DashSparkles(this.progress, this.primary, this.secondary);
   final double progress;
   final Color primary;
   final Color secondary;
@@ -489,7 +489,7 @@ class _RodinSparkles extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_RodinSparkles old) =>
+  bool shouldRepaint(_DashSparkles old) =>
       old.progress != progress ||
       old.primary != primary ||
       old.secondary != secondary;
