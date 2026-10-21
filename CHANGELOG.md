@@ -6,9 +6,29 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.12
+## 1.18.13
 
 Pre-release.
+
+### Fixed
+
+- The global profile is restored before the per-app profile is applied. The
+  two write the same controls, so a per-app profile that was applied first
+  and then overwritten by the global profile is a per-app profile that never
+  takes effect. The order matters most after a daemon restart, which is when
+  the global profile is restored.
+- A per-app profile is written again when the platform takes its controls
+  back. The power HAL publishes its own GPU state and the stock ROM
+  re-asserts the touch rate, so a profile that was only written once was not
+  a profile that was in effect.
+
+### Changed
+
+- The health report says which app holds the controls, which controls it
+  holds, and whether the hardware still has them. A profile that is listed
+  but that the platform has taken back is not in effect, and the difference
+  between the two is what could not be seen before.
+
 
 ### Fixed
 

@@ -7,7 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output as ProcessOutput, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -4632,8 +4632,24 @@ fn restore_sunlight(state: &PersistedState) {
     }
 }
 
+/// Whether the global profile has been restored.
+///
+/// The global restore and the per-app profile are two writers over the same
+/// controls. The global one runs first, and the per-app one after it, so the
+/// profile that is in effect at the end is the per-app one. Without the
+/// order, a per-app profile is applied and then overwritten by the global
+/// profile, which is what the user sees as a per-app profile that does not
+/// work.
+static GLOBAL_RESTORE_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the global profile has been restored.
+pub(crate) fn global_restore_done() -> bool {
+    GLOBAL_RESTORE_DONE.load(Ordering::Acquire)
+}
+
 fn restore_persisted_state() {
     if !service_control::active() {
+        GLOBAL_RESTORE_DONE.store(true, Ordering::Release);
         return;
     }
     restore_cpu_state();
@@ -4893,6 +4909,8 @@ fn restore_persisted_state() {
             false,
         );
     }
+
+    GLOBAL_RESTORE_DONE.store(true, Ordering::Release);
 }
 
 fn late_boot_restore_loop() {
