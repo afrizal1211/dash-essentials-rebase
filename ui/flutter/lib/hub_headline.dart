@@ -150,7 +150,7 @@ class _HubHeadlineState extends State<HubHeadline>
     _enabled =
         !MediaQuery.disableAnimationsOf(context) &&
         TickerMode.valuesOf(context).enabled &&
-        !RodinMotionViewportScope.inFlightOf(context);
+        !DashMotionViewportScope.inFlightOf(context);
     final position = Scrollable.maybeOf(context)?.position;
     if (_scroll != position) {
       _scroll?.removeListener(_checkVisibility);

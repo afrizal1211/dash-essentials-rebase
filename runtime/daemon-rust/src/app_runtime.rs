@@ -1092,7 +1092,7 @@ mod tests {
     }
     #[test]
     fn focused_activity_wins_over_a_resumed_floating_window() {
-        let raw = "topResumedActivity=ActivityRecord{x u0 io.github.neeschal.rodinessential/android.app.NativeActivity t1}\n\
+        let raw = "topResumedActivity=ActivityRecord{x u0 io.github.neeschal.dashessential/android.app.NativeActivity t1}\n\
                  topResumedActivity=ActivityRecord{y u0 com.android.settings/.MiuiSettings t2}\n\
                  ResumedActivity: ActivityRecord{y u0 com.android.settings/.MiuiSettings t2}";
         assert_eq!(

@@ -1,0 +1,19 @@
+service dash_daemon /product/bin/dash_daemon
+    class late_start
+    user root
+    group root system package_info input graphics wakelock
+    capabilities DAC_OVERRIDE SYS_ADMIN SYS_NICE SYS_PTRACE
+    priority -10
+    oom_score_adjust -900
+    setenv DASH_STATE_DIR /data/system/dash-essential
+    setenv DASH_TOUCH_DIRECT_INPUT 1
+    disabled
+    restart_period 2
+
+on post-fs-data
+    restorecon /product/bin/dash_daemon
+    mkdir /data/system/dash-essential 0700 root root
+    restorecon_recursive /data/system/dash-essential
+
+on property:sys.boot_completed=1
+    start dash_daemon

@@ -1,9 +1,9 @@
-enum RodinConnectionState {
+enum DashConnectionState {
   connecting,
   online,
   offline;
 
-  static RodinConnectionState fromNative(int status) => switch (status) {
+  static DashConnectionState fromNative(int status) => switch (status) {
     1 => online,
     0 => offline,
     _ => connecting,

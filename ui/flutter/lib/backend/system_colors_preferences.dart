@@ -4,16 +4,16 @@ import 'dart:io';
 import 'system_colors_state.dart';
 
 /// A UI-only hint. Android remains the owner of the actual palette.
-final class RodinSystemColorsPreferences {
+final class DashSystemColorsPreferences {
   static File get _file => File(
-    '${Directory.systemTemp.parent.path}/files/rodin-system-colors.json',
+    '${Directory.systemTemp.parent.path}/files/dash-system-colors.json',
   );
 
-  static Future<RodinSystemColorsSelection?> read() async {
+  static Future<DashSystemColorsSelection?> read() async {
     try {
       final File file = _file;
       if (!await file.exists() || await file.length() > 1024) return null;
-      return RodinSystemColorsSelection.fromJson(
+      return DashSystemColorsSelection.fromJson(
         jsonDecode(await file.readAsString()),
       );
     } catch (_) {
@@ -21,7 +21,7 @@ final class RodinSystemColorsPreferences {
     }
   }
 
-  static Future<void> write(RodinSystemColorsSelection? selection) async {
+  static Future<void> write(DashSystemColorsSelection? selection) async {
     try {
       final File file = _file;
       await file.parent.create(recursive: true);

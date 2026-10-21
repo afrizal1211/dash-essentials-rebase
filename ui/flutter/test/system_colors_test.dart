@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rodin_essential_ui/backend/backend_connection.dart';
-import 'package:rodin_essential_ui/backend/system_colors_state.dart';
-import 'package:rodin_essential_ui/main.dart';
+import 'package:dash_essential_ui/backend/backend_connection.dart';
+import 'package:dash_essential_ui/backend/system_colors_state.dart';
+import 'package:dash_essential_ui/main.dart';
 
-RodinSystemColorsState nativePalette({
+DashSystemColorsState nativePalette({
   int operationState = 2,
   bool supported = true,
   int mode = 0,
@@ -18,7 +18,7 @@ RodinSystemColorsState nativePalette({
   int contrastOperationState = 0,
   int contrast = 0,
   int contrastRevision = 0,
-}) => RodinSystemColorsState(
+}) => DashSystemColorsState(
   operationState: operationState,
   supported: supported,
   mode: mode,
@@ -46,9 +46,9 @@ RodinSystemColorsState nativePalette({
 
 Future<void> showPanel(
   WidgetTester tester, {
-  RodinSystemColorsState? palette,
+  DashSystemColorsState? palette,
   bool online = true,
-  RodinConnectionState? connection,
+  DashConnectionState? connection,
   double width = 390,
   double scale = 1,
   Brightness brightness = Brightness.light,
@@ -58,7 +58,7 @@ Future<void> showPanel(
   bool Function(int)? onSetContrast,
   VoidCallback? onSelectionFeedback,
   bool Function()? isNativeBusy,
-  RodinSystemColorsSelection? selection,
+  DashSystemColorsSelection? selection,
 }) async {
   tester.view.physicalSize = Size(width, 1100);
   tester.view.devicePixelRatio = 1;
@@ -80,8 +80,8 @@ Future<void> showPanel(
               connection:
                   connection ??
                   (online
-                      ? RodinConnectionState.online
-                      : RodinConnectionState.offline),
+                      ? DashConnectionState.online
+                      : DashConnectionState.offline),
               onApply: onApply ?? (_, _, _) => false,
               onRefresh: onRefresh ?? () => true,
               onRefreshContrast: onRefreshContrast ?? () => true,
@@ -110,10 +110,10 @@ Future<void> tapText(WidgetTester tester, String label) async {
 
 void main() {
   test('cache mapping keeps unknown values separate from native colors', () {
-    const RodinSystemColorsState empty = RodinSystemColorsState();
+    const DashSystemColorsState empty = DashSystemColorsState();
     expect(empty.hasReadback, isFalse);
     expect(empty.ready, isFalse);
-    final RodinSystemColorsState decoded = RodinSystemColorsState.fromNative(
+    final DashSystemColorsState decoded = DashSystemColorsState.fromNative(
       (int index) =>
           <int, int>{
             81: 2,
@@ -314,7 +314,7 @@ void main() {
     await showPanel(
       tester,
       online: false,
-      palette: const RodinSystemColorsState(),
+      palette: const DashSystemColorsState(),
       onApply: record,
     );
     await tapText(tester, 'Custom color');
@@ -413,7 +413,7 @@ void main() {
 
       await showPanel(
         tester,
-        palette: const RodinSystemColorsState(operationState: 1),
+        palette: const DashSystemColorsState(operationState: 1),
         onApply: record,
       );
       await tapText(tester, 'Custom color');
@@ -465,8 +465,8 @@ void main() {
   ) async {
     await showPanel(
       tester,
-      palette: const RodinSystemColorsState(operationState: 1),
-      selection: const RodinSystemColorsSelection(
+      palette: const DashSystemColorsState(operationState: 1),
+      selection: const DashSystemColorsSelection(
         wallpaper: false,
         seed: 0xad477b,
         style: 2,
@@ -495,21 +495,21 @@ void main() {
   ) async {
     await showPanel(
       tester,
-      palette: const RodinSystemColorsState(operationState: 1),
+      palette: const DashSystemColorsState(operationState: 1),
     );
     expect(find.textContaining('No source is selected yet'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle_rounded), findsNothing);
   });
 
   test('only valid confirmed choices can be restored from the UI cache', () {
-    const RodinSystemColorsSelection choice = RodinSystemColorsSelection(
+    const DashSystemColorsSelection choice = DashSystemColorsSelection(
       wallpaper: false,
       seed: 0xad477b,
       style: 2,
     );
-    expect(RodinSystemColorsSelection.fromJson(choice.toJson()), choice);
+    expect(DashSystemColorsSelection.fromJson(choice.toJson()), choice);
     expect(
-      RodinSystemColorsSelection.fromNative(const RodinSystemColorsState()),
+      DashSystemColorsSelection.fromNative(const DashSystemColorsState()),
       isNull,
     );
     for (final Object? invalid in <Object?>[
@@ -519,7 +519,7 @@ void main() {
       <String, Object>{...choice.toJson(), 'style': 7},
       <String, Object>{...choice.toJson(), 'wallpaper': 'false'},
     ]) {
-      expect(RodinSystemColorsSelection.fromJson(invalid), isNull);
+      expect(DashSystemColorsSelection.fromJson(invalid), isNull);
     }
   });
 
@@ -962,8 +962,8 @@ void main() {
   testWidgets('an initial connection is not labelled Offline', (tester) async {
     await showPanel(
       tester,
-      connection: RodinConnectionState.connecting,
-      palette: const RodinSystemColorsState(),
+      connection: DashConnectionState.connecting,
+      palette: const DashSystemColorsState(),
     );
     expect(
       find.textContaining('Connecting to the system service'),

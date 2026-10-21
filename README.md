@@ -1,6 +1,6 @@
-# Rodin Essential
+# Dash Essential
 
-Rodin Essential is a native hardware-control application for Xiaomi Rodin
+Dash Essential is a native hardware-control application for Xiaomi Dash
 (POCO X7 Pro / Redmi Turbo 4) and its MediaTek Dimensity 8400-Ultra platform.
 It combines an Android `NativeActivity`, a Flutter AOT interface, a Rust host
 runtime, and a separately privileged Rust daemon. The UI and hardware-control
@@ -15,14 +15,14 @@ installed application UID.
 
 ## Supported target
 
-- Device codename: `rodin`
+- Device codename: `dash`
 - SoC: MediaTek MT6899 / Dimensity 8400-Ultra
 - CPU: 8× Cortex-A725 (4+3+1 policies), up to 3.25 GHz
 - GPU: Mali-G720, 7 cores, up to 1300 MHz
 - ABI: ARM64
 - Android: API 31 or newer
 - Kernel userspace: 16 KB page-compatible native binaries
-- Vendor dependencies: Rodin touch and display AIDL services plus MediaTek GED
+- Vendor dependencies: Dash touch and display AIDL services plus MediaTek GED
 
 This is device-specific software. Other devices are rejected by the root-module
 installer and are not supported by the included AOSP policy.
@@ -108,7 +108,7 @@ cause extreme heat, rapid battery drain, instability, or an emergency hardware
 shutdown.
 
 Custom CPU ranges remain separate from GPU profiles and governors. While at
-least one custom CPU range is active, the daemon selects Rodin's OEM
+least one custom CPU range is active, the daemon selects Dash's OEM
 `thermal-nolimits` configuration so Xiaomi's userspace policy cannot replace an
 exact lock with a lower ceiling. It keeps the thermal services alive, remembers
 the configuration that was active beforehand, and restores it when the final
@@ -118,8 +118,8 @@ custom CPU range is reset.
 
 | Method | APK privilege | Backend | Persistence |
 | --- | --- | --- | --- |
-| AOSP ROM integration | Normal app UID | Root init daemon | `/data/system/rodin-essential/state.conf` |
-| KernelSU Next or Magisk | Normal app UID | Root module daemon | `/data/adb/rodin-essential/state.conf` |
+| AOSP ROM integration | Normal app UID | Root init daemon | `/data/system/dash-essential/state.conf` |
+| KernelSU Next or Magisk | Normal app UID | Root module daemon | `/data/adb/dash-essential/state.conf` |
 | Standalone APK | Normal app UID | None | Hardware controls unavailable |
 
 For a ROM release, use the AOSP integration. It installs the APK and daemon in
@@ -150,7 +150,7 @@ rustup target add aarch64-linux-android
 Build without touching a connected device:
 
 ```bash
-RODIN_BUILD_ONLY=1 ./build-and-install.sh
+DASH_BUILD_ONLY=1 ./build-and-install.sh
 ```
 
 Output is written under `out/release/<timestamp>/`. The build verifies
@@ -163,43 +163,43 @@ local builds.
 For release signing, set:
 
 ```bash
-RODIN_KEYSTORE=/absolute/path/release.jks \
-RODIN_KEY_ALIAS=release \
-RODIN_KEYSTORE_PASS='store-password' \
-RODIN_KEY_PASS='key-password' \
-RODIN_BUILD_ONLY=1 ./build-and-install.sh
+DASH_KEYSTORE=/absolute/path/release.jks \
+DASH_KEY_ALIAS=release \
+DASH_KEYSTORE_PASS='store-password' \
+DASH_KEY_PASS='key-password' \
+DASH_BUILD_ONLY=1 ./build-and-install.sh
 ```
 
 ## Export for an AOSP tree
 
 ```bash
-RODIN_KEYSTORE=/absolute/path/rom-app.jks \
-RODIN_KEY_ALIAS=rodin-essential \
-RODIN_KEYSTORE_PASS='store-password' \
-RODIN_KEY_PASS='key-password' \
+DASH_KEYSTORE=/absolute/path/rom-app.jks \
+DASH_KEY_ALIAS=dash-essential \
+DASH_KEYSTORE_PASS='store-password' \
+DASH_KEY_PASS='key-password' \
   ./tools/export-aosp-bundle.sh
 ```
 
-The generated `dist/aosp/RodinEssential-<timestamp>/` directory contains the
+The generated `dist/aosp/DashEssential-<timestamp>/` directory contains the
 APK, daemon, control client, `Android.bp`, init service, split product/vendor
 SELinux policy, the APK public certificate used by the dedicated app-domain
 mapping, and checksums. Keep the same private key for every ROM update; the
 private key is never copied into the bundle.
 
 To build, stage, and wire the integration into an existing ROM source tree in
-one command, provide the Rodin product makefile and BoardConfig path:
+one command, provide the Dash product makefile and BoardConfig path:
 
 ```bash
-RODIN_KEYSTORE=/absolute/path/rom-app.jks \
-RODIN_KEY_ALIAS=rodin-essential \
-RODIN_KEYSTORE_PASS='store-password' \
-RODIN_KEY_PASS='key-password' \
+DASH_KEYSTORE=/absolute/path/rom-app.jks \
+DASH_KEY_ALIAS=dash-essential \
+DASH_KEYSTORE_PASS='store-password' \
+DASH_KEY_PASS='key-password' \
   ./tools/integrate-aosp-rom.sh /absolute/path/to/aosp \
-    device/xiaomi/rodin/device.mk \
-    device/xiaomi/rodin/BoardConfig.mk
+    device/xiaomi/dash/device.mk \
+    device/xiaomi/dash/BoardConfig.mk
 ```
 
-The helper creates `vendor/rodin-essential`, verifies the complete build, and
+The helper creates `vendor/dash-essential`, verifies the complete build, and
 adds the two exact include lines only when absent. It refuses paths outside the
 selected source tree and never replaces an existing integration directory.
 Passing only the AOSP root keeps the previous stage-only behavior.
@@ -209,10 +209,10 @@ Passing only the AOSP root keeps the previous stage-only behavior.
 For an existing rooted ROM, build the combined application and daemon module:
 
 ```bash
-RODIN_KEYSTORE=/absolute/path/release.jks \
-RODIN_KEY_ALIAS=release \
-RODIN_KEYSTORE_PASS='store-password' \
-RODIN_KEY_PASS='key-password' \
+DASH_KEYSTORE=/absolute/path/release.jks \
+DASH_KEY_ALIAS=release \
+DASH_KEYSTORE_PASS='store-password' \
+DASH_KEY_PASS='key-password' \
   ./tools/build-kernelsu-next-module.sh
 ```
 
@@ -235,13 +235,13 @@ update signed by a different certificate. The first release after the signing
 identity reset includes a one-time migration for module installations: it tries
 a normal update first and only removes/reinstalls the user application when
 Android reports a certificate mismatch. Hardware profiles stored under
-`/data/adb/rodin-essential` remain intact, while application-local preferences
+`/data/adb/dash-essential` remain intact, while application-local preferences
 reset once. Later releases signed by the retained key update normally.
 
-The same ZIP can also act as a temporary update layer over a ROM-native Rodin
+The same ZIP can also act as a temporary update layer over a ROM-native Dash
 Essential installation when that ROM APK uses the same signing certificate as
 the release APK. The installer updates the app without clearing its data, the
-module daemon reuses `/data/system/rodin-essential`, and native init is stopped
+module daemon reuses `/data/system/dash-essential`, and native init is stopped
 before the module daemon starts. Removing the module rolls the app back to the
 ROM copy and restarts the native service. A differently signed ROM build is
 rejected without uninstalling the app or deleting its data; that build must be
@@ -269,7 +269,7 @@ ui/flutter/             Flutter AOT interface
 - [Architecture](docs/ARCHITECTURE.md)
 - [Building and verification](docs/BUILDING.md)
 - [AOSP ROM integration](docs/ROM_INTEGRATION.md)
-- [Unpacked EROFS/ext4 ROM integration](docs/UNPACKED_ROM_PORTER_GUIDE.md): Rodin-only
+- [Unpacked EROFS/ext4 ROM integration](docs/UNPACKED_ROM_PORTER_GUIDE.md): Dash-only
   additions and a merge tool using the porter's own ROM policy.
 - [Flutter runtime pin](docs/FLUTTER_RUNTIME.md)
 - [Commit convention](docs/COMMITS.md)
