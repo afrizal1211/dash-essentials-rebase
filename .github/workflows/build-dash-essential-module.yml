@@ -196,6 +196,18 @@ jobs:
             echo "DASH_ALLOW_UNOFFICIAL_SIGNING=1"
           } >> "$GITHUB_ENV"
 
+      # The interface tests run here so a broken palette screen is caught
+      # before a release is published.
+      - name: Flutter tests
+        run: |
+          set -euo pipefail
+          cd ui/flutter
+          flutter test \
+            test/system_colors_test.dart \
+            test/system_colors_preview_test.dart \
+            test/system_colors_monitor_test.dart \
+            test/backend_connection_test.dart
+
       - name: Build module
         run: tools/build-kernelsu-next-module.sh
 
