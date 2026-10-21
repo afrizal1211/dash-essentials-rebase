@@ -6,9 +6,29 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.9
+## 1.18.10
 
 Pre-release.
+
+### Fixed
+
+- The daemon no longer dies on this platform. The vendor touch service
+  transaction was faulting inside the daemon, and the daemon was restarted
+  in a loop; every restart re-applied the global profile, so a per-app
+  profile appeared and disappeared. Dash's stock ROM drives the touch
+  feature modes, so the daemon drives only the report rate and leaves the
+  modes to the ROM that owns them.
+- A vendor transaction that does fault can no longer take the daemon with
+  it. The transaction runs in a forked child and only its result is taken
+  back, so a fault in a vendor service is reported as a failed feature
+  instead of an endless restart.
+- The global guard leaves the controls a per-app profile is holding alone.
+  The guard restores the global profile, so it was writing over the per-app
+  profile's GPU, CPU and touch settings, and the per-app profile was
+  applied and then immediately overwritten.
+- The touch report rate is read back correctly. The node reads
+  `report_rate: 240`, so the value is taken from after the label.
+
 
 ### Added
 

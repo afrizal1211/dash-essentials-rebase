@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
-use std::sync::{atomic::AtomicBool, mpsc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    mpsc,
+};
 
 thread_local! { static TRANSIENT: Cell<bool> = const { Cell::new(false) }; }
 pub(super) fn transient_write() -> bool {
@@ -723,6 +726,41 @@ fn parse_foreground(raw: &str) -> Result<Option<App>, String> {
     )
     .map(Some)
 }
+/// The controls the per-app profile is holding right now.
+///
+/// The global guard restores the global profile, so it has to know when a
+/// per-app profile is holding a control, or the two writers would fight
+/// over it and the per-app profile would never be seen to work. The mask
+/// is published in an atomic rather than read under the runtime lock,
+/// because the guard already holds the GPU lock and taking the runtime lock
+/// there would deadlock against the per-app apply.
+static PER_APP_OWNED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether a per-app profile is holding the GPU control.
+pub(super) fn owns_gpu() -> bool {
+    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 0) != 0
+}
+
+/// Whether a per-app profile is holding the touch control.
+pub(super) fn owns_touch() -> bool {
+    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 1) != 0
+}
+
+/// Whether a per-app profile is holding a CPU cluster's governor.
+pub(super) fn owns_cpu_governor() -> bool {
+    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 5) != 0
+}
+
+/// Whether a per-app profile is holding the CPU core mask.
+pub(super) fn owns_cpu_cores() -> bool {
+    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 3) != 0
+}
+
+/// Publish what the per-app profile is holding.
+fn publish_owned(mask: u32) {
+    PER_APP_OWNED.store(mask, Ordering::Release);
+}
+
 fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
     if r.config_error.is_some() {
         return Err("per-app configuration is damaged; reset profiles to recover".into());
@@ -758,13 +796,15 @@ fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
         .foreground
         .as_ref()
         .and_then(|app| r.config.profiles.get(app));
-    r.owner.transition(
+    let result = r.owner.transition(
         &mut Adapter::new(),
         r.foreground.as_ref(),
         profile,
         service_control::enabled(),
         r.config.enabled,
-    )
+    );
+    publish_owned(r.owner.applied_mask());
+    result
 }
 fn status(r: &Runtime) -> Value {
     let (state, owner) = match &r.owner.status {
@@ -977,6 +1017,7 @@ pub(super) fn release() -> Result<(), String> {
         .map_err(|_| "per-app runtime lock poisoned")?;
     r.owner
         .transition(&mut Adapter::new(), None, None, false, false)?;
+    publish_owned(r.owner.applied_mask());
     r.foreground = None;
     r.error = None;
     Ok(())

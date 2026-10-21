@@ -247,7 +247,76 @@ mod vendor_binder {
         true
     }
 
+    /// Run a vendor transaction in a child process.
+    ///
+    /// The vendor services and the NDK's own machinery have been seen to
+    /// fault on this platform. A fault in the daemon would take the whole
+    /// service down and leave the device with no controls at all, so the
+    /// transaction runs in a forked child and only its result is taken
+    /// back. A child that dies is reported as a failure.
+    fn guarded_transaction(call: impl FnOnce() -> bool) -> bool {
+        unsafe extern "C" {
+            fn pipe(fds: *mut i32) -> i32;
+            fn fork() -> i32;
+            fn read(fd: i32, buf: *mut c_void, count: usize) -> isize;
+            fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
+            fn close(fd: i32) -> i32;
+            fn kill(pid: i32, signal: i32) -> i32;
+            fn _exit(code: i32) -> !;
+            fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        #[repr(C)]
+        struct PollFd {
+            fd: i32,
+            events: i16,
+            revents: i16,
+        }
+
+        let mut fds = [0i32; 2];
+        if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
+            return call();
+        }
+        let pid = unsafe { fork() };
+        if pid < 0 {
+            unsafe { close(fds[0]); close(fds[1]) };
+            return call();
+        }
+        if pid == 0 {
+            unsafe { close(fds[0]) };
+            let byte = [u8::from(call())];
+            unsafe { write(fds[1], byte.as_ptr().cast(), 1) };
+            unsafe { close(fds[1]) };
+            unsafe { _exit(0) };
+        }
+
+        unsafe { close(fds[1]) };
+        let mut waiting = PollFd {
+            fd: fds[0],
+            events: 0x0001,
+            revents: 0,
+        };
+        let ready = unsafe { poll(&mut waiting, 1, 2000) };
+        let mut byte = [0u8; 1];
+        let read_bytes = if ready > 0 {
+            unsafe { read(fds[0], byte.as_mut_ptr().cast(), 1) }
+        } else {
+            // The transaction did not answer in time. The child is killed so
+            // it cannot linger, and the transaction counts as a failure.
+            unsafe { kill(pid, 9) };
+            -1
+        };
+        unsafe { close(fds[0]) };
+        let mut status = 0i32;
+        unsafe { waitpid(pid, &mut status, 0) };
+        read_bytes == 1 && byte[0] != 0
+    }
+
     pub fn set_touch_mode(display_id: i32, mode: i32, value: i32) -> bool {
+        guarded_transaction(|| touch_mode_transaction(display_id, mode, value))
+    }
+
+    fn touch_mode_transaction(display_id: i32, mode: i32, value: i32) -> bool {
         const SERVICE: &[u8] = b"vendor.xiaomi.hw.touchfeature.ITouchFeature/default\0";
         const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hw.touchfeature.ITouchFeature\0";
         let Some(binder) = check_service(SERVICE, DESCRIPTOR, &TOUCH_CLASS) else {
@@ -299,6 +368,10 @@ mod vendor_binder {
     }
 
     pub fn set_display_feature(case_id: i32, mode_id: i32, cookie: i32) -> bool {
+        guarded_transaction(|| display_feature_transaction(case_id, mode_id, cookie))
+    }
+
+    fn display_feature_transaction(case_id: i32, mode_id: i32, cookie: i32) -> bool {
         const SERVICE: &[u8] =
             b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
         const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature\0";
@@ -2556,9 +2629,13 @@ fn dash_htsr_present() -> bool {
 }
 
 /// The rate the knob currently holds, in hertz.
+///
+/// The node reads back in the labelled form `report_rate: 240`, so the
+/// value is taken from after the label.
 fn dash_htsr_rate() -> Option<u16> {
     let raw = fs::read_to_string(DASH_HTSR_NODE).ok()?;
-    raw.trim().parse::<u16>().ok()
+    let value = raw.rsplit(':').next()?.trim();
+    value.parse::<u16>().ok()
 }
 
 /// The rate the panel can actually deliver. Dash's panel reports at most
@@ -2579,6 +2656,16 @@ fn dash_touch_effective_rates(profile: i32) -> (i32, i32) {
         3 => (1000, 0),
         _ => (-1, -1),
     }
+}
+
+/// Whether the daemon drives the touch feature modes itself.
+///
+/// Dash's own ROM drives them: the stock power HAL sets the game mode
+/// while a game is in the foreground and the stock Settings service sets
+/// the active mode with the high sampling rate toggle. The daemon only
+/// drives the rate and leaves the modes to the ROM that owns them.
+fn dash_owns_touch_modes() -> bool {
+    !dash_htsr_present()
 }
 
 /// Dash's touch feature modes. The stock power HAL and the stock Settings
@@ -2638,11 +2725,12 @@ fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
     } else {
         DASH_HTSR_BASELINE
     };
-    let written = write_verified(Path::new(DASH_HTSR_NODE), expected)
+    write_verified(Path::new(DASH_HTSR_NODE), expected)
         .map_err(|e| format!("touch rate write: {e}"))?;
-    if written.trim() != expected {
+    if dash_htsr_rate() != Some(rate) {
         return Err(format!(
-            "touch rate readback mismatch: wrote {expected}, read {written}"
+            "touch rate readback mismatch: wrote {expected}, read {:?}",
+            dash_htsr_rate()
         ));
     }
     for _ in 0..4 {
@@ -2887,7 +2975,9 @@ fn apply_touch_profile_locked(profile: i32) -> Result<(), String> {
     // that is what a profile uses when the node is there.
     let control_path = if dash_htsr_present() {
         apply_dash_touch_rate(profile)?;
-        apply_dash_touch_hal_profile(profile)?;
+        if dash_owns_touch_modes() {
+            apply_dash_touch_hal_profile(profile)?;
+        }
         if profile == 3 {
             touch_resampler::set_target_hz(1000)?;
         }
@@ -2968,8 +3058,13 @@ fn release_touch_control() -> Result<(), String> {
     touch_resampler::set_target_hz(0)?;
     let originals = service_control::originals();
     let mut released = Vec::new();
-    if service_control::original("touch.hal").is_some() && vendor_binder::touch_available() {
+    if service_control::original("touch.hal").is_some()
+        && dash_owns_touch_modes()
+        && vendor_binder::touch_available()
+    {
         // Release game/super-report requests once, not on every wake or boot.
+        // On Dash the modes belong to the stock ROM, so there is nothing of
+        // the daemon's to release there.
         apply_touch_hal_profile(0)?;
     }
     if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
@@ -4384,7 +4479,9 @@ fn reassert_runtime_state(force_touch: bool) -> Result<(), String> {
     let mut attempted = 0i32;
     let mut applied = 0i32;
 
-    if (1..=3).contains(&state.touch) {
+    // A per-app profile that holds the touch control keeps it: the global
+    // touch profile is not re-applied over it.
+    if (1..=3).contains(&state.touch) && !app_runtime::owns_touch() {
         attempted += 1;
         // Serialize with OEM release, then recheck ownership. A wake event
         // queued before the user's selection must not resurrect the old mode.
@@ -4547,9 +4644,12 @@ fn restore_persisted_state() {
 
     drop(display_guard);
 
-    if (0..=3).contains(&state.perf) {
+    if (0..=3).contains(&state.perf) && !app_runtime::owns_gpu() {
         // GPU profiles are isolated from CPU controls. Preserve the exact
         // persisted selection while restoring the requested Mali state.
+        //
+        // A per-app profile that holds the GPU keeps it: restoring the
+        // global profile over it would undo the profile that is in effect.
         let persisted = state.clone();
         let _ = apply_performance_profile(state.perf);
         // Restore only profile-owned preferences. Replacing the whole old
@@ -4736,33 +4836,44 @@ fn reassert_persisted_governors() {
         .map(|s| s.clone())
         .unwrap_or_default();
 
-    if state.cpu_manual == 1 {
+    // A per-app profile owns the controls it applied while it is in effect.
+    // The guard restores the global profile, so it must leave those controls
+    // alone: two writers over the same node means the per-app profile is
+    // applied and then immediately overwritten, which is what a user sees
+    // as the profile not working.
+    let per_app_gpu = app_runtime::owns_gpu();
+    let per_app_cpu_cores = app_runtime::owns_cpu_cores();
+    let per_app_cpu_governor = app_runtime::owns_cpu_governor();
+
+    if state.cpu_manual == 1 && !per_app_cpu_cores {
         let desired_mask = (state.cpu_online_mask | 0x01) & 0xFF;
         if live_cpu_mask() != desired_mask {
             let _ = set_core_ctl_enabled(false).and_then(|_| apply_saved_cpu_mask(desired_mask));
         }
     }
 
-    for (policy, desired) in [
-        (0, state.cpu0.as_str()),
-        (4, state.cpu4.as_str()),
-        (7, state.cpu7.as_str()),
-    ] {
-        if desired.is_empty() {
-            continue;
-        }
+    if !per_app_cpu_governor {
+        for (policy, desired) in [
+            (0, state.cpu0.as_str()),
+            (4, state.cpu4.as_str()),
+            (7, state.cpu7.as_str()),
+        ] {
+            if desired.is_empty() {
+                continue;
+            }
 
-        let actual = policy_governor(policy);
+            let actual = policy_governor(policy);
 
-        if actual != desired {
-            let _ = set_cpu_governor(policy, desired);
+            if actual != desired {
+                let _ = set_cpu_governor(policy, desired);
+            }
         }
     }
 
     // Stock mode is owned by MediaTek's power HAL. Tuned profiles use the
     // persisted desired state as their single source of truth, so the guard
     // cannot fight a second hard-coded profile writer.
-    if state.perf > 0 {
+    if state.perf > 0 && !per_app_gpu {
         let target_gpu = if !state.gpu_governor.is_empty() {
             state.gpu_governor.as_str()
         } else if !state.gpu.is_empty() {
@@ -4831,7 +4942,7 @@ fn reassert_persisted_governors() {
     // only for Gaming Dynamic and Extreme Beast, including while Stock is
     // otherwise left under the vendor power HAL.
     let desired_ged_boost = profile_uses_ged_boost(state.perf);
-    if state.perf >= 0 && !gpu_boost_pipeline_matches(desired_ged_boost) {
+    if state.perf >= 0 && !per_app_gpu && !gpu_boost_pipeline_matches(desired_ged_boost) {
         let _ = set_gpu_ged_boost(desired_ged_boost);
     }
 

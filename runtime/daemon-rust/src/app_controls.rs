@@ -367,6 +367,18 @@ pub(super) trait Hardware {
     }
 }
 
+/// The bit a control occupies in the ownership mask.
+pub(super) fn control_bit(control: &Control) -> u32 {
+    match control {
+        Control::Gpu => 1 << 0,
+        Control::Touch => 1 << 1,
+        Control::Refresh => 1 << 2,
+        Control::CpuCores => 1 << 3,
+        Control::CpuRange(_) => 1 << 4,
+        Control::CpuGovernor(_) => 1 << 5,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Status {
     Global,
@@ -579,6 +591,18 @@ impl<S: Clone> Ownership<S> {
                     .get(control)
                     .is_some_and(|(refused, _)| refused == target)
         })
+    }
+
+    /// A bitmask of the controls this owner currently holds.
+    ///
+    /// The rest of the daemon needs to know what a per-app profile is
+    /// holding, so that the global guard does not write over it. It asks
+    /// through this mask instead of the runtime lock, because the guard
+    /// already holds the GPU lock and the two would deadlock.
+    pub fn applied_mask(&self) -> u32 {
+        self.applied
+            .keys()
+            .fold(0u32, |mask, control| mask | control_bit(control))
     }
 
     /// The controls that were asked for and could not be applied.
@@ -794,6 +818,30 @@ mod tests {
             assert_eq!(owner.status, Status::Global);
         }
     }
+    #[test]
+    fn the_owner_reports_the_controls_it_holds() {
+        let mut h = hardware();
+        let mut owner = Ownership::default();
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        let mask = owner.applied_mask();
+        assert_ne!(mask & control_bit(&Control::Gpu), 0);
+        assert_ne!(mask & control_bit(&Control::Touch), 0);
+        // A control that was refused is not reported as held.
+        h.fail_apply = Some(Control::Gpu);
+        let other = Profile::parse(&json!({"enabled":true,"gpu":1,"touch":2})).unwrap();
+        let mut owner = Ownership::default();
+        owner
+            .transition(&mut h, Some(&app()), Some(&other), true, true)
+            .unwrap();
+        assert_eq!(owner.applied_mask() & control_bit(&Control::Gpu), 0);
+        assert_ne!(owner.applied_mask() & control_bit(&Control::Touch), 0);
+        // Releasing gives every control back.
+        owner.transition(&mut h, None, None, true, true).unwrap();
+        assert_eq!(owner.applied_mask(), 0);
+    }
+
     #[test]
     fn capture_failure_leaves_that_control_alone_and_applies_the_rest() {
         let mut h = hardware();
