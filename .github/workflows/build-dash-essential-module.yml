@@ -375,6 +375,7 @@ jobs:
       # without them skips the announcement instead of failing the build.
       - name: Announce on Telegram
         if: startsWith(github.ref, 'refs/tags/v') && env.DASH_ALLOW_UNOFFICIAL_SIGNING == '0'
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -387,41 +388,57 @@ jobs:
           fi
 
           version="${GITHUB_REF_NAME#v}"
-          body="$(awk -v want="${version%%-*}" '
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+
+          # The announcement is short on purpose: what the build is, and what
+          # changed in it. The whole changelog belongs to the release page.
+          section="$(awk -v want="${version%%-*}" '
             index($0, "## " want) == 1 {inside=1; next}
             inside && /^## / {exit}
             inside {print}
           ' CHANGELOG.md)"
-          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
-
-          # Telegram refuses a message longer than 4096 characters, and a
-          # long changelog section is longer than that. The body is cut at a
-          # line boundary and the rest is left to the release page, which has
-          # no such limit.
-          limit=3600
-          if [ "${#body}" -gt "$limit" ]; then
-            body="$(printf '%s\n' "$body" | awk -v limit="$limit" '
-              { line = $0 "\n" }
-              length(text) + length(line) > limit { exit }
-              { text = text line }
-              END { printf "%s", text }
-            ')"
-            body="${body}$(printf '\n... and more in the release notes')"
-            echo "changelog section cut to fit the Telegram message limit" >&2
+          kind="Release"
+          if printf '%s\n' "$section" | grep -qi 'pre-release'; then
+            kind="Pre-Release"
           fi
 
+          # One line per change, and only the first sentence of it. A change
+          # that needs more than that is explained in the release notes.
+          bullets="$(printf '%s\n' "$section" | awk '
+            function emit() {
+              if (bullet == "") return
+              if (match(bullet, /\. /)) { bullet = substr(bullet, 1, RSTART) }
+              print "- " bullet
+            }
+            /^- / { emit(); bullet = substr($0, 3); next }
+            /^  / { if (bullet != "") bullet = bullet " " substr($0, 3); next }
+            { emit(); bullet = "" }
+            END { emit() }
+          ' | head -8)"
+
           {
-            printf 'Dash Essential %s is out.\n' "$GITHUB_REF_NAME"
-            if [ -n "$body" ]; then
-              printf '\n%s\n' "$body"
+            printf 'Dash Essential - %s - %s\n' "$GITHUB_REF_NAME" "$kind"
+            if [ -n "$bullets" ]; then
+              printf '\nWhat'"'"'s new:\n%s\n' "$bullets"
             fi
             printf '\n%s\n' "$release_url"
           } > "$RUNNER_TEMP/telegram.txt"
 
-          curl -fsS --retry 3 \
+          # Telegram refuses a message longer than 4096 characters.
+          if [ "$(wc -c < "$RUNNER_TEMP/telegram.txt")" -gt 4000 ]; then
+            echo "announcement is longer than the Telegram message limit" >&2
+            exit 1
+          fi
+
+          # The release is already published at this point, so a failed
+          # announcement is reported and does not fail the build.
+          if ! curl -fsS --retry 5 --retry-delay 5 --retry-max-time 90 --retry-all-errors \
             -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text@$RUNNER_TEMP/telegram.txt" \
-            --data-urlencode "disable_web_page_preview=false" >/dev/null
+            --data-urlencode "disable_web_page_preview=false" >/dev/null; then
+            echo "the announcement could not be sent; the release is published" >&2
+            exit 1
+          fi
           echo "Announced $GITHUB_REF_NAME on Telegram"
 
