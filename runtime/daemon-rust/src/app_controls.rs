@@ -334,7 +334,11 @@ impl Config {
 
 /// Android event-log formats vary; accept only a complete resumed component
 /// associated with an Android user, never infer packages from activity classes.
-#[cfg(any(target_os = "android", test))]
+///
+/// The parser is pure, so it is compiled everywhere. The reader that feeds it
+/// is Android specific, and keeping the parser out of the platform gate means
+/// a mistake in either is caught by the ordinary build.
+#[allow(dead_code)]
 pub(super) fn resumed_app(line: &str) -> Option<App> {
     if !line.contains("wm_set_resumed_activity") && !line.contains("wm_resume_activity") {
         return None;

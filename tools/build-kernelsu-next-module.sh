@@ -54,6 +54,7 @@ done
 "$DASH_PROJECT_ROOT/tools/test-kernelsu-watchdog-lock.sh"
 "$DASH_PROJECT_ROOT/tools/test-root-module-contract.sh"
 "$DASH_PROJECT_ROOT/tools/test-release-sync.sh"
+"$DASH_PROJECT_ROOT/tools/check-android-target.sh"
 
 mkdir -p "$DASH_STAGE/bin" "$DASH_STAGE/app"
 
