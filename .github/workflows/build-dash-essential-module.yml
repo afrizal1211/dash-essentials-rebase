@@ -394,6 +394,22 @@ jobs:
           ' CHANGELOG.md)"
           release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
 
+          # Telegram refuses a message longer than 4096 characters, and a
+          # long changelog section is longer than that. The body is cut at a
+          # line boundary and the rest is left to the release page, which has
+          # no such limit.
+          limit=3600
+          if [ "${#body}" -gt "$limit" ]; then
+            body="$(printf '%s\n' "$body" | awk -v limit="$limit" '
+              { line = $0 "\n" }
+              length(text) + length(line) > limit { exit }
+              { text = text line }
+              END { printf "%s", text }
+            ')"
+            body="${body}$(printf '\n... and more in the release notes')"
+            echo "changelog section cut to fit the Telegram message limit" >&2
+          fi
+
           {
             printf 'Dash Essential %s is out.\n' "$GITHUB_REF_NAME"
             if [ -n "$body" ]; then
