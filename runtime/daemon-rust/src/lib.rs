@@ -2542,6 +2542,121 @@ fn write_touch_thp_rate(rate: u16) -> Result<TouchThpLayout, String> {
     }
 }
 
+/// Dash's high touch sampling rate knob. The stock ROM drives the same node
+/// from its power HAL and from the Settings toggle: 120 Hz is the baseline
+/// the panel runs at, 240 Hz the high rate. The Novatek panel on Dash has no
+/// THP timing block, so this node is the rate channel on this device.
+const DASH_HTSR_NODE: &str = "/proc/xm_htc_report_rate";
+const DASH_HTSR_BASELINE: &str = "120";
+const DASH_HTSR_HIGH: &str = "240";
+
+/// Whether this build exposes the high touch sampling rate knob.
+fn dash_htsr_present() -> bool {
+    Path::new(DASH_HTSR_NODE).exists()
+}
+
+/// The rate the knob currently holds, in hertz.
+fn dash_htsr_rate() -> Option<u16> {
+    let raw = fs::read_to_string(DASH_HTSR_NODE).ok()?;
+    raw.trim().parse::<u16>().ok()
+}
+
+/// The rate the panel can actually deliver. Dash's panel reports at most
+/// 240 Hz; the 1000 Hz profile is delivered by the resampler and not by the
+/// panel, so every profile that asks the panel for a rate asks for 240.
+fn dash_touch_target_rate(profile: i32) -> Option<u16> {
+    match profile {
+        1 | 2 | 3 => Some(240),
+        _ => None,
+    }
+}
+
+/// The rate the user ends up with, which is the panel's rate for the native
+/// profiles and the resampler's cadence for the 1000 Hz one.
+fn dash_touch_effective_rates(profile: i32) -> (i32, i32) {
+    match profile {
+        1 | 2 => (240, 0),
+        3 => (1000, 0),
+        _ => (-1, -1),
+    }
+}
+
+/// Dash's touch feature modes. The stock power HAL and the stock Settings
+/// service drive the panel through the GAME and ACTIVE modes, so those are
+/// the required ones. The response calibration and the super touch modes are
+/// Xiaomi panel extras that the Novatek panel may not implement: they are
+/// requested, and the ones the HAL refuses are reported instead of taken
+/// as a failure.
+fn apply_dash_touch_hal_profile(profile: i32) -> Result<(), String> {
+    let steps: &[(i32, i32, bool)] = match profile {
+        0 => &[(202, 0, true), (0, 0, true)],
+        1 => &[(0, 1, true), (202, 1, true)],
+        2 | 3 => &[
+            (0, 1, true),
+            (202, 1, true),
+            (2, 4, false),
+            (3, 4, false),
+            (4, 4, false),
+            (5, 4, false),
+            (6, 0, false),
+        ],
+        _ => return Err("invalid touch profile".into()),
+    };
+    let mut required = Vec::new();
+    let mut refused = Vec::new();
+    for &(mode, value, is_required) in steps {
+        if !vendor_binder::set_touch_mode(0, mode, value) {
+            if is_required {
+                required.push(mode);
+            } else {
+                refused.push(mode);
+            }
+        }
+    }
+    if !refused.is_empty() {
+        diagnostics::record(
+            diagnostics::AREA_TOUCH,
+            "info",
+            "touch.hal.optional",
+            &format!("refused modes {refused:?}"),
+        );
+    }
+    if required.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "touch HAL rejected required modes {required:?}"
+        ))
+    }
+}
+
+/// The rate channel of the Dash panel, and the only one it has.
+fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
+    let rate = dash_touch_target_rate(profile).ok_or("invalid touch profile")?;
+    let expected = if rate == 240 {
+        DASH_HTSR_HIGH
+    } else {
+        DASH_HTSR_BASELINE
+    };
+    let written = write_verified(Path::new(DASH_HTSR_NODE), expected)
+        .map_err(|e| format!("touch rate write: {e}"))?;
+    if written.trim() != expected {
+        return Err(format!(
+            "touch rate readback mismatch: wrote {expected}, read {written}"
+        ));
+    }
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(20));
+        if dash_htsr_rate() == Some(rate) {
+            return Ok(rate);
+        }
+    }
+    Err(format!(
+        "touch rate verify failed: requested {rate}, live {:?}",
+        dash_htsr_rate()
+    ))
+}
+
 fn touch_profile_locked_rate(profile: i32) -> Option<u16> {
     match profile {
         1 => Some(240),
@@ -2572,6 +2687,17 @@ fn goodix_report_rate_hz() -> Option<u16> {
 }
 
 fn touch_profile_is_live(profile: i32) -> bool {
+    if dash_htsr_present() {
+        let panel_rate = dash_touch_target_rate(profile)
+            .map(|rate| dash_htsr_rate() == Some(rate))
+            .unwrap_or(false);
+        let resampler_matches = if profile == 3 {
+            touch_resampler::ready_hz() == 1000
+        } else {
+            touch_resampler::ready_hz() == 0
+        };
+        return panel_rate && resampler_matches;
+    }
     let Some(expected_rate) = touch_profile_locked_rate(profile) else {
         return false;
     };
@@ -2756,7 +2882,17 @@ fn apply_touch_profile_locked(profile: i32) -> Result<(), String> {
     // physical touch path continue normally.
     let _ = touch_resampler::set_target_hz(0);
     let panel = touch_panel_code();
-    let control_path = if vendor_binder::touch_available() {
+    // Dash's panel has no THP timing block. The rate channel on this device
+    // is the high touch sampling rate knob that the stock ROM drives too, so
+    // that is what a profile uses when the node is there.
+    let control_path = if dash_htsr_present() {
+        apply_dash_touch_rate(profile)?;
+        apply_dash_touch_hal_profile(profile)?;
+        if profile == 3 {
+            touch_resampler::set_target_hz(1000)?;
+        }
+        3
+    } else if vendor_binder::touch_available() {
         let resampled = profile == 3;
         let vendor_profile = if resampled { 2 } else { profile };
         let locked_rate = touch_profile_locked_rate(profile);
@@ -2805,7 +2941,11 @@ fn apply_touch_profile_locked(profile: i32) -> Result<(), String> {
         2
     };
 
-    let (sustained_rate, instant_rate) = touch_profile_rates(profile);
+    let (sustained_rate, instant_rate) = if dash_htsr_present() {
+        dash_touch_effective_rates(profile)
+    } else {
+        touch_profile_rates(profile)
+    };
     let _ = service_control::write("/proc/touch_boost/enable", "1");
 
     mutate_persisted_state(|s| s.touch = profile).inspect_err(|_| {
@@ -2851,7 +2991,8 @@ fn release_touch_control() -> Result<(), String> {
     }
     for (key, value) in originals {
         let touch_node = key == "/proc/touch_boost/enable"
-            || key == "/sys/devices/platform/goodix_ts.0/switch_report_rate";
+            || key == "/sys/devices/platform/goodix_ts.0/switch_report_rate"
+            || key == DASH_HTSR_NODE;
         if touch_node {
             let original = value.as_str().ok_or("invalid original touch node")?;
             fs::write(&key, original).map_err(|e| format!("restore {key}: {e}"))?;

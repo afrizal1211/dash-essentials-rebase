@@ -250,7 +250,11 @@ fn reversible_path(path: &Path) -> bool {
     let raw = path.to_string_lossy();
     (raw.starts_with("/sys/")
         || raw.starts_with("/proc/sys/")
-        || raw.starts_with("/proc/touch_boost/"))
+        || raw.starts_with("/proc/touch_boost/")
+        // Dash's high touch sampling rate knob. The stock ROM drives it too,
+        // so the value it had before the daemon touched it is what the
+        // release path has to put back.
+        || raw == "/proc/xm_htc_report_rate")
         && !matches!(
             path.file_name().and_then(|v| v.to_str()),
             Some(

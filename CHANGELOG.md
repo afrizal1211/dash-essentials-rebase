@@ -6,9 +6,29 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.7
+## 1.18.8
 
 Pre-release.
+
+- A per-app profile is applied control by control. A control the hardware
+  refuses no longer takes the whole profile down with it, so a profile that
+  asks for a GPU setting and a touch setting no longer loses the GPU setting
+  because the touch setting could not be taken. The controls that were
+  refused are reported by name and reason, in the per-app status and in the
+  logs, and a control whose original could not be read is never written.
+- Touch profiles use Dash's own high touch sampling rate knob,
+  `/proc/xm_htc_report_rate`, the node the stock ROM's power HAL and
+  Settings toggle drive. The panel is a Novatek NT38771 and has no THP
+  timing block, so the old search for one could only fail, and the failure
+  used to roll the per-app profile back. The report rate is read back after
+  the write, and the stock value is put back on release.
+- The touch feature modes that Dash's own ROM uses, game and active, are the
+  required ones. The response calibration and super touch modes are Xiaomi
+  panel extras that the Novatek panel may not implement: they are still
+  requested, and the ones the HAL refuses are reported instead of taken as
+  a failure.
+- The effective GPU ceiling is read from the driver directly, in hertz, from
+  the thermal summary as well as from the power policy status.
 
 ### Added
 
