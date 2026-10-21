@@ -35,9 +35,14 @@ ROM-native installation and share its saved daemon controls; removing the
 module restores the ROM APK and init service. Differently signed native
 installations require an update from their ROM maintainer instead.
 
-The public signing identity changed at v1.18.4. Its fingerprint is in
-`android/package/release-cert.sha256`; do not mistake the old v1.18.3 identity
-for the current one. The private release key is not distributed to maintainers.
+This port has its own signing identity, separate from the upstream project's.
+Its fingerprint is in `android/package/release-cert.sha256`; the upstream
+Rodin Essential identity is kept in
+`android/package/UPSTREAM_RELEASE_CERT.sha256` for reference only and is not
+interchangeable with it. Do not mistake one for the other: a ROM that ships
+the upstream certificate cannot be updated by this port's module, and a ROM
+that ships this port's certificate cannot be updated by the upstream module.
+The private release key is not distributed to maintainers.
 
 ## 2. Export a self-contained bundle
 

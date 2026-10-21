@@ -6,10 +6,17 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.18.5-dash
+## 1.18.6
+
+Pre-release.
 
 Codename: Astraea. Port of Rodin Essential v1.18.5 to the MediaTek MT6991
 `dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).
+
+This is a pre-release: it is built from this tree and published so the port
+can be exercised on hardware. It carries a development signing identity, so
+it is not updatable over a release-signed installation and is not offered as
+the latest stable build.
 
 ### Added
 
