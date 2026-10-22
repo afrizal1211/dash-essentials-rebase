@@ -1,0 +1,71 @@
+name: Rust checks
+
+# Runs the Rust static analysis on a GitHub-hosted x86_64 runner, on every pull
+# request and on every push to main, so a formatting or lint regression is
+# reported on the change that introduced it and not by the Android module build
+# much later.
+#
+# This is deliberately narrower than the module build in
+# build-dash-essential-module.yml: no NDK, no Flutter, no APK, no
+# cross-compilation. Only crates that build against the host's own libraries are
+# checked here.
+#
+# The workspace is not checked as a whole. `runtime/host-rust` is the
+# NativeActivity host: it has no `#[cfg(target_os = "android")]` gate anywhere
+# and links the Android system libraries unconditionally (`android`, `EGL`,
+# `GLESv3`, `log`, `dl`, `flutter_engine`, around ANativeActivity, AInputQueue,
+# AChoreographer and the Flutter embedder), and its Cargo.toml depends on `jni`
+# for the Java VM behind those handles. Nothing in the crate stands in for those
+# libraries on another host, so it does not build off Android. That crate is
+# covered by the Android cross build, which is the only place it has ever been
+# compiled. Checking it here would mean keeping a second, stub-linked copy of the
+# host in the tree purely to satisfy a lint gate.
+#
+# `runtime/daemon-rust` is checked on the host on purpose. Its Android-only
+# half is all behind `#[cfg(target_os = "android")]` (the vendor binder module,
+# the netlink charging uevent listener, the bypass monitor, the touch resampler
+# worker), each with a `#[cfg(not(target_os = "android"))]` counterpart, and its
+# integration tests are declared with `#![cfg(not(target_os = "android"))]`, so
+# the crate is meant to build on a plain Linux host. The fault-place reader in
+# lib.rs is gated on `target_arch = "aarch64"` rather than on the OS and has an
+# architecture-neutral fallback, so the aarch64 offsets it asserts are not
+# evaluated on the runner.
+#
+# The toolchain is the current stable rather than a pinned one, as in
+# build-dash-essential-module.yml, so a lint that only exists in a newer clippy
+# is seen here before it is seen on a developer's machine.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Formatting and lints
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # The formatting check covers both crates: rustfmt only parses, so the
+      # host's Android linkage is not involved.
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # The daemon is linted with its tests, which is the configuration its
+      # integration tests are written for and the one a developer runs by hand.
+      - name: Clippy
+        run: cargo clippy -p dash-essential-daemon --all-targets -- -D warnings
