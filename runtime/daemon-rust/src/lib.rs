@@ -1914,7 +1914,14 @@ fn apply_cluster_freq_controls_unlocked(
         actual_max = read_cpu_cluster_limit(policy, "scaling_max_freq")?;
 
         if actual_min == min_mhz && actual_max == max_mhz {
-            return Ok(());
+            // Final verification after a longer delay to catch thermal daemon override
+            std::thread::sleep(Duration::from_millis(100));
+            actual_min = read_cpu_cluster_limit(policy, "scaling_min_freq")?;
+            actual_max = read_cpu_cluster_limit(policy, "scaling_max_freq")?;
+            if actual_min == min_mhz && actual_max == max_mhz {
+                return Ok(());
+            }
+            // Thermal daemon overrode our settings, retry
         }
     }
 
