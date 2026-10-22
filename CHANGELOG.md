@@ -6,6 +6,18 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.19
+
+### Changed
+
+- Release codename updated to **Atlas** (moon of Saturn).
+- CPU frequency guard now respects per-app CPU range ownership, preventing global settings from overwriting per-app frequency ranges.
+
+### Fixed
+
+- Added final verification step in CPU frequency apply to catch thermal daemon overrides.
+- Fixed lock poisoning panics in 10 mutex locations with graceful error handling.
+
 ## 1.18.18
 
 ### Changed
