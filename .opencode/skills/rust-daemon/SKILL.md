@@ -1,6 +1,6 @@
 ---
 name: rust-daemon
-description: Use when working on the dash-essential-daemon Rust codebase (lib.rs, app_runtime, app_controls, diagnostics, service_control, vendor_binder). Covers async patterns, unsafe FFI, signal handling, IPC, and native testing.
+description: Use when working on the dash-essential-daemon Rust codebase (lib.rs, app_runtime, app_controls, diagnostics, service_control, vendor_binder, foreground_app). Covers async patterns, unsafe FFI, signal handling, IPC, and native testing.
 ---
 
 # Rust Daemon Development (dash-essential-daemon)
@@ -8,17 +8,20 @@ description: Use when working on the dash-essential-daemon Rust codebase (lib.rs
 ## Codebase Structure
 ```
 runtime/daemon-rust/src/
-├── lib.rs              # Main daemon (vendor_binder, IPC, health, commands)
+├── lib.rs              # Main daemon (IPC, health, commands; vendor_binder is cfg-gated)
 ├── app_runtime.rs      # Per-app profile logic (Adapter, ownership, borrowing)
 ├── app_controls.rs     # Control bitmasks, ownership, drift handling
 ├── diagnostics.rs      # Event log, GPU thermal limits, vendor limits
 ├── service_control.rs  # Journaling, persistence, restoration
-├── vendor_binder.rs    # NDK binder FFI (guarded_call, AIBinder_isAlive)
+├── vendor_binder.rs    # NDK binder FFI (guarded_call, AIBinder_isAlive) — target_os = "android" only
 ├── subsystem_clocks.rs # GPU/CPU clock management
 ├── touch_resampler.rs  # Touch rate reading with deduplication
 ├── system_colors.rs    # Wallpaper color extraction
+├── foreground_app.rs   # Foreground app tracking via AccessibilityService events
 └── bypass_policy.rs    # Bypass charging logic
 ```
+
+`mod vendor_binder` is gated `#[cfg(target_os = "android")]`; the non-Android stub in lib.rs returns `false` from every call.
 
 ## Key Patterns
 

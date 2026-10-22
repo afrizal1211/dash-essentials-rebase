@@ -622,7 +622,6 @@ pub fn accept_stream(listener: RawFd) -> Result<UnixStream, String> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppUidPolicy {
-    SelinuxOnly,
     Enforce(u32),
     EnforceAppId(u32),
     Reject,
@@ -650,7 +649,7 @@ fn package_app_id_from_packages_list(contents: &str, package: &str) -> Option<u3
 fn configured_app_uid_policy() -> AppUidPolicy {
     *APP_UID_POLICY.get_or_init(|| match std::env::var("DASH_APP_UID") {
         Err(std::env::VarError::NotPresent) => match std::env::var("DASH_APP_PACKAGE") {
-            Err(std::env::VarError::NotPresent) => AppUidPolicy::SelinuxOnly,
+            Err(std::env::VarError::NotPresent) => AppUidPolicy::Reject,
             Err(std::env::VarError::NotUnicode(_)) => AppUidPolicy::Reject,
             Ok(package) => fs::read_to_string("/data/system/packages.list")
                 .ok()
@@ -757,7 +756,6 @@ fn tcp_peer_uid(stream: &TcpStream) -> Result<u32, String> {
 fn client_uid_allowed(peer: u32, policy: AppUidPolicy) -> bool {
     peer == 0
         || match policy {
-            AppUidPolicy::SelinuxOnly => true,
             AppUidPolicy::Enforce(expected) => peer == expected,
             AppUidPolicy::EnforceAppId(expected) => peer >= 10_000 && peer % 100_000 == expected,
             AppUidPolicy::Reject => false,
@@ -8806,7 +8804,6 @@ mod tests {
         assert!(!client_uid_allowed(10_322, policy));
         assert!(!client_uid_allowed(2_000, policy));
         assert!(!client_uid_allowed(10_321, AppUidPolicy::Reject));
-        assert!(client_uid_allowed(10_321, AppUidPolicy::SelinuxOnly));
     }
 
     #[test]
