@@ -4,35 +4,57 @@ pub fn valid_threshold(value: i32) -> bool {
     matches!(value, 0 | 20 | 40 | 80 | 90)
 }
 
-pub fn phase(
-    enabled: bool,
-    threshold: i32,
-    capacity: Option<i32>,
-    online: i32,
-    requested: i32,
-    verified: i32,
-    current_ua: Option<i64>,
-    error: bool,
-) -> i32 {
-    if !enabled {
+/// Input for `phase` function - grouped to avoid too_many_arguments warning.
+#[derive(Debug, Clone, Copy)]
+pub struct PhaseInput {
+    pub enabled: bool,
+    pub threshold: i32,
+    pub capacity: Option<i32>,
+    pub online: i32,
+    pub requested: i32,
+    pub verified: i32,
+    pub current_ua: Option<i64>,
+    pub error: bool,
+}
+
+impl PhaseInput {
+    /// Creates a new `PhaseInput` with all fields specified.
+    /// Prefer struct literal syntax: `PhaseInput { enabled: true, ..Default::default() }`
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub fn with(enabled: bool, threshold: i32, capacity: Option<i32>, online: i32, requested: i32, verified: i32, current_ua: Option<i64>, error: bool) -> Self {
+        Self {
+            enabled,
+            threshold,
+            capacity,
+            online,
+            requested,
+            verified,
+            current_ua,
+            error,
+        }
+    }
+}
+
+pub fn phase(input: PhaseInput) -> i32 {
+    if !input.enabled {
         return 0;
     }
-    if error {
+    if input.error {
         return 5;
     }
-    if online == 0 {
+    if input.online == 0 {
         return 2;
     }
-    if requested == 0 && threshold > 0 && capacity.is_some_and(|value| value < threshold) {
+    if input.requested == 0 && input.threshold > 0 && input.capacity.is_some_and(|value| value < input.threshold) {
         return 1;
     }
-    if requested != 1 {
+    if input.requested != 1 {
         return 5;
     }
-    if online != 1 {
+    if input.online != 1 {
         return 3;
     }
-    if let Some(current) = current_ua {
+    if let Some(current) = input.current_ua {
         // Dash's battery CURRENT_NOW convention: negative charges the cell.
         if current < -100_000 {
             return 7;
@@ -40,7 +62,7 @@ pub fn phase(
         if current > 100_000 {
             return 6;
         }
-        if verified == 1 {
+        if input.verified == 1 {
             return 4;
         }
     }
@@ -110,12 +132,13 @@ mod tests {
 
     #[test]
     fn activity_is_measured_not_inferred_from_the_saved_toggle() {
-        assert_eq!(phase(true, 80, Some(60), 1, 0, 0, Some(-900000), false), 1);
-        assert_eq!(phase(true, 20, Some(60), 1, 1, 0, Some(0), false), 3);
-        assert_eq!(phase(true, 20, Some(60), 1, 1, 1, Some(0), false), 4);
-        assert_eq!(phase(true, 20, Some(60), 1, 1, 1, Some(-900000), false), 7);
-        assert_eq!(phase(true, 20, Some(60), 1, 1, 0, Some(900000), false), 6);
-        assert_eq!(phase(true, 20, Some(60), 0, 1, 0, None, false), 2);
-        assert_eq!(phase(true, 20, Some(60), 1, 0, 0, Some(0), true), 5);
+        let base = PhaseInput { enabled: true, threshold: 80, capacity: Some(60), online: 1, requested: 0, verified: 0, current_ua: Some(-900_000), error: false };
+        assert_eq!(phase(base), 1);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 0, current_ua: Some(0), error: false }), 3);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 1, current_ua: Some(0), error: false }), 4);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 1, current_ua: Some(-900_000), error: false }), 7);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 0, current_ua: Some(900_000), error: false }), 6);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 0, requested: 1, verified: 0, current_ua: None, error: false }), 2);
+        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 0, verified: 0, current_ua: Some(0), error: true }), 5);
     }
 }

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": {
+    "paths": [".opencode/skills"]
+  },
+  "references": {
+    "upstream": {
+      "repository": "NEESCHAL-3/Rodin-Essential",
+      "branch": "main",
+      "description": "Upstream Rodin Essential project for reference"
+    },
+    "android-kernel": {
+      "path": ".opencode/skills/android-kernel-module",
+      "description": "Android kernel module development patterns"
+    },
+    "rust-daemon": {
+      "path": ".opencode/skills/rust-daemon",
+      "description": "Rust daemon codebase patterns"
+    },
+    "release": {
+      "path": ".opencode/skills/release-management",
+      "description": "Release process for dash-essentials"
+    },
+    "crash": {
+      "path": ".opencode/skills/crash-analysis",
+      "description": "Crash analysis and debugging on device"
+    },
+    "per-app": {
+      "path": ".opencode/skills/per-app-controls",
+      "description": "Per-app controls system"
+    },
+    "playwright": {
+      "path": ".opencode/skills/playwright-mcp",
+      "description": "Playwright MCP browser automation"
+    },
+    "android-testing": {
+      "path": ".opencode/skills/android-testing",
+      "description": "Android app testing strategies"
+    },
+    "flutter": {
+      "path": ".opencode/skills/flutter",
+      "description": "Flutter app development patterns"
+    },
+    "dart": {
+      "path": ".opencode/skills/dart",
+      "description": "Dart language patterns"
+    },
+    "flutter-patterns": {
+      "path": ".opencode/skills/flutter-patterns",
+      "description": "Flutter architectural patterns"
+    },
+    "device-automation": {
+      "path": ".opencode/skills/device-automation",
+      "description": "Device automation via ADB, SSH, Playwright, DeviceRail"
+    }
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp@latest"],
+      "enabled": true
+    }
+  }
+}

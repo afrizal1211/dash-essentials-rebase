@@ -270,11 +270,10 @@ pub(super) fn start() {
             }
         }
     }
-    if trials().0.lock().unwrap().error.is_none() {
-        if let Err(e) = restore_all() {
+    if trials().0.lock().unwrap().error.is_none()
+        && let Err(e) = restore_all() {
             trials().0.lock().unwrap().error = Some(e);
         }
-    }
     std::thread::spawn(|| {
         let (lock, wake) = trials();
         let mut state = lock.lock().unwrap();
@@ -367,12 +366,10 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
         };
         // Reject malformed requests before altering the journal or active policy.
         validate_range(kind, &root, hz, max, ceiling)?;
-        if !state.originals.contains_key(&kind) {
+        if let std::collections::btree_map::Entry::Vacant(e) = state.originals.entry(kind) {
             let min_hz = number(&root, "min_freq")?;
             let max_hz = number(&root, "max_freq")?;
-            state
-                .originals
-                .insert(kind, Original::Range { min_hz, max_hz });
+            e.insert(Original::Range { min_hz, max_hz });
             if let Err(e) = journal(&state.originals) {
                 state.originals.remove(&kind);
                 return Err(e);
