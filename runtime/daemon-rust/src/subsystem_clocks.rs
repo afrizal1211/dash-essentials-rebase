@@ -56,7 +56,7 @@ fn trials() -> &'static (Mutex<Trials>, Condvar) {
     TRIALS.get_or_init(|| (Mutex::new(Trials::default()), Condvar::new()))
 }
 fn number(root: &Path, name: &str) -> Result<u64, String> {
-    fs::read_to_string(root.join(name))
+    super::read_node_text(root.join(name))
         .map_err(|e| format!("{name}: {e}"))?
         .trim()
         .parse()
@@ -81,13 +81,13 @@ fn table(raw: &str) -> Result<Vec<u64>, String> {
     Ok(values)
 }
 fn inspect(kind: Kind, root: &Path) -> Result<Value, String> {
-    let name = fs::read_to_string(root.join("name")).map_err(|e| e.to_string())?;
+    let name = super::read_node_text(root.join("name")).map_err(|e| e.to_string())?;
     if name.trim() != kind.name() {
         return Err("unexpected devfreq device".into());
     }
     let frequencies =
-        table(&fs::read_to_string(root.join("available_frequencies")).map_err(|e| e.to_string())?)?;
-    let governor = fs::read_to_string(root.join("governor")).map_err(|e| e.to_string())?;
+        table(&super::read_node_text(root.join("available_frequencies")).map_err(|e| e.to_string())?)?;
+    let governor = super::read_node_text(root.join("governor")).map_err(|e| e.to_string())?;
     let min = number(root, "min_freq")?;
     let max = number(root, "max_freq")?;
     let reason = if kind == Kind::Memory && governor.trim() != "userspace" {
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(number(&root, "min_freq").unwrap(), 499200000);
         assert_eq!(number(&root, "max_freq").unwrap(), 499200000);
         assert_eq!(
-            fs::read_to_string(root.join("governor")).unwrap(),
+            super::read_node_text(root.join("governor")).unwrap(),
             "simple_ondemand"
         );
         write_floor(&root, 273000000).unwrap();

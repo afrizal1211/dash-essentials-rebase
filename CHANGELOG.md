@@ -6,6 +6,36 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.16
+
+Pre-release.
+
+### Changed
+
+- The vendor's own EB DVFS policy is taken into account. The daemon reads the
+  EB policy of the device, switches it off for a tuned profile, and puts the
+  vendor's policy back when the profile is released. The health report says
+  whether the vendor's policy is in force, so a profile that stays slower
+  than the profile asked for has an answer.
+- The touch sampling rate is read from the node more carefully. The node
+  answers with a partial line now and then, so the daemon reads it several
+  times and only takes a rate that the node repeats. A rate that is out of
+  the range the panel takes is not used.
+- The display features are asked for in the module's own context as well. A
+  service that is not there is told apart from one that is before anything
+  is sent to it, and the transaction is asked for again in the private form
+  of the vendor route. The health report says which route the daemon used,
+  and the report says so as well.
+
+### Fixed
+
+- The high sampling rate is applied through the node when the node takes it,
+  and through the ROM's own setting when the node does not take it. The
+  setting the user had is put back when the profile is released.
+- A binder that is not alive is dropped instead of being sent to. The
+  completion for such a binder has been seen to fault, and it faults on a
+  binder thread, which took the whole daemon with it.
+
 ## 1.18.15
 
 Pre-release.

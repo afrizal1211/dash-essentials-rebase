@@ -170,6 +170,40 @@ pub(super) fn remember(key: &str, value: Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Stores the original of a node, taking the place of an entry that holds
+/// no value.
+///
+/// An entry that was captured as an empty answer carries nothing to put
+/// back, so a later capture of a real value replaces it.
+pub(super) fn remember_captured(key: &str, value: Value) -> Result<(), String> {
+    if RESTORING.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let key = canonical_key(key);
+    let mut state = control()
+        .lock()
+        .map_err(|_| "service state lock poisoned")?;
+    match state.originals.get(&key) {
+        Some(Value::String(existing)) if !existing.is_empty() => return Ok(()),
+        Some(Value::String(_)) => {}
+        Some(_) => return Ok(()),
+        None => {}
+    }
+    let previous = state.originals.insert(key.clone(), value);
+    if let Err(error) = save(&state) {
+        match previous {
+            Some(old) => {
+                state.originals.insert(key, old);
+            }
+            None => {
+                state.originals.remove(&key);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub(super) fn original(key: &str) -> Option<Value> {
     control()
         .lock()
@@ -297,6 +331,18 @@ pub(super) fn normalized_original(path: &Path, raw: &str) -> String {
             return "1".into();
         }
     }
+    if path.file_name().and_then(|v| v.to_str()) == Some("xm_htc_report_rate") {
+        // The node reads back in the labelled form `report_rate: 240`, but it
+        // only accepts a bare rate of at most six bytes, so the label is
+        // dropped and only the number is put back.
+        if let Some(value) = raw.rsplit(':').next() {
+            let value = value.trim();
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return value.to_string();
+            }
+        }
+        return String::new();
+    }
     raw.trim().to_string()
 }
 
@@ -304,16 +350,36 @@ pub(super) fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::R
     let path = path.as_ref();
     if !RESTORING.load(Ordering::Acquire)
         && reversible_path(path)
-        && original(&path.to_string_lossy()).is_none()
+        && !has_original(&path.to_string_lossy())
     {
-        let raw = fs::read_to_string(path)?;
-        remember(
-            &path.to_string_lossy(),
-            Value::String(normalized_original(path, &raw)),
-        )
-        .map_err(io::Error::other)?;
+        // The node is read through the daemon's own reader and not through
+        // the standard library: a vendor driver that copies a fixed block
+        // into the caller's buffer overruns the standard library's small
+        // stack probe. The node also answers every other read with nothing,
+        // so an empty answer is read again before it is taken as the value.
+        let raw = super::read_node_text_retry(path, 8)?;
+        let original = normalized_original(path, &raw);
+        if !original.is_empty() {
+            remember_captured(
+                &path.to_string_lossy(),
+                Value::String(original),
+            )
+            .map_err(io::Error::other)?;
+        }
     }
     fs::write(path, contents)
+}
+
+/// Whether a usable original is already journalled for a node.
+///
+/// An empty original is not usable: the node it came from answered the read
+/// with nothing, so there is no value to put back.
+fn has_original(key: &str) -> bool {
+    match original(key) {
+        Some(Value::String(value)) => !value.is_empty(),
+        Some(_) => true,
+        None => false,
+    }
 }
 
 #[cfg(test)]

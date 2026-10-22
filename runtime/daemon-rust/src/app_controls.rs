@@ -559,14 +559,20 @@ impl<S: Clone> Ownership<S> {
             .map(|(app, _)| Status::Active(app.clone()))
             .unwrap_or(Status::Global);
         if let Some((app, _)) = &desired {
+            // The controls that are in effect are the ones that were applied,
+            // not the ones that were asked for. A control the hardware
+            // refused is reported on its own, so a profile that is only
+            // partly in effect is not reported as a profile that is in
+            // effect.
+            let applied: Vec<_> = self.applied.keys().cloned().collect();
+            let refused: Vec<_> = self.refused.keys().cloned().collect();
             super::diagnostics::record(
                 super::diagnostics::AREA_PER_APP,
                 "info",
                 "profile.applied",
                 &format!(
-                    "app={} controls={:?}",
-                    app.package,
-                    targets.keys().collect::<Vec<_>>()
+                    "app={} controls={:?} refused={:?}",
+                    app.package, applied, refused
                 ),
             );
         }
@@ -866,6 +872,42 @@ mod tests {
         // Releasing gives every control back.
         owner.transition(&mut h, None, None, true, true).unwrap();
         assert_eq!(owner.applied_mask(), 0);
+    }
+
+    #[test]
+    fn the_applied_log_names_the_controls_that_are_in_effect() {
+        let mut h = hardware();
+        // The GPU control is refused, so the profile is only partly in
+        // effect.
+        h.fail_apply = Some(Control::Gpu);
+        let partial = App::new(0, "com.example.partial").unwrap();
+        let mut owner = Ownership::default();
+        owner
+            .transition(&mut h, Some(&partial), Some(&profile()), true, true)
+            .unwrap();
+        let event = super::super::diagnostics::history()
+            .into_iter()
+            .rev()
+            .find(|event| {
+                event.what == "profile.applied" && event.detail.contains("com.example.partial")
+            })
+            .expect("no applied event");
+        // The control that is in effect is named, and the control that was
+        // refused is named as refused instead of being reported as applied.
+        let section = |name: &str| {
+            event
+                .detail
+                .split(&format!("{name}=["))
+                .nth(1)
+                .and_then(|rest| rest.split(']').next())
+                .unwrap_or("")
+                .to_string()
+        };
+        let controls = section("controls");
+        let refused = section("refused");
+        assert!(controls.contains("Touch"), "{}", event.detail);
+        assert!(!controls.contains("Gpu"), "{}", event.detail);
+        assert!(refused.contains("Gpu"), "{}", event.detail);
     }
 
     #[test]

@@ -87,7 +87,11 @@ for DASH_PACKAGER in \
     grep -Fq 'build-and-install.sh' "$DASH_PACKAGER"
     grep -Fq 'Dash-Essential.apk' "$DASH_PACKAGER"
     grep -Fq 'host-cargo/aarch64-linux-android/release/dash_daemon' "$DASH_PACKAGER"
-    grep -Fq -- '--strip-unneeded' "$DASH_PACKAGER"
+    grep -Fq -- '--strip-debug' "$DASH_PACKAGER"
+    if grep -Fq -- '--strip-unneeded' "$DASH_PACKAGER"; then
+        echo "the symbol table must be kept: $DASH_PACKAGER" >&2
+        exit 1
+    fi
 done
 
 echo 'RELEASE_SYNC_CONTRACT_TEST=PASS'
