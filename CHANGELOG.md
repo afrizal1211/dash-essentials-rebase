@@ -12,11 +12,15 @@ The port's own changes are at the top.
 
 - Release codename updated to **Atlas** (moon of Saturn).
 - CPU frequency guard now respects per-app CPU range ownership, preventing global settings from overwriting per-app frequency ranges.
+- Persisted state is now written and read back from one table of fields, so a setting cannot be saved without also being restored.
+- The binder FFI module moved out of the daemon's main file into its own, matching the file layout the project documents.
+- A Rust check workflow runs formatting and lint on every pull request and push to main.
 
 ### Fixed
 
 - Added final verification step in CPU frequency apply to catch thermal daemon overrides.
-- Fixed lock poisoning panics in 10 mutex locations with graceful error handling.
+- The daemon no longer accepts every application as a peer when it cannot tell which application it is. A missing or unreadable app UID now rejects the connection instead of falling back to SELinux alone, and the module still exports the UID it resolved before the daemon starts, so the app itself is unaffected.
+- Added an IPC peer-UID policy test that fails when a missing `DASH_APP_UID` is treated as permissive.
 
 ## 1.18.18
 
@@ -27,7 +31,7 @@ The port's own changes are at the top.
 
 ### Fixed
 
-- Fixed lock poisoning panics in 10 mutex locations with graceful error handling.
+- Fixed 10 lock poisoning panic risks by replacing `.expect("poisoned")` with graceful error handling.
 
 ## 1.18.17
 
@@ -89,8 +93,6 @@ Pre-release.
 
 ## 1.18.14
 
-Pre-release.
-
 ### Fixed
 
 - A crash in the daemon is written to a crash log that is kept open. The report
@@ -101,8 +103,6 @@ Pre-release.
   is in the report the user already knows how to make.
 
 ## 1.18.13
-
-Pre-release.
 
 ### Fixed
 
@@ -125,8 +125,6 @@ Pre-release.
 
 ## 1.18.12
 
-Pre-release.
-
 ### Fixed
 
 - The daemon only asks the vendor services when it can reach them. The module's
@@ -140,8 +138,6 @@ Pre-release.
   restarting it could not be found.
 
 ## 1.18.11
-
-Pre-release.
 
 ### Fixed
 
@@ -160,8 +156,6 @@ Pre-release.
   part of it, which was read as a failed write.
 
 ## 1.18.10
-
-Pre-release.
 
 ### Fixed
 
@@ -182,8 +176,6 @@ Pre-release.
   240`, so the value is taken from after the label.
 
 ## 1.18.9
-
-Pre-release.
 
 ### Added
 
@@ -206,8 +198,6 @@ Pre-release.
 
 ## 1.18.8
 
-Pre-release.
-
 ### Fixed
 
 - A per-app profile is applied control by control. A control the hardware
@@ -229,8 +219,6 @@ Pre-release.
   thermal summary as well as from the power policy status.
 
 ## 1.18.7
-
-Pre-release.
 
 ### Added
 
@@ -266,8 +254,6 @@ Pre-release.
   own summary is still read when an event cannot describe what changed.
 
 ## 1.18.6
-
-Pre-release.
 
 Codename: Astraea. The first port of Rodin Essential v1.18.5 to the
 MediaTek MT6991 `dash` platform (POCO X8 Pro Max / REDMI Turbo 5 Max).
