@@ -119,6 +119,7 @@ mod vendor_binder {
             flags: u32,
         ) -> i32;
         fn AIBinder_decStrong(binder: *mut AIBinder);
+        fn AIBinder_isAlive(binder: *mut AIBinder) -> bool;
         fn AParcel_writeInt32(parcel: *mut AParcel, value: i32) -> i32;
         fn AParcel_readInt32(parcel: *const AParcel, value: *mut i32) -> i32;
         fn AParcel_readStatusHeader(parcel: *const AParcel, status: *mut *mut AStatus) -> i32;
@@ -213,9 +214,17 @@ mod vendor_binder {
     /// local ones and dispatch them into the class. A daemon that only
     /// wants to know whether a service is there must not do that: the
     /// dispatch has been seen to fault, and it faults on a binder thread.
+    ///
+    /// A service that is not there is answered with a binder that never
+    /// becomes one. Such a binder is dropped here, because a transaction
+    /// to it is the one that faults.
     fn find_service(service: &'static [u8]) -> Option<*mut AIBinder> {
         let binder = service_manager_check_service(service.as_ptr().cast());
         if binder.is_null() {
+            return None;
+        }
+        if !unsafe { AIBinder_isAlive(binder) } {
+            unsafe { AIBinder_decStrong(binder) };
             return None;
         }
         Some(binder)
@@ -230,6 +239,10 @@ mod vendor_binder {
         if binder.is_null() {
             return None;
         }
+        if !unsafe { AIBinder_isAlive(binder) } {
+            unsafe { AIBinder_decStrong(binder) };
+            return None;
+        }
 
         let clazz = class_for(descriptor, slot);
         if clazz.is_null() || !unsafe { AIBinder_associateClass(binder, clazz) } {
@@ -242,19 +255,21 @@ mod vendor_binder {
 
     /// Whether the daemon may talk to the vendor services at all.
     ///
-    /// The module's daemon runs in the module's own context. It does not
-    /// see the vendor service manager, so a vendor service it asks for
-    /// comes back as a pending binder, and the NDK's completion for a
-    /// pending binder has been seen to fault on a binder thread and take
-    /// the daemon with it. The ROM-native daemon runs as a system service
-    /// and can reach them, so only that one asks.
+    /// The module's daemon runs in the module's own context. The vendor
+    /// service manager may not be visible there, so a service it asks for
+    /// can come back as a binder that never becomes one. A binder that is
+    /// not alive is dropped before anything is sent to it, so the daemon
+    /// can ask and find out instead of refusing to ask at all: on a device
+    /// where the module's context does see the vendor services, the display
+    /// features are then in reach of the module as well.
+    ///
+    /// The environment still switches the route off for a device where the
+    /// vendor services are not wanted.
     fn enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
-        *ENABLED.get_or_init(|| {
-            std::env::var("DASH_VENDOR_BINDER").as_deref() == Ok("1")
-                || crate::state_dir().starts_with("/data/system/")
-        })
+        *ENABLED.get_or_init(|| std::env::var("DASH_VENDOR_BINDER").as_deref() != Ok("0"))
     }
+
 
     /// What the service manager answered the last time it was asked.
     ///
@@ -288,12 +303,12 @@ mod vendor_binder {
 
     /// Whether the vendor services can be reached, answered in a child.
     ///
-    /// The daemon runs in the module's own context and cannot see the
-    /// vendor service manager, so a service it asks for comes back as a
-    /// pending binder. The NDK's completion for a pending binder has been
-    /// seen to fault, and it faults on a binder thread, which takes the
-    /// whole daemon with it. The question is therefore asked in a child,
-    /// and the answer is kept for a while.
+    /// The daemon may run in the module's own context, and the vendor
+    /// service manager may not be visible there. The NDK's completion for a
+    /// binder that never becomes one has been seen to fault, and it faults
+    /// on a binder thread, which takes the whole daemon with it. The
+    /// question is therefore asked in a child, and the answer is kept for a
+    /// while.
     fn vendor_availability() -> (bool, bool) {
         let cache = AVAILABILITY.get_or_init(|| std::sync::Mutex::new((None, false, false)));
         let Ok(mut guard) = cache.lock() else {
@@ -452,10 +467,28 @@ mod vendor_binder {
         if !enabled() {
             return false;
         }
-        guarded_call(|| display_feature_transaction(case_id, mode_id, cookie))
+        let applied = guarded_call(|| {
+            // A caller that is not part of the vendor domain has to ask for
+            // the private form of the transaction. The ordinary form is tried
+            // first, because a caller that is part of the vendor domain may
+            // not use the private form.
+            display_feature_transaction(case_id, mode_id, cookie, 0)
+                || display_feature_transaction(case_id, mode_id, cookie, FLAG_PRIVATE_VENDOR)
+        });
+
+        if !applied {
+            crate::diagnostics::record(
+                crate::diagnostics::AREA_DISPLAY,
+                "warn",
+                "route.vendor",
+                "the vendor display service did not answer",
+            );
+        }
+
+        applied
     }
 
-    fn display_feature_transaction(case_id: i32, mode_id: i32, cookie: i32) -> bool {
+    fn display_feature_transaction(case_id: i32, mode_id: i32, cookie: i32, flags: u32) -> bool {
         const SERVICE: &[u8] =
             b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
         const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature\0";
@@ -474,7 +507,7 @@ mod vendor_binder {
         }
 
         if ok {
-            ok &= unsafe { AIBinder_transact(binder, 7, &mut input, &mut output, 0) } == STATUS_OK;
+            ok &= unsafe { AIBinder_transact(binder, 7, &mut input, &mut output, flags) } == STATUS_OK;
         } else if !input.is_null() {
             unsafe { AParcel_delete(input) };
         }
@@ -702,7 +735,7 @@ fn tcp_peer_uid(stream: &TcpStream) -> Result<u32, String> {
     // Stay within the app's three-second request timeout, but do not reject a
     // legitimate package connection merely because the first snapshot raced.
     for _ in 0..500 {
-        match fs::read_to_string("/proc/net/tcp") {
+        match read_node_text("/proc/net/tcp") {
             Ok(table) => {
                 if let Some(uid) = tcp_client_uid_from_table(&table, server_port, client_port) {
                     return Ok(uid);
@@ -754,8 +787,80 @@ pub fn connect_stream(name: &str) -> Result<UnixStream, String> {
     Ok(unsafe { UnixStream::from_raw_fd(fd) })
 }
 
+/// The size of the buffer a kernel node is read into.
+///
+/// A node's reported size is often zero, and the standard library then reads
+/// it through a 32-byte stack probe. A driver is not required to honour the
+/// length it is given: the Novatek touch driver copies a fixed 64-byte block
+/// into the caller's buffer whatever length was asked for, so that probe
+/// overflows, the bytes past its end are zeroes, and the saved return
+/// address is zeroed. A buffer larger than any fixed block such a driver
+/// copies keeps the read inside the allocation.
+const NODE_READ_BUFFER: usize = 4096;
+
+/// The most a node is allowed to yield in one read.
+const NODE_READ_LIMIT: usize = 1024 * 1024;
+
+/// Reads a node as text without the standard library's small stack probe.
+///
+/// The content is taken from the length the read reported and never from the
+/// whole buffer, so a driver that copies more than it reports cannot extend
+/// the value. The read goes on until the node says it has no more, because a
+/// node that hands out its content in pieces hands out a short piece before
+/// the end of it. A driver that answers with the same short piece every time
+/// is read once, so its answer cannot fill the value with itself.
+pub(crate) fn read_node_text<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
+    let path = path.as_ref();
+    let mut file = fs::File::open(path)?;
+    let mut buffer = vec![0u8; NODE_READ_BUFFER];
+    let mut content: Vec<u8> = Vec::with_capacity(NODE_READ_BUFFER);
+    let mut previous: Vec<u8> = Vec::new();
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let chunk = &buffer[..count];
+        if count < buffer.len() && !previous.is_empty() && chunk == previous.as_slice() {
+            break;
+        }
+        content.extend_from_slice(chunk);
+        previous.clear();
+        previous.extend_from_slice(chunk);
+        if content.len() >= NODE_READ_LIMIT {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&content).into_owned())
+}
+
+/// Reads a node until it answers with something.
+///
+/// The Novatek rate node answers every other read with nothing, so a single
+/// empty read is not evidence that the node is empty.
+fn read_node_text_retry(path: &Path, attempts: usize) -> std::io::Result<String> {
+    let mut content = String::new();
+    for attempt in 0..attempts.max(1) {
+        content = read_node_text(path)?;
+        if !content.trim().is_empty() {
+            break;
+        }
+        if attempt + 1 < attempts.max(1) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(content)
+}
+
 fn read_trimmed<P: AsRef<Path>>(path: P) -> Result<String, String> {
-    fs::read_to_string(path.as_ref())
+    read_node_text(path.as_ref())
+        .map(|s| s.trim().to_string())
+        .map_err(|e| format!("read {}: {e}", path.as_ref().display()))
+}
+
+/// Reads a node until it answers with something, and trims it.
+fn read_trimmed_retry<P: AsRef<Path>>(path: P, attempts: usize) -> Result<String, String> {
+    read_node_text_retry(path.as_ref(), attempts)
         .map(|s| s.trim().to_string())
         .map_err(|e| format!("read {}: {e}", path.as_ref().display()))
 }
@@ -2041,7 +2146,7 @@ fn gpu_cooling_device_path() -> Option<PathBuf> {
         if !name.starts_with("cooling_device") {
             continue;
         }
-        let Ok(kind) = fs::read_to_string(entry.path().join("type")) else {
+        let Ok(kind) = read_node_text(entry.path().join("type")) else {
             continue;
         };
         let kind = kind.trim();
@@ -2060,6 +2165,74 @@ fn clear_gpu_cooling_cap() {
     if let Some(path) = gpu_cooling_device_path() {
         let _ = service_control::write(&path, "0");
     }
+}
+
+/// The vendor's EB DVFS policy.
+///
+/// The policy drives the GPU's own DVFS curve from the vendor's thermal
+/// model. While Dash owns the GPU, that curve works against the profile
+/// that was asked for: the profile is verified against the nodes it wrote,
+/// and the vendor's policy then moves the GPU somewhere else. The knob is
+/// the vendor's own switch, so the vendor's setting is put back when the
+/// service is released.
+const EB_DVFS_POLICY: &str = "/sys/kernel/ged/hal/eb_dvfs_policy";
+
+/// The mode the vendor's EB DVFS policy is in.
+///
+/// The node answers with a short report. The mode is the number the node
+/// accepts back, so it can be written to put the policy the way it was.
+fn parse_eb_dvfs_mode(raw: &str) -> Option<String> {
+    let start = raw.find("EB_policy_mode(")? + "EB_policy_mode(".len();
+    let rest = raw.get(start..)?;
+    let end = rest.find(')')?;
+    Some(rest[..end].trim().to_string())
+}
+
+fn eb_dvfs_mode() -> Option<String> {
+    parse_eb_dvfs_mode(&read_node_text(EB_DVFS_POLICY).ok()?)
+}
+
+/// Whether the vendor's EB DVFS policy is shaping the GPU.
+fn eb_dvfs_enabled() -> bool {
+    read_node_text(EB_DVFS_POLICY)
+        .map(|raw| raw.contains("EB DVFS enable"))
+        .unwrap_or(false)
+}
+
+/// Turn the vendor's EB DVFS policy off.
+///
+/// The mode the policy was in is remembered, so that the vendor's setting
+/// can be put back when the service is released.
+fn disable_eb_dvfs_policy() -> Result<(), String> {
+    if !eb_dvfs_enabled() {
+        return Ok(());
+    }
+    if let Some(mode) = eb_dvfs_mode() {
+        service_control::remember("gpu.eb_dvfs", serde_json::json!(mode))?;
+    }
+    fs::write(EB_DVFS_POLICY, "0").map_err(|e| format!("EB DVFS policy: {e}"))?;
+    if eb_dvfs_enabled() {
+        return Err("EB DVFS policy still enabled".into());
+    }
+    diagnostics::record(
+        diagnostics::AREA_GPU,
+        "info",
+        "vendor.eb_dvfs",
+        "state=disabled",
+    );
+    Ok(())
+}
+
+/// Put the vendor's EB DVFS policy back the way it was.
+fn restore_eb_dvfs_policy() -> Result<(), String> {
+    let Some(mode) = service_control::original("gpu.eb_dvfs").and_then(|v| {
+        v.as_str().map(|mode| mode.to_string())
+    }) else {
+        return Ok(());
+    };
+    fs::write(EB_DVFS_POLICY, &mode).map_err(|e| format!("EB DVFS policy: {e}"))?;
+    service_control::forget(&["gpu.eb_dvfs".to_string()])?;
+    Ok(())
 }
 
 fn profile_uses_ged_boost(profile: i32) -> bool {
@@ -2121,7 +2294,7 @@ fn gpu_saver_ceiling_hz() -> u64 {
 /// index, because a wrong index moves the floor to an unrelated frequency.
 /// Read a GED ladder index node.
 fn gpu_ged_index(node: &str) -> Option<i32> {
-    fs::read_to_string(node)
+    read_node_text(node)
         .ok()
         .and_then(|value| value.trim().parse().ok())
 }
@@ -2279,6 +2452,15 @@ pub fn enforce_performance_profile(profile: i32) -> bool {
         clear_gpu_cooling_cap();
     }
 
+    // The vendor's EB DVFS policy shapes the GPU's own curve, and that shape
+    // works against a profile that Dash drives itself: the policy adds a
+    // margin of its own over the load target and brakes the GPU on its own
+    // thermal limits, so the profile does not reach the frequency it asked
+    // for. The stock profile leaves the vendor's policy alone.
+    if profile != 0 {
+        let _ = disable_eb_dvfs_policy();
+    }
+
     match profile {
         3 => {
             // Extreme Beast: fixed at the ladder's top operating point with
@@ -2342,6 +2524,21 @@ pub fn enforce_performance_profile(profile: i32) -> bool {
 }
 
 pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
+    apply_performance_profile_with(profile, false)
+}
+
+/// Apply a performance profile that a per-app profile borrows.
+///
+/// The hardware is changed, but the preferences of the device are not: a
+/// profile that belongs to the app in the foreground is in effect while
+/// that app is in the foreground, and it does not become the profile of the
+/// device. The global transition is not written either, because the profile
+/// of the device did not change.
+pub(crate) fn apply_performance_profile_borrowed(profile: i32) -> Result<(), String> {
+    apply_performance_profile_with(profile, true)
+}
+
+fn apply_performance_profile_with(profile: i32, borrowed: bool) -> Result<(), String> {
     if !matches!(profile, 0..=3) {
         return Err("invalid performance profile".into());
     }
@@ -2357,51 +2554,57 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
 
     PERFORMANCE_STATE.store(profile, Ordering::Release);
 
-    let persistence = match profile {
-        3 => mutate_persisted_state(|state| {
-            state.perf = 3;
-            state.gpu_uncap = 1;
-            state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
-            state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
-            state.gpu_ged_boost = 1;
-            state.gpu = "performance".to_string();
-            state.gpu_governor = "performance".to_string();
-            state.gpu_power_policy = "always_on".to_string();
-            state.gpu_profile_cpu_isolated = 1;
-        }),
-        1 => mutate_persisted_state(|state| {
-            state.perf = 1;
-            state.gpu_uncap = 0;
-            state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_floor_hz());
-            state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
-            state.gpu_ged_boost = 1;
-            state.gpu = "simple_ondemand".to_string();
-            state.gpu_governor = "simple_ondemand".to_string();
-            state.gpu_power_policy = "always_on".to_string();
-            state.gpu_profile_cpu_isolated = 1;
-        }),
-        2 => mutate_persisted_state(|state| {
-            state.perf = 2;
-            state.gpu_uncap = 0;
-            state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_floor_hz());
-            state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_saver_ceiling_hz());
-            state.gpu_ged_boost = 0;
-            state.gpu = "powersave".to_string();
-            state.gpu_governor = "powersave".to_string();
-            state.gpu_power_policy = "coarse_demand".to_string();
-            state.gpu_profile_cpu_isolated = 1;
-        }),
-        _ => mutate_persisted_state(|state| {
-            state.perf = 0;
-            state.gpu_uncap = 0;
-            state.gpu_min_freq_mhz = 0;
-            state.gpu_max_freq_mhz = 0;
-            state.gpu_ged_boost = 0;
-            state.gpu = "dummy".to_string();
-            state.gpu_governor = "dummy".to_string();
-            state.gpu_power_policy = "coarse_demand".to_string();
-            state.gpu_profile_cpu_isolated = 1;
-        }),
+    // A borrowed profile is not the profile of the device, so it does not
+    // change the saved preferences of the device.
+    let persistence = if borrowed {
+        Ok(())
+    } else {
+        match profile {
+            3 => mutate_persisted_state(|state| {
+                state.perf = 3;
+                state.gpu_uncap = 1;
+                state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
+                state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
+                state.gpu_ged_boost = 1;
+                state.gpu = "performance".to_string();
+                state.gpu_governor = "performance".to_string();
+                state.gpu_power_policy = "always_on".to_string();
+                state.gpu_profile_cpu_isolated = 1;
+            }),
+            1 => mutate_persisted_state(|state| {
+                state.perf = 1;
+                state.gpu_uncap = 0;
+                state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_floor_hz());
+                state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
+                state.gpu_ged_boost = 1;
+                state.gpu = "simple_ondemand".to_string();
+                state.gpu_governor = "simple_ondemand".to_string();
+                state.gpu_power_policy = "always_on".to_string();
+                state.gpu_profile_cpu_isolated = 1;
+            }),
+            2 => mutate_persisted_state(|state| {
+                state.perf = 2;
+                state.gpu_uncap = 0;
+                state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_floor_hz());
+                state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_saver_ceiling_hz());
+                state.gpu_ged_boost = 0;
+                state.gpu = "powersave".to_string();
+                state.gpu_governor = "powersave".to_string();
+                state.gpu_power_policy = "coarse_demand".to_string();
+                state.gpu_profile_cpu_isolated = 1;
+            }),
+            _ => mutate_persisted_state(|state| {
+                state.perf = 0;
+                state.gpu_uncap = 0;
+                state.gpu_min_freq_mhz = 0;
+                state.gpu_max_freq_mhz = 0;
+                state.gpu_ged_boost = 0;
+                state.gpu = "dummy".to_string();
+                state.gpu_governor = "dummy".to_string();
+                state.gpu_power_policy = "coarse_demand".to_string();
+                state.gpu_profile_cpu_isolated = 1;
+            }),
+        }
     };
     persistence?;
 
@@ -2432,11 +2635,20 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
         String::new()
     };
 
+    // A borrowed profile is reported in the per-app area: the profile of the
+    // device did not change, and a global transition here would tell the
+    // user that it did.
+    let (area, event) = if borrowed {
+        (diagnostics::AREA_PER_APP, "profile.borrowed")
+    } else {
+        (diagnostics::AREA_GPU, "profile.transition")
+    };
+
     if verified {
         diagnostics::record(
-            diagnostics::AREA_GPU,
+            area,
             "info",
-            "profile.transition",
+            event,
             &format!(
                 "profile={profile} result=applied min={} max={} governor={} policy={}{game_note}",
                 gpu_get_min_freq_mhz(),
@@ -2456,7 +2668,7 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
     if configured {
         if let Some(limiter) = capped {
             diagnostics::record(
-                diagnostics::AREA_GPU,
+                area,
                 "warn",
                 "profile.capped",
                 &format!(
@@ -2467,9 +2679,9 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
             );
         } else {
             diagnostics::record(
-                diagnostics::AREA_GPU,
+                area,
                 "info",
-                "profile.transition",
+                event,
                 &format!(
                     "profile={profile} result=armed min={} max={} governor={} policy={}",
                     gpu_get_min_freq_mhz(),
@@ -2493,7 +2705,7 @@ pub fn apply_performance_profile(profile: i32) -> Result<(), String> {
         gpu_get_power_policy(),
         gpu_get_dvfs_enabled(),
     );
-    diagnostics::record(diagnostics::AREA_GPU, "error", "profile.transition", &detail);
+    diagnostics::record(area, "error", event, &detail);
     Err(format!(
         "GPU profile {profile} verify failed: min={} max={} governor={} GED={} policy={}",
         gpu_get_min_freq_mhz(),
@@ -2527,14 +2739,14 @@ fn classify_touch_panel_version(version: &str) -> i32 {
 }
 
 fn touch_panel_code() -> i32 {
-    let version = fs::read_to_string("/proc/tp_fw_version").unwrap_or_default();
+    let version = read_node_text("/proc/tp_fw_version").unwrap_or_default();
     let detected = classify_touch_panel_version(&version);
     if detected != 0 {
         return detected;
     }
     // Dash's Xiaomi touch bridge (`xiaomi_touch_dash.ko`) exposes the touch
     // supplier through its own class device instead of /proc/tp_fw_version.
-    if let Ok(vendor) = fs::read_to_string("/sys/class/touch/touch_dev/panel_vendor") {
+    if let Ok(vendor) = read_node_text("/sys/class/touch/touch_dev/panel_vendor") {
         let detected = classify_touch_panel_version(&vendor);
         if detected != 0 {
             return detected;
@@ -2620,7 +2832,7 @@ fn find_touch_thp_config_offset(bytes: &[u8]) -> Option<usize> {
 
 fn locate_touch_thp_layout() -> Result<TouchThpLayout, String> {
     let pid = touch_service_pid().ok_or("Dash touch service process not found")?;
-    let maps = fs::read_to_string(format!("/proc/{pid}/maps"))
+    let maps = read_node_text(format!("/proc/{pid}/maps"))
         .map_err(|e| format!("touch service maps: {e}"))?;
     let library_base = maps
         .lines()
@@ -2723,19 +2935,71 @@ const DASH_HTSR_NODE: &str = "/proc/xm_htc_report_rate";
 const DASH_HTSR_BASELINE: &str = "120";
 const DASH_HTSR_HIGH: &str = "240";
 
+/// The ROM's own high sampling rate toggle.
+///
+/// The stock ROM drives the panel rate from its Settings service, and the
+/// power HAL reads this toggle. It is the fallback for a device whose rate
+/// node is missing or refuses the write: the ROM's own switch is asked
+/// instead, and what it answered is logged.
+const DASH_HTSR_SETTING: &str = "touch_high_sampling_rate";
+
+/// The slowest rate a panel can report at, and the fastest this knob is
+/// asked for.
+const DASH_HTSR_RATE_RANGE: std::ops::RangeInclusive<u16> = 60..=1000;
+
 /// Whether this build exposes the high touch sampling rate knob.
 fn dash_htsr_present() -> bool {
     Path::new(DASH_HTSR_NODE).exists()
 }
 
+/// Choose the rate the node is really holding.
+///
+/// The node answers some reads with a value that was never written, and it
+/// answers every other read with nothing. A single answer is therefore not
+/// evidence: the rate is only taken when the node repeats itself, and a
+/// rate a panel cannot run at is never taken at all.
+fn select_dash_htsr_rate(samples: &[String]) -> Option<u16> {
+    let mut previous: Option<(&str, u16)> = None;
+    for raw in samples {
+        let text = raw.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let Some(rate) = text
+            .rsplit(':')
+            .next()
+            .map(str::trim)
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|rate| DASH_HTSR_RATE_RANGE.contains(rate))
+        else {
+            // An answer that is not a rate a panel can run at says nothing
+            // about the rate the node holds.
+            continue;
+        };
+        if let Some((previous_text, _)) = previous {
+            if previous_text == text {
+                return Some(rate);
+            }
+        }
+        previous = Some((text, rate));
+    }
+    None
+}
+
 /// The rate the knob currently holds, in hertz.
 ///
 /// The node reads back in the labelled form `report_rate: 240`, so the
-/// value is taken from after the label.
+/// value is taken from after the label. The node is read several times,
+/// because it answers some reads with a value that was never written.
 fn dash_htsr_rate() -> Option<u16> {
-    let raw = fs::read_to_string(DASH_HTSR_NODE).ok()?;
-    let value = raw.rsplit(':').next()?.trim();
-    value.parse::<u16>().ok()
+    let mut samples = Vec::new();
+    for _ in 0..8 {
+        match read_node_text_retry(Path::new(DASH_HTSR_NODE), 1) {
+            Ok(raw) => samples.push(raw),
+            Err(_) => continue,
+        }
+    }
+    select_dash_htsr_rate(&samples)
 }
 
 /// The rate the panel can actually deliver. Dash's panel reports at most
@@ -2817,6 +3081,50 @@ fn apply_dash_touch_hal_profile(profile: i32) -> Result<(), String> {
     }
 }
 
+/// Ask the ROM's Settings service to change a setting.
+fn dash_settings_put(key: &str, value: &str) -> Result<(), String> {
+    let output = run_process_with_timeout(
+        "/system/bin/settings",
+        &["put", "system", key, value],
+        Duration::from_secs(5),
+    )?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!(
+            "settings put {key} {value} failed: {message}"
+        ));
+    }
+    Ok(())
+}
+
+/// Remember the rate the panel runs at when the daemon is not driving it.
+///
+/// The node answers some reads with nothing, and the release path needs a
+/// value to put back, so the baseline takes the place of an answer that
+/// never came.
+fn remember_dash_htsr_original() -> Result<(), String> {
+    match service_control::original(DASH_HTSR_NODE) {
+        Some(serde_json::Value::String(value)) if !value.is_empty() => return Ok(()),
+        Some(serde_json::Value::String(_)) => {
+            service_control::replace(
+                DASH_HTSR_NODE,
+                serde_json::json!(DASH_HTSR_BASELINE),
+            )?;
+            return Ok(());
+        }
+        Some(_) => return Ok(()),
+        None => {}
+    }
+    let raw = read_node_text_retry(Path::new(DASH_HTSR_NODE), 8).unwrap_or_default();
+    let original = service_control::normalized_original(Path::new(DASH_HTSR_NODE), &raw);
+    let value = if original.is_empty() {
+        DASH_HTSR_BASELINE.to_string()
+    } else {
+        original
+    };
+    service_control::remember(DASH_HTSR_NODE, serde_json::json!(value))
+}
+
 /// The rate channel of the Dash panel, and the only one it has.
 fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
     let rate = dash_touch_target_rate(profile).ok_or("invalid touch profile")?;
@@ -2825,8 +3133,36 @@ fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
     } else {
         DASH_HTSR_BASELINE
     };
-    write_verified(Path::new(DASH_HTSR_NODE), expected)
-        .map_err(|e| format!("touch rate write: {e}"))?;
+
+    // The rate the panel had before is remembered first, because the write
+    // that follows replaces it.
+    remember_dash_htsr_original()?;
+
+    // The node is the rate channel on this device. A device that has no node
+    // or refuses the write is asked through the ROM's own toggle, and the
+    // answer is logged so that the route the rate took is known.
+    if let Err(error) = write_verified(Path::new(DASH_HTSR_NODE), expected) {
+        let high = rate == 240;
+        match dash_settings_put(DASH_HTSR_SETTING, if high { "1" } else { "0" }) {
+            Ok(()) => {
+                service_control::remember(
+                    "touch.htsr_setting",
+                    serde_json::json!(if high { "1" } else { "0" }),
+                )?;
+                diagnostics::record(
+                    diagnostics::AREA_TOUCH,
+                    "info",
+                    "touch.rate.fallback",
+                    &format!("setting={DASH_HTSR_SETTING} rate={rate} reason={error}"),
+                );
+                return Ok(rate);
+            }
+            Err(fallback) => {
+                return Err(format!("touch rate write: {error}; fallback: {fallback}"));
+            }
+        }
+    }
+
     // The node's output is produced per read, so a read that lands while
     // the value changes can return a part of it. The rate is therefore read
     // again until it agrees, rather than judged on the first read.
@@ -2861,7 +3197,7 @@ fn touch_profile_rates(profile: i32) -> (i32, i32) {
 }
 
 fn goodix_report_rate_hz() -> Option<u16> {
-    let raw = fs::read_to_string("/sys/devices/platform/goodix_ts.0/switch_report_rate").ok()?;
+    let raw = read_node_text("/sys/devices/platform/goodix_ts.0/switch_report_rate").ok()?;
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized == "0" || normalized.contains("240hz") {
         Some(240)
@@ -3165,6 +3501,18 @@ fn release_touch_control() -> Result<(), String> {
         // the daemon's to release there.
         apply_touch_hal_profile(0)?;
     }
+    // The ROM's own toggle is put back when the rate went through it.
+    if service_control::original("touch.htsr_setting").is_some() {
+        if let Err(error) = dash_settings_put(DASH_HTSR_SETTING, "0") {
+            diagnostics::record(
+                diagnostics::AREA_TOUCH,
+                "warn",
+                "touch.rate.fallback.release",
+                &format!("setting={DASH_HTSR_SETTING} error={error}"),
+            );
+        }
+        released.push("touch.htsr_setting".to_string());
+    }
     if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
         let layout = locate_touch_thp_layout()?;
         let mut memory = OpenOptions::new()
@@ -3188,10 +3536,27 @@ fn release_touch_control() -> Result<(), String> {
             || key == DASH_HTSR_NODE;
         if touch_node {
             let original = value.as_str().ok_or("invalid original touch node")?;
-            fs::write(&key, original).map_err(|e| format!("restore {key}: {e}"))?;
-            let actual = read_trimmed(&key)?;
-            if service_control::normalized_original(Path::new(&key), &actual) != original {
-                return Err(format!("OEM touch readback mismatch: {key}"));
+            // An original that was captured as an empty answer carries no
+            // value to put back. The rate node falls back to the rate the
+            // panel runs at when the daemon is not driving it; the others
+            // are left as they are rather than written empty.
+            if original.is_empty() {
+                if key == DASH_HTSR_NODE {
+                    let baseline = DASH_HTSR_BASELINE;
+                    fs::write(&key, baseline).map_err(|e| format!("restore {key}: {e}"))?;
+                    let actual = read_trimmed_retry(Path::new(&key), 8)?;
+                    if service_control::normalized_original(Path::new(&key), &actual) != baseline {
+                        return Err(format!("OEM touch readback mismatch: {key}"));
+                    }
+                }
+            } else {
+                fs::write(&key, original).map_err(|e| format!("restore {key}: {e}"))?;
+                // The node answers some reads with nothing, so the readback is
+                // taken again until it says something.
+                let actual = read_trimmed_retry(Path::new(&key), 8)?;
+                if service_control::normalized_original(Path::new(&key), &actual) != original {
+                    return Err(format!("OEM touch readback mismatch: {key}"));
+                }
             }
         }
         if touch_node || matches!(key.as_str(), "touch.hal" | "touch.thp_rate") {
@@ -3891,9 +4256,14 @@ where
         .map_err(|_| "persisted state lock poisoned".to_string())?;
     let mut candidate = guard.clone();
     f(&mut candidate);
-    if !app_runtime::transient_write() {
-        save_persisted_state(&candidate)?;
+    if app_runtime::transient_write() {
+        // A per-app profile borrows the control: it is in effect while the
+        // app is in the foreground, and the preferences of the device stay
+        // what they are. Writing them here is what makes a borrowed profile
+        // look like it changed the profile of the device.
+        return Ok(());
     }
+    save_persisted_state(&candidate)?;
     *guard = candidate;
     Ok(())
 }
@@ -4347,7 +4717,7 @@ fn refresh_display_info() {
         "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
         "/sys/class/mi_display/disp-DSI-0/dynamic_fps",
     ] {
-        if let Ok(raw) = fs::read_to_string(path)
+        if let Ok(raw) = read_node_text(path)
             && let Ok(rate) = raw.trim().parse::<f64>()
             && (1.0..=1000.0).contains(&rate)
         {
@@ -4526,7 +4896,7 @@ fn screen_is_on() -> Option<bool> {
         "/sys/class/backlight/lcd-backlight/actual_brightness",
         "/sys/class/backlight/lcd-backlight/brightness",
     ] {
-        if let Ok(raw) = fs::read_to_string(path)
+        if let Ok(raw) = read_node_text(path)
             && let Ok(value) = raw.trim().parse::<i64>()
         {
             return Some(value > 0);
@@ -4647,6 +5017,19 @@ pub(crate) fn global_restore_done() -> bool {
     GLOBAL_RESTORE_DONE.load(Ordering::Acquire)
 }
 
+/// Whether the global profile may write the GPU controls.
+///
+/// A per-app profile that holds the GPU is in charge of it. The global
+/// restore, the reassert guard, and the dynamic guard all act on the
+/// profile of the device, so they have to stay out of the way while the
+/// foreground app owns the GPU. Two writers over the same node mean the
+/// profile of the app is applied and then immediately taken back by the
+/// profile of the device, which is what a user sees as a per-app profile
+/// that does not work.
+pub(crate) fn global_may_write_gpu() -> bool {
+    !app_runtime::owns_gpu()
+}
+
 fn restore_persisted_state() {
     if !service_control::active() {
         GLOBAL_RESTORE_DONE.store(true, Ordering::Release);
@@ -4695,7 +5078,8 @@ fn restore_persisted_state() {
             let owned = persisted_state()
                 .lock()
                 .is_ok_and(|s| s.touch == state.touch);
-            if owned {
+            // A per-app profile that holds the touch control keeps it.
+            if owned && !app_runtime::owns_touch() {
                 let _ = apply_touch_profile_locked(state.touch);
             }
         }
@@ -4758,7 +5142,7 @@ fn restore_persisted_state() {
 
     drop(display_guard);
 
-    if (0..=3).contains(&state.perf) && !app_runtime::owns_gpu() {
+    if (0..=3).contains(&state.perf) && global_may_write_gpu() {
         // GPU profiles are isolated from CPU controls. Preserve the exact
         // persisted selection while restoring the requested Mali state.
         //
@@ -4783,18 +5167,30 @@ fn restore_persisted_state() {
         state = persisted;
     }
 
-    if !state.cpu0.is_empty() {
+    // A per-app profile owns the controls it applied while it is in effect.
+    // The global restore must not write over them, or the profile of the
+    // app is applied and then immediately taken back by the profile of the
+    // device.
+    let per_app_gpu = !global_may_write_gpu();
+    let per_app_cpu_governor = app_runtime::owns_cpu_governor();
+    let per_app_cpu_range = app_runtime::owns_cpu_range();
+
+    if !state.cpu0.is_empty() && !per_app_cpu_governor {
         let _ = set_cpu_governor(0, &state.cpu0);
     }
 
-    if !state.cpu4.is_empty() {
+    if !state.cpu4.is_empty() && !per_app_cpu_governor {
         let _ = set_cpu_governor(4, &state.cpu4);
     }
 
-    if !state.cpu7.is_empty() {
+    if !state.cpu7.is_empty() && !per_app_cpu_governor {
         let _ = set_cpu_governor(7, &state.cpu7);
     }
 
+    // A per-app profile that holds the GPU keeps it. The global restore
+    // must not write over a control that the foreground app owns, or the
+    // profile of the app is applied and then taken back by the device's
+    // own profile.
     let target_gpu = if !state.gpu_governor.is_empty() {
         &state.gpu_governor
     } else if !state.gpu.is_empty() {
@@ -4802,7 +5198,7 @@ fn restore_persisted_state() {
     } else {
         ""
     };
-    if !target_gpu.is_empty() {
+    if !target_gpu.is_empty() && !per_app_gpu {
         let _ = set_gpu_governor(target_gpu);
     }
 
@@ -4833,7 +5229,7 @@ fn restore_persisted_state() {
         true
     };
 
-    if cpu_mode_ready {
+    if cpu_mode_ready && !per_app_cpu_range {
         if state.cpu_min_freq0 > 0 || state.cpu_max_freq0 > 0 {
             let min = if state.cpu_min_freq0 > 0 {
                 state.cpu_min_freq0
@@ -4877,23 +5273,25 @@ fn restore_persisted_state() {
         CPU_FREQ_WRITE_ACK.store(0, Ordering::Release);
     }
 
-    if state.gpu_uncap == 1 {
-        let _ = set_gpu_uncap(true);
-    } else {
-        if !state.gpu_power_policy.is_empty() {
-            let _ = set_gpu_power_policy(&state.gpu_power_policy);
-        }
-        if state.gpu_min_freq_mhz > 0 {
-            let _ = set_gpu_min_freq(state.gpu_min_freq_mhz);
-        }
-        if state.gpu_max_freq_mhz > 0 {
-            let _ = set_gpu_max_freq(state.gpu_max_freq_mhz);
-        }
-        if !state.gpu_governor.is_empty() {
-            let _ = set_gpu_governor(&state.gpu_governor);
-        }
-        if state.gpu_ged_boost >= 0 {
-            let _ = set_gpu_ged_boost(state.gpu_ged_boost == 1);
+    if !per_app_gpu {
+        if state.gpu_uncap == 1 {
+            let _ = set_gpu_uncap(true);
+        } else {
+            if !state.gpu_power_policy.is_empty() {
+                let _ = set_gpu_power_policy(&state.gpu_power_policy);
+            }
+            if state.gpu_min_freq_mhz > 0 {
+                let _ = set_gpu_min_freq(state.gpu_min_freq_mhz);
+            }
+            if state.gpu_max_freq_mhz > 0 {
+                let _ = set_gpu_max_freq(state.gpu_max_freq_mhz);
+            }
+            if !state.gpu_governor.is_empty() {
+                let _ = set_gpu_governor(&state.gpu_governor);
+            }
+            if state.gpu_ged_boost >= 0 {
+                let _ = set_gpu_ged_boost(state.gpu_ged_boost == 1);
+            }
         }
     }
 
@@ -4957,7 +5355,7 @@ fn reassert_persisted_governors() {
     // alone: two writers over the same node means the per-app profile is
     // applied and then immediately overwritten, which is what a user sees
     // as the profile not working.
-    let per_app_gpu = app_runtime::owns_gpu();
+    let per_app_gpu = !global_may_write_gpu();
     let per_app_cpu_cores = app_runtime::owns_cpu_cores();
     let per_app_cpu_governor = app_runtime::owns_cpu_governor();
 
@@ -5175,6 +5573,20 @@ fn gaming_dynamic_guard() {
             .ok()
             .map(|state| state.perf)
             .unwrap_or(0);
+
+        // A per-app profile that holds the GPU is in charge of it. The guard
+        // acts on the profile of the device, so it must stay out of the way
+        // while the foreground app owns the GPU, or the app's profile is
+        // written and then immediately overwritten by the device's own.
+        if !global_may_write_gpu() {
+            last_written_opp = -1;
+            smoothed_load = 0;
+            boost_until = Instant::now();
+            drop(profile_guard);
+            drop(service_gate);
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        }
 
         let desired_ged_boost = profile_uses_ged_boost(profile);
         if profile >= 0 && !gpu_boost_pipeline_matches(desired_ged_boost) {
@@ -5471,48 +5883,303 @@ fn open_crash_log() {
     }
 }
 
+/// The signals a crash report is made for.
+///
+/// These are the signals that end the daemon. The report is written
+/// first and the signal is then given back to the disposition that was
+/// there before, so the system still records the crash the way it always
+/// did.
+const CRASH_SIGNALS: [libc::c_int; 6] = [
+    libc::SIGSEGV,
+    libc::SIGABRT,
+    libc::SIGBUS,
+    libc::SIGILL,
+    libc::SIGFPE,
+    libc::SIGTRAP,
+];
+
+/// How many signals a crash report is made for.
+const CRASH_SIGNAL_COUNT: usize = CRASH_SIGNALS.len();
+
+/// The dispositions that were in place before the daemon took the signals.
+///
+/// A fault handler cannot take a lock: a fault that happened while the
+/// lock was held would deadlock in the handler, and a daemon that never
+/// dies is a device with no controls at all. The dispositions are written
+/// once, when the reporter is installed, and only read afterwards.
+static mut CRASH_PREVIOUS: [core::mem::MaybeUninit<libc::sigaction>; CRASH_SIGNAL_COUNT] =
+    [const { core::mem::MaybeUninit::uninit() }; CRASH_SIGNAL_COUNT];
+
+/// Whether a report is being written right now.
+///
+/// A fault inside the report must not start another report: the daemon
+/// would write over its own record and never end.
+static CRASH_REPORTING: AtomicBool = AtomicBool::new(false);
+
 /// Report a fatal signal with the place it happened.
 ///
 /// A fault in the daemon used to show up only as the module restarting it,
-/// which says nothing about where the fault was.
-fn install_crash_reporter() {
-    unsafe extern "C" {
-        fn signal(signum: i32, handler: usize) -> usize;
-        fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
+/// which says nothing about where the fault was. The report is written to
+/// the log that is kept open, and the previous disposition is put back
+/// before the handler returns: the faulting instruction then runs again,
+/// the signal is delivered again, and the system records the crash the way
+/// it always did, with the fault address and the place it happened.
+extern "C" fn report_crash(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut c_void,
+) {
+    if !CRASH_REPORTING.swap(true, Ordering::AcqRel) {
+        write_crash_record(signal_number, info, context);
     }
-    const SIGSEGV: i32 = 11;
-    const SIGABRT: i32 = 6;
-    const SIGBUS: i32 = 7;
-    const SIGILL: i32 = 4;
-    const SIGFPE: i32 = 8;
-    const SIGTRAP: i32 = 5;
+    // Whatever the report did, the signal belongs to the disposition that
+    // was there before. The fault happens again and the daemon ends the
+    // way it would have ended without a reporter.
+    restore_previous_disposition(signal_number);
+}
 
-    extern "C" fn report(signal_number: i32) {
-        // The report is written to the open file with write(), because a
-        // fault handler cannot take a lock. A fault that happened while the
-        // log was locked would otherwise deadlock here, and a daemon that
-        // never dies is a device with no controls at all.
-        let fd = CRASH_FD.load(Ordering::Acquire);
-        if fd >= 0 {
-            let header = format!("DASH_CRASH signal={signal_number}\n");
-            unsafe { write(fd, header.as_ptr().cast(), header.len()) };
-            let trace = std::backtrace::Backtrace::force_capture().to_string();
-            unsafe { write(fd, trace.as_ptr().cast(), trace.len()) };
-            unsafe { write(fd, b"\n".as_ptr().cast(), 1) };
+/// Put the disposition that was there before the daemon took the signal.
+///
+/// A signal that was ignored must not be ignored again: the fault would
+/// run again and again with nothing to stop it.
+fn restore_previous_disposition(signal_number: libc::c_int) {
+    let Some(index) = CRASH_SIGNALS.iter().position(|number| *number == signal_number) else {
+        end_with_the_default_action(signal_number);
+        return;
+    };
+    let previous = unsafe { core::ptr::addr_of!(CRASH_PREVIOUS[index]).read().assume_init() };
+    if previous.sa_sigaction == libc::SIG_IGN {
+        end_with_the_default_action(signal_number);
+        return;
+    }
+    if unsafe { libc::sigaction(signal_number, &previous, core::ptr::null_mut()) } != 0 {
+        end_with_the_default_action(signal_number);
+    }
+}
+
+/// End the daemon the way the system ends a process that has no handler.
+fn end_with_the_default_action(signal_number: libc::c_int) {
+    unsafe {
+        let mut action: libc::sigaction = core::mem::zeroed();
+        action.sa_sigaction = libc::SIG_DFL;
+        action.sa_flags = 0;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(signal_number, &action, core::ptr::null_mut());
+        libc::raise(signal_number);
+    }
+}
+
+/// Write what is known about a fault to the crash log.
+///
+/// Everything in here has to be safe to run inside a signal handler: no
+/// allocation, no lock, no formatting library. The record is built in a
+/// buffer on the stack and written with the C library, one piece at a
+/// time.
+fn write_crash_record(
+    signal_number: libc::c_int,
+    info: *mut libc::siginfo_t,
+    context: *mut c_void,
+) {
+    let fd = CRASH_FD.load(Ordering::Acquire);
+    if fd < 0 {
+        return;
+    }
+    let code = if info.is_null() {
+        0
+    } else {
+        unsafe { (*info).si_code }
+    };
+    // The address is only the place of a fault for the signals that fault.
+    // For the others the same field holds something else entirely, and a
+    // report that says "addr" for it is a report that lies.
+    let address = if info.is_null() || !fault_signal(signal_number) {
+        0
+    } else {
+        (unsafe { (*info).si_addr() }) as usize
+    };
+    let (program_counter, link_register, stack_pointer) = fault_place(context);
+
+    let mut buffer = [0u8; 192];
+    let mut length = 0usize;
+    length = put_bytes(&mut buffer, length, b"DASH_CRASH signal=");
+    length = put_number(&mut buffer, length, signal_number as i64);
+    length = put_bytes(&mut buffer, length, b" code=");
+    length = put_number(&mut buffer, length, code as i64);
+    length = put_bytes(&mut buffer, length, b" addr=0x");
+    length = put_hex(&mut buffer, length, address as u64);
+    length = put_bytes(&mut buffer, length, b" pc=0x");
+    length = put_hex(&mut buffer, length, program_counter as u64);
+    length = put_bytes(&mut buffer, length, b" lr=0x");
+    length = put_hex(&mut buffer, length, link_register as u64);
+    length = put_bytes(&mut buffer, length, b" sp=0x");
+    length = put_hex(&mut buffer, length, stack_pointer as u64);
+    length = put_bytes(&mut buffer, length, b"\n");
+    write_bytes(fd, &buffer[..length]);
+}
+
+/// Whether a signal is a fault, and the place of the fault is in the
+/// signal information.
+fn fault_signal(signal_number: libc::c_int) -> bool {
+    matches!(
+        signal_number,
+        libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGFPE
+    )
+}
+
+/// The place a fault happened, taken from the machine context of the signal.
+///
+/// The daemon runs on arm64, and the context of a signal is the same
+/// layout there on the device and on the build machine. The offsets are
+/// checked when the code is compiled, so a change in the C library that
+/// moved them is a build failure and not a wrong address in a report.
+fn fault_place(context: *mut c_void) -> (usize, usize, usize) {
+    if context.is_null() {
+        return (0, 0, 0);
+    }
+    let context = unsafe { &*context.cast::<libc::ucontext_t>() };
+    #[cfg(target_arch = "aarch64")]
+    {
+        const _: () = assert!(core::mem::offset_of!(libc::ucontext_t, uc_mcontext) == 176);
+        const _: () = assert!(core::mem::offset_of!(libc::mcontext_t, pc) == 264);
+        (
+            context.uc_mcontext.pc as usize,
+            context.uc_mcontext.regs[30] as usize,
+            context.uc_mcontext.sp as usize,
+        )
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        (0, 0, 0)
+    }
+}
+
+/// Put a piece of text into the record.
+fn put_bytes(buffer: &mut [u8], length: usize, bytes: &[u8]) -> usize {
+    let mut length = length;
+    for byte in bytes {
+        if length >= buffer.len() {
+            break;
+        }
+        buffer[length] = *byte;
+        length += 1;
+    }
+    length
+}
+
+/// Put a number into the record.
+fn put_number(buffer: &mut [u8], length: usize, value: i64) -> usize {
+    let mut digits = [0u8; 20];
+    let mut count = 0usize;
+    let mut magnitude = value.unsigned_abs();
+    if value < 0 {
+        digits[count] = b'-';
+        count += 1;
+    }
+    loop {
+        digits[count] = b'0' + (magnitude % 10) as u8;
+        count += 1;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    let mut length = length;
+    for index in (0..count).rev() {
+        if length >= buffer.len() {
+            break;
+        }
+        buffer[length] = digits[index];
+        length += 1;
+    }
+    length
+}
+
+/// Put a number in the record as a hexadecimal address.
+fn put_hex(buffer: &mut [u8], length: usize, value: u64) -> usize {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut digits = [0u8; 16];
+    let mut count = 0usize;
+    let mut magnitude = value;
+    loop {
+        digits[count] = DIGITS[(magnitude % 16) as usize];
+        count += 1;
+        magnitude /= 16;
+        if magnitude == 0 {
+            break;
+        }
+    }
+    let mut length = length;
+    for index in (0..count).rev() {
+        if length >= buffer.len() {
+            break;
+        }
+        buffer[length] = digits[index];
+        length += 1;
+    }
+    length
+}
+
+/// Write the whole record to the open crash log.
+fn write_bytes(fd: libc::c_int, bytes: &[u8]) {
+    let mut written = 0usize;
+    while written < bytes.len() {
+        let result = unsafe {
+            libc::write(
+                fd,
+                bytes[written..].as_ptr().cast::<libc::c_void>(),
+                bytes.len() - written,
+            )
+        };
+        if result > 0 {
+            written += result as usize;
+            continue;
+        }
+        if result == 0 {
+            break;
+        }
+        // The write was cut short by a signal: try again.
+        if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+            continue;
+        }
+        break;
+    }
+}
+
+/// Take the fatal signals over, and keep the disposition that was there.
+///
+/// The old reporter replaced the disposition with its own and threw the
+/// previous one away, so the system no longer saw the crash: a daemon
+/// that died produced no record anywhere but in the log of this daemon.
+/// The disposition is kept instead, and put back when a fault happens.
+fn install_crash_reporter() {
+    for (index, signal_number) in CRASH_SIGNALS.iter().copied().enumerate() {
+        let mut current: libc::sigaction = unsafe { core::mem::zeroed() };
+        if unsafe { libc::sigaction(signal_number, core::ptr::null(), &mut current) } != 0 {
+            eprintln!("DASH_CRASH_SIGNAL_QUERY_FAIL signal={signal_number}");
+            continue;
+        }
+        if current.sa_sigaction == (report_crash as *const () as libc::sighandler_t) {
+            // The reporter is already in place for this signal.
+            continue;
+        }
+
+        let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+        action.sa_sigaction = report_crash as *const () as libc::sighandler_t;
+        // The report needs the signal information and the machine context,
+        // and it has to run on the alternate stack: a fault that happened
+        // on an exhausted stack cannot be reported from that stack.
+        action.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+        unsafe { libc::sigemptyset(&mut action.sa_mask) };
+
+        let mut previous: libc::sigaction = unsafe { core::mem::zeroed() };
+        if unsafe { libc::sigaction(signal_number, &action, &mut previous) } != 0 {
+            eprintln!("DASH_CRASH_SIGNAL_INSTALL_FAIL signal={signal_number}");
+            continue;
         }
         unsafe {
-            // SIG_DFL: let the fault happen again, so the system records the
-            // crash the way it always did.
-            signal(signal_number, 0);
-            unsafe extern "C" {
-                fn raise(signal_number: i32) -> i32;
-            }
-            raise(signal_number);
+            core::ptr::addr_of_mut!(CRASH_PREVIOUS[index])
+                .write(core::mem::MaybeUninit::new(previous));
         }
-    }
-
-    for number in [SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE, SIGTRAP] {
-        unsafe { signal(number, report as *const () as usize) };
     }
 }
 
@@ -5596,7 +6263,7 @@ fn loopback_ipc_loop() {
 // ZRAM & MEMORY TUNING HELPERS
 
 fn zram_get_disksize_mb() -> i32 {
-    if let Ok(raw) = fs::read_to_string("/sys/block/zram0/disksize")
+    if let Ok(raw) = read_node_text("/sys/block/zram0/disksize")
         && let Ok(bytes) = raw.trim().parse::<u64>()
     {
         return (bytes / (1024 * 1024)) as i32;
@@ -5605,7 +6272,7 @@ fn zram_get_disksize_mb() -> i32 {
 }
 
 fn zram_get_swappiness() -> i32 {
-    if let Ok(raw) = fs::read_to_string("/proc/sys/vm/swappiness")
+    if let Ok(raw) = read_node_text("/proc/sys/vm/swappiness")
         && let Ok(v) = raw.trim().parse::<i32>()
     {
         return v;
@@ -5614,7 +6281,7 @@ fn zram_get_swappiness() -> i32 {
 }
 
 fn zram_get_algorithm() -> String {
-    if let Ok(raw) = fs::read_to_string("/sys/block/zram0/comp_algorithm") {
+    if let Ok(raw) = read_node_text("/sys/block/zram0/comp_algorithm") {
         for token in raw.split_whitespace() {
             if token.starts_with('[') && token.ends_with(']') {
                 return token[1..token.len() - 1].to_string();
@@ -5631,7 +6298,7 @@ struct ZramMmStat {
 }
 
 fn zram_get_mm_stat() -> ZramMmStat {
-    if let Ok(raw) = fs::read_to_string("/sys/block/zram0/mm_stat") {
+    if let Ok(raw) = read_node_text("/sys/block/zram0/mm_stat") {
         let parts: Vec<&str> = raw.split_whitespace().collect();
         if parts.len() >= 3 {
             let orig = parts[0].parse::<u64>().unwrap_or(0) / (1024 * 1024);
@@ -5924,7 +6591,7 @@ fn gpu_devfreq_table_hz() -> Vec<u64> {
 /// an index derived from the wrong table moves the floor to an unrelated
 /// frequency.
 fn gpu_ged_ladder_hz() -> Option<Vec<u64>> {
-    let raw = fs::read_to_string(DASH_GPU_GED_LADDER).ok()?;
+    let raw = read_node_text(DASH_GPU_GED_LADDER).ok()?;
     let ladder = parse_gpu_ged_ladder(&raw)?;
     if ladder.is_empty() { None } else { Some(ladder) }
 }
@@ -5997,8 +6664,8 @@ fn gpu_devfreq_floor_hz(hz: u64) -> Option<u64> {
 }
 
 fn gpu_read_file(primary: &str, fallback: &str) -> Option<String> {
-    fs::read_to_string(primary)
-        .or_else(|_| fs::read_to_string(fallback))
+    read_node_text(primary)
+        .or_else(|_| read_node_text(fallback))
         .ok()
 }
 
@@ -6158,14 +6825,14 @@ fn gpu_get_governor() -> String {
 }
 
 fn gpu_get_ged_master_flag() -> i32 {
-    fs::read_to_string("/sys/module/ged/parameters/ged_boost_enable")
+    read_node_text("/sys/module/ged/parameters/ged_boost_enable")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0)
 }
 
 fn gpu_flag(path: &str) -> i32 {
-    fs::read_to_string(path)
+    read_node_text(path)
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(-1)
@@ -6191,13 +6858,13 @@ fn gpu_boost_pipeline_matches(enabled: bool) -> bool {
 
 fn gpu_get_thermal_state() -> i32 {
     gpu_cooling_device_path()
-        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|path| read_node_text(path).ok())
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(-1)
 }
 
 fn gpu_get_dvfs_enabled() -> i32 {
-    fs::read_to_string("/sys/module/ged/parameters/gpu_dvfs_enable")
+    read_node_text("/sys/module/ged/parameters/gpu_dvfs_enable")
         .ok()
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(-1)
@@ -6557,7 +7224,7 @@ fn set_gpu_uncap(enable: bool) -> Result<(), String> {
 }
 
 fn gpu_get_power_policy() -> String {
-    fs::read_to_string("/sys/class/misc/mali0/device/power_policy")
+    read_node_text("/sys/class/misc/mali0/device/power_policy")
         .ok()
         .map(|s| {
             if s.contains("[always_on]") {
@@ -6949,6 +7616,10 @@ fn snapshot() -> String {
         format!("io={}", sanitize(io_scheduler())),
         format!("touch_hal={touch_hal}"),
         format!("display_hal={display_hal}"),
+        format!(
+            "display_route={}",
+            if display_hal == 1 { "vendor" } else { "unavailable" }
+        ),
         format!("touch={}", TOUCH_STATE.load(Ordering::Acquire)),
         format!(
             "display_color={}",
@@ -7038,11 +7709,12 @@ fn restore_released_controls() -> Result<(), String> {
         run("bypass", apply_bypass_charging(false));
     }
     run("touch output", touch_resampler::set_target_hz(0));
+    run("EB DVFS policy", restore_eb_dvfs_policy());
     if service_control::original("touch.hal").is_some() {
         if vendor_binder::touch_available() {
             run("OEM touch", apply_touch_hal_profile(0));
         }
-        if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
+    if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
             // Restore the saved timing, including OEM values outside fixed-rate presets.
             run(
                 "touch timing",
@@ -7354,6 +8026,7 @@ fn diagnostics_health_json() -> serde_json::Value {
         "vendorFloorIndex": limits.floor_index,
         "vendorFloorBy": limits.floor_limiter,
         "vendorFloorName": limits.floor_name(),
+        "vendorEbDvfs": if eb_dvfs_enabled() { "enabled" } else { "disabled" },
     });
 
     let game = serde_json::json!({
@@ -7368,10 +8041,22 @@ fn diagnostics_health_json() -> serde_json::Value {
 
     let per_app = app_runtime::health_json();
 
+    let display = serde_json::json!({
+        "route": if vendor_binder::display_available() { "vendor" } else { "unavailable" },
+        "color": DISPLAY_COLOR_STATE.load(Ordering::Acquire),
+        "temperature": DISPLAY_TEMP_STATE.load(Ordering::Acquire),
+        "sunlight": DISPLAY_SUNLIGHT_STATE.load(Ordering::Acquire),
+        "silky": DISPLAY_SILKY_STATE.load(Ordering::Acquire),
+        "video": DISPLAY_VIDEO_STATE.load(Ordering::Acquire),
+        "dolby": DISPLAY_DOLBY_STATE.load(Ordering::Acquire),
+        "applyAck": DISPLAY_APPLY_ACK.load(Ordering::Acquire),
+    });
+
     serde_json::json!({
         "gpu": gpu,
         "gameServices": game,
         "perApp": per_app,
+        "display": display,
         "serviceEnabled": service_control::enabled(),
         "events": diagnostics::history().len(),
     })
@@ -8084,9 +8769,9 @@ mod tests {
         gpu_ged_index_for_floor, mi_thermal_cpu_limit_request,
         migrate_legacy_gpu_profile_cpu_state, mtk_powerhal_cpu_range_request,
         normalize_charging_profile, normalize_mi_thermal_config_mode, normalize_reported_power_w,
-        package_app_id_from_packages_list, parse_cpu_frequency_table, parse_cpu_time_in_state,
-        parse_gpu_ged_ladder, parse_ged_current_frequency_mhz, persisted_cpu_ranges_active,
-        profile_uses_ged_boost,
+        package_app_id_from_packages_list,         parse_cpu_frequency_table, parse_cpu_time_in_state,
+        parse_eb_dvfs_mode, parse_gpu_ged_ladder, parse_ged_current_frequency_mhz,
+        persisted_cpu_ranges_active, profile_uses_ged_boost, select_dash_htsr_rate,
         scaled_display_density, tcp_client_uid_from_table, touch_hal_profile_sequence,
         vendor_ceiling_caps_target,
         valid_charging_profile, valid_mi_thermal_config_mode, validate_cpu_frequency_range_against,
@@ -8234,6 +8919,23 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
     }
 
     #[test]
+    fn takes_the_touch_rate_only_when_the_node_repeats_itself() {
+        let samples = vec![
+            "report_rate: 240".to_string(),
+            String::new(),
+            "report_rate: 43".to_string(),
+            "report_rate: 240".to_string(),
+        ];
+        assert_eq!(select_dash_htsr_rate(&samples), Some(240));
+        // A node that never repeats itself has not said which rate it holds.
+        let single = vec!["report_rate: 240".to_string()];
+        assert_eq!(select_dash_htsr_rate(&single), None);
+        // A rate no panel can run at is never taken.
+        let nonsense = vec!["report_rate: 2".to_string(), "report_rate: 2".to_string()];
+        assert_eq!(select_dash_htsr_rate(&nonsense), None);
+    }
+
+    #[test]
     fn detects_every_dash_touch_panel_family() {
         assert_eq!(classify_touch_panel_version("driver version: gt9916"), 1);
         assert_eq!(classify_touch_panel_version("Goodix GDIX algorithm"), 1);
@@ -8323,6 +9025,19 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         let raw = "[00] freq: 1612000, volt: 880000, vsram: 750000\n";
         let ladder = parse_gpu_ged_ladder(raw).expect("ladder");
         assert_eq!(ladder, vec![1612000000]);
+    }
+
+    #[test]
+    fn reads_the_vendor_eb_dvfs_mode_from_the_node_report() {
+        assert_eq!(
+            parse_eb_dvfs_mode("EB DVFS enable,\ndts (1), EB_policy_mode(2),\n"),
+            Some("2".to_string())
+        );
+        assert_eq!(
+            parse_eb_dvfs_mode("EB DVFS disable,\ndts (0), EB_policy_mode(0),\n"),
+            Some("0".to_string())
+        );
+        assert_eq!(parse_eb_dvfs_mode("EB DVFS enable,"), None);
     }
 
     #[test]
@@ -8480,5 +9195,265 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         assert_eq!(custom.cpu0, "schedutil");
         assert_eq!(custom.cpu_min_freq0, 600);
         assert_eq!(custom.cpu_max_freq7, 2800);
+    }
+
+    #[test]
+    fn reads_a_node_without_the_standard_librarys_small_probe() {
+        // A node whose size is zero is read by the standard library through a
+        // 32-byte stack probe, and a driver that copies a fixed block of its
+        // own over that probe overwrites the saved return address. The
+        // daemon's own reader takes a large buffer instead, so the content
+        // of a node comes back whole and the read leaves no trace on the
+        // stack.
+        let path = std::env::temp_dir().join(format!(
+            "dash-node-read-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "report_rate: 240\n").unwrap();
+        let value = super::read_node_text(&path).unwrap();
+        assert_eq!(value, "report_rate: 240\n");
+        let value = super::read_trimmed(&path).unwrap();
+        assert_eq!(value, "report_rate: 240");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_node_that_answers_with_nothing_is_read_again() {
+        // The Novatek rate node answers every other read with nothing, so a
+        // single empty answer is not evidence that the node is empty. The
+        // retrying reader keeps asking until the node says something.
+        let path = std::env::temp_dir().join(format!(
+            "dash-node-empty-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "").unwrap();
+        let value = super::read_node_text_retry(&path, 3).unwrap();
+        assert_eq!(value.trim(), "");
+        std::fs::write(&path, "report_rate: 120\n").unwrap();
+        let value = super::read_node_text_retry(&path, 3).unwrap();
+        assert_eq!(value.trim(), "report_rate: 120");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_node_that_repeats_its_answer_is_not_read_twice() {
+        // A driver that answers with the same block on every read must not
+        // fill the value with that block twice.
+        let path = std::env::temp_dir().join(format!(
+            "dash-node-repeat-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "report_rate: 240\n").unwrap();
+        let value = super::read_node_text(&path).unwrap();
+        assert_eq!(value, "report_rate: 240\n");
+        assert_eq!(value.matches("report_rate").count(), 1);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn the_rate_node_original_is_a_bare_rate_the_driver_accepts() {
+        // The node reads back in the labelled form, but it only accepts a
+        // bare rate of at most six bytes, so an original that is put back
+        // has to be the number alone.
+        let path = std::path::Path::new("/proc/xm_htc_report_rate");
+        let original = super::service_control::normalized_original(path, "report_rate: 240\n");
+        assert_eq!(original, "240");
+        assert!(original.len() <= 6, "original {original} is too long");
+        let original = super::service_control::normalized_original(path, "report_rate: 120\n");
+        assert_eq!(original, "120");
+        // An answer that carries no rate has no original to put back.
+        let original = super::service_control::normalized_original(path, "");
+        assert_eq!(original, "");
+    }
+
+    /// The environment variable that turns the crash test into the child.
+    const CRASH_TEST_CHILD_ENV: &str = "DASH_CRASH_TEST_CHILD";
+
+    /// The file the previous handler writes to when it is called.
+    static CRASH_TEST_MARKER_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+    /// The handler that was in place before the daemon took the signal over.
+    ///
+    /// It leaves a mark so the test can see that the signal was given back,
+    /// and then it ends the process the way the system ends a process that
+    /// has no handler of its own.
+    extern "C" fn crash_test_previous_handler(
+        _signal_number: libc::c_int,
+        _info: *mut libc::siginfo_t,
+        _context: *mut std::ffi::c_void,
+    ) {
+        let fd = CRASH_TEST_MARKER_FD.load(std::sync::atomic::Ordering::Acquire);
+        if fd >= 0 {
+            unsafe {
+                libc::write(fd, b"previous\n".as_ptr().cast::<libc::c_void>(), 9);
+            }
+        }
+        unsafe {
+            let mut action: libc::sigaction = core::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            action.sa_flags = 0;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGSEGV, &action, core::ptr::null_mut());
+            libc::raise(libc::SIGSEGV);
+        }
+    }
+
+    /// The child of the crash test: it faults on purpose.
+    ///
+    /// With a previous handler the signal is given back to it, and
+    /// without one the daemon ends the way a process without a handler
+    /// ends. Both have to work, because the daemon does not know which of
+    /// the two the device has.
+    fn run_crash_test_child(with_previous_handler: bool) -> ! {
+        use std::os::fd::AsRawFd;
+
+        let directory = super::state_dir();
+        let marker = directory.join("previous.txt");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&marker)
+            .unwrap();
+        CRASH_TEST_MARKER_FD.store(file.as_raw_fd(), std::sync::atomic::Ordering::Release);
+        // The mark has to outlive this function: the handler writes to it
+        // after the fault, and the file is closed when it is dropped.
+        std::mem::forget(file);
+
+        // A page that cannot be touched. A write to it is a fault with an
+        // address the test knows, and it is a real fault instead of a
+        // null pointer the compiler is allowed to do anything with.
+        let page = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                4096,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(page as isize, -1, "the page could not be prepared");
+        std::fs::write(
+            directory.join("page.txt"),
+            format!("0x{:x}\n", page as usize),
+        )
+        .unwrap();
+
+        // The handler that is in place before the daemon takes the signal
+        // over. This is what the system does with the signal in the device.
+        if with_previous_handler {
+            let mut previous: libc::sigaction = unsafe { core::mem::zeroed() };
+            previous.sa_sigaction = crash_test_previous_handler as *const () as libc::sighandler_t;
+            previous.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+            unsafe { libc::sigemptyset(&mut previous.sa_mask) };
+            assert_eq!(
+                unsafe { libc::sigaction(libc::SIGSEGV, &previous, core::ptr::null_mut()) },
+                0
+            );
+        }
+
+        super::open_crash_log();
+        super::install_crash_reporter();
+
+        // The fault.
+        unsafe { core::ptr::write_volatile(page.cast::<u64>(), 1) };
+
+        // The fault did not fault: the daemon is still running.
+        std::process::exit(3);
+    }
+
+    /// Run the crash test in a child process and give back what it left.
+    fn run_crash_test(test: &str, mode: &str) -> (std::process::Output, String, String) {
+        // Every test has its own directory: the tests run at the same time
+        // and one of them must not take the report of the other away.
+        let directory = std::env::temp_dir().join(format!(
+            "dash-crash-report-{}-{}",
+            std::process::id(),
+            test.rsplit("::").next().unwrap_or(test)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(CRASH_TEST_CHILD_ENV, mode)
+            .env(super::STATE_DIR_ENV, &directory)
+            .output()
+            .unwrap();
+
+        let report = std::fs::read_to_string(directory.join("crash.log")).unwrap_or_default();
+        let page = std::fs::read_to_string(directory.join("page.txt")).unwrap_or_default();
+        std::fs::remove_dir_all(&directory).ok();
+        (output, report, page.trim().to_string())
+    }
+
+    #[test]
+    fn a_fault_is_reported_and_the_signal_is_given_back() {
+        if std::env::var(CRASH_TEST_CHILD_ENV).as_deref() == Ok("1") {
+            run_crash_test_child(true);
+        }
+
+        let (output, report, page) = run_crash_test(
+            "tests::a_fault_is_reported_and_the_signal_is_given_back",
+            "1",
+        );
+        assert!(
+            report.contains("DASH_CRASH signal=11"),
+            "the crash was not reported: {report}"
+        );
+        assert!(
+            report.contains(&format!(" addr={page}")),
+            "the place of the fault is not in the report: {report}"
+        );
+        let place = report
+            .split(" pc=0x")
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .unwrap_or_default();
+        assert!(
+            !place.is_empty() && place != "0",
+            "the program counter is not in the report: {report}"
+        );
+        assert!(
+            report.contains(" lr=0x") && report.contains(" sp=0x"),
+            "the report is missing the place of the fault: {report}"
+        );
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&output.status),
+            Some(libc::SIGSEGV),
+            "the daemon did not end with the signal: {:?}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn a_fault_without_a_previous_handler_still_ends_the_daemon() {
+        if std::env::var(CRASH_TEST_CHILD_ENV).as_deref() == Ok("default") {
+            run_crash_test_child(false);
+        }
+
+        let (output, report, page) = run_crash_test(
+            "tests::a_fault_without_a_previous_handler_still_ends_the_daemon",
+            "default",
+        );
+        assert!(
+            report.contains("DASH_CRASH signal=11"),
+            "the crash was not reported: {report}"
+        );
+        assert!(
+            report.contains(&format!(" addr={page}")),
+            "the place of the fault is not in the report: {report}"
+        );
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&output.status),
+            Some(libc::SIGSEGV),
+            "the daemon did not end with the signal: {:?}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

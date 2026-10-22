@@ -276,7 +276,7 @@ impl Hardware for Adapter {
         let _temporary = Temporary::begin();
         match (c, target) {
             (Control::Touch, Target::Touch(v)) => set_touch_profile(*v as i32),
-            (Control::Gpu, Target::Gpu(v)) => apply_performance_profile(*v as i32),
+            (Control::Gpu, Target::Gpu(v)) => apply_performance_profile_borrowed(*v as i32),
             (Control::CpuRange(p), Target::CpuRange { min, max }) => {
                 set_cpu_cluster_freq_range(*p as i32, *min as i32, *max as i32)
             }
@@ -313,58 +313,63 @@ impl Hardware for Adapter {
         }
     }
     fn restore(&mut self, c: &Control, saved: &Saved) -> Result<(), String> {
-        let _temporary = Temporary::begin();
-        match c {
-            Control::Touch => set_touch_profile(saved.state.touch.max(0))?,
-            Control::Gpu => {
-                apply_performance_profile(saved.state.perf)?;
-                let min = saved.state.gpu_min_freq_mhz;
-                let max = saved.state.gpu_max_freq_mhz;
-                if min > 0 && max >= min {
-                    set_gpu_min_freq(338)?;
-                    set_gpu_max_freq(max)?;
-                    set_gpu_min_freq(min)?;
+        {
+            let _temporary = Temporary::begin();
+            match c {
+                Control::Touch => set_touch_profile(saved.state.touch.max(0))?,
+                Control::Gpu => {
+                    apply_performance_profile(saved.state.perf)?;
+                    let min = saved.state.gpu_min_freq_mhz;
+                    let max = saved.state.gpu_max_freq_mhz;
+                    if min > 0 && max >= min {
+                        set_gpu_min_freq(338)?;
+                        set_gpu_max_freq(max)?;
+                        set_gpu_min_freq(min)?;
+                    }
+                    let governor = if !saved.state.gpu_governor.is_empty() {
+                        &saved.state.gpu_governor
+                    } else {
+                        &saved.state.gpu
+                    };
+                    if !governor.is_empty() {
+                        set_gpu_governor(governor)?;
+                    }
+                    if !saved.state.gpu_power_policy.is_empty() {
+                        set_gpu_power_policy(&saved.state.gpu_power_policy)?;
+                    }
+                    if saved.state.gpu_uncap == 1 {
+                        set_gpu_uncap(true)?;
+                    }
                 }
-                let governor = if !saved.state.gpu_governor.is_empty() {
-                    &saved.state.gpu_governor
-                } else {
-                    &saved.state.gpu
-                };
-                if !governor.is_empty() {
-                    set_gpu_governor(governor)?;
+                Control::CpuRange(p) => {
+                    let desired = persisted_cpu_range(&saved.state, *p as i32).unwrap_or((
+                        saved.live[0]
+                            .as_i64()
+                            .ok_or("missing original CPU minimum")? as i32,
+                        saved.live[1]
+                            .as_i64()
+                            .ok_or("missing original CPU maximum")? as i32,
+                    ));
+                    apply_cluster_freq_controls(*p as i32, desired.0, desired.1)?;
                 }
-                if !saved.state.gpu_power_policy.is_empty() {
-                    set_gpu_power_policy(&saved.state.gpu_power_policy)?;
+                Control::CpuGovernor(p) => set_cpu_governor(
+                    *p as i32,
+                    saved.live.as_str().ok_or("missing original governor")?,
+                )?,
+                Control::CpuCores => {
+                    if saved.state.cpu_manual == 1 {
+                        set_cpu_manual(true)?;
+                        apply_saved_cpu_mask(saved.state.cpu_online_mask)?;
+                    } else {
+                        set_cpu_manual(false)?;
+                    }
                 }
-                if saved.state.gpu_uncap == 1 {
-                    set_gpu_uncap(true)?;
-                }
+                Control::Refresh => restore_refresh(&saved.live)?,
             }
-            Control::CpuRange(p) => {
-                let desired = persisted_cpu_range(&saved.state, *p as i32).unwrap_or((
-                    saved.live[0]
-                        .as_i64()
-                        .ok_or("missing original CPU minimum")? as i32,
-                    saved.live[1]
-                        .as_i64()
-                        .ok_or("missing original CPU maximum")? as i32,
-                ));
-                apply_cluster_freq_controls(*p as i32, desired.0, desired.1)?;
-            }
-            Control::CpuGovernor(p) => set_cpu_governor(
-                *p as i32,
-                saved.live.as_str().ok_or("missing original governor")?,
-            )?,
-            Control::CpuCores => {
-                if saved.state.cpu_manual == 1 {
-                    set_cpu_manual(true)?;
-                    apply_saved_cpu_mask(saved.state.cpu_online_mask)?;
-                } else {
-                    set_cpu_manual(false)?;
-                }
-            }
-            Control::Refresh => restore_refresh(&saved.live)?,
         }
+        // The preferences of the device are restored and saved here, outside
+        // the borrowed scope: a profile that only borrows a control must not
+        // leave the preferences of the device changed.
         mutate_persisted_state(|state| copy_preference(c, &saved.state, state))?;
         if matches!(c, Control::CpuRange(_)) {
             let _lock = cpu_freq_apply_lock()
@@ -765,6 +770,11 @@ pub(super) fn owns_cpu_governor() -> bool {
     PER_APP_OWNED.load(Ordering::Acquire) & (1 << 5) != 0
 }
 
+/// Whether a per-app profile is holding a CPU cluster's frequency range.
+pub(super) fn owns_cpu_range() -> bool {
+    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 4) != 0
+}
+
 /// Whether a per-app profile is holding the CPU core mask.
 pub(super) fn owns_cpu_cores() -> bool {
     PER_APP_OWNED.load(Ordering::Acquire) & (1 << 3) != 0
@@ -776,10 +786,25 @@ fn publish_owned(mask: u32) {
 }
 
 fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
+    // The foreground is only read while the service and the profiles are
+    // both on. There is nothing to read for a profile that is not watched.
+    let watching = service_control::enabled() && r.config.enabled;
+    reconcile_with(r, hint, watching, foreground)
+}
+
+/// The reconciliation, with the reader of the foreground as an argument.
+///
+/// The reader is an argument so that the answer of the framework can be
+/// replaced in a test: a framework that does not answer must not take the
+/// profile of the app away.
+fn reconcile_with<F>(r: &mut Runtime, hint: Wake, watching: bool, read: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<Option<App>, String>,
+{
     if r.config_error.is_some() {
         return Err("per-app configuration is damaged; reset profiles to recover".into());
     }
-    if service_control::enabled() && r.config.enabled {
+    if watching {
         // A resume event already names the app that took the foreground, so
         // the framework is only asked when the event could not say. Reading
         // the framework costs hundreds of milliseconds, and a per-app profile
@@ -790,15 +815,20 @@ fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
                 r.source = "resume-event";
                 Some(app)
             }
-            Wake::Changed => match foreground() {
+            Wake::Changed => match read() {
                 Ok(app) => {
                     r.source = "framework-summary";
                     app
                 }
                 Err(error) => {
-                    r.owner
-                        .transition(&mut Adapter::new(), None, None, false, false)?;
-                    r.foreground = None;
+                    // The framework did not answer. The app that is in the
+                    // foreground is not known, but the profile that is in
+                    // effect still belongs to the last app that was known to
+                    // be in the foreground. Giving it back here is what
+                    // makes a per-app profile look like it was never
+                    // applied: the profile is released and taken again
+                    // within a second, and the user sees the device's own
+                    // profile instead of the app's.
                     return Err(error);
                 }
             },
@@ -814,8 +844,8 @@ fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {
         &mut Adapter::new(),
         r.foreground.as_ref(),
         profile,
-        service_control::enabled(),
-        r.config.enabled,
+        watching,
+        watching,
     );
     publish_owned(r.owner.applied_mask());
     result
@@ -1281,6 +1311,7 @@ mod tests {
         }
     }
     use super::*;
+    use super::app_controls::control_bit;
     #[test]
     fn internal_modes_are_detected_not_assumed() {
         assert_eq!(
@@ -1397,5 +1428,96 @@ mod tests {
     fn physical_mode_matches_a_supported_rate_and_not_canvas_size() {
         assert_eq!(physical_mode("supportedModes [{id=1, width=1280, height=2772, fps=60.0}, {id=3, width=1280, height=2772, fps=120.00001}]",120).unwrap(),(1280,2772));
         assert!(physical_mode("{width=1280, height=2772, fps=60.0}", 90).is_err());
+    }
+
+    /// A hardware that accepts every control, so that the ownership map can
+    /// be driven without the platform.
+    #[derive(Default)]
+    struct MockHardware {
+        values: BTreeMap<Control, Target>,
+    }
+    impl Hardware for MockHardware {
+        type Saved = Saved;
+        fn capture(&mut self, _control: &Control) -> Result<Saved, String> {
+            Ok(Saved {
+                state: PersistedState::default(),
+                live: Value::Null,
+            })
+        }
+        fn apply(&mut self, control: &Control, target: &Target) -> Result<(), String> {
+            self.values.insert(control.clone(), target.clone());
+            Ok(())
+        }
+        fn restore(&mut self, control: &Control, _saved: &Saved) -> Result<(), String> {
+            self.values.remove(control);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_borrowed_write_does_not_change_the_state_of_the_device() {
+        let before = persisted_state()
+            .lock()
+            .expect("state lock")
+            .clone();
+        {
+            // A per-app profile borrows the control: the preferences of the
+            // device stay what they are.
+            let _scope = Temporary::begin();
+            mutate_persisted_state(|state| {
+                state.perf = 2;
+                state.gpu = "powersave".to_string();
+                state.gpu_governor = "powersave".to_string();
+            })
+            .expect("mutate");
+        }
+        let after = persisted_state().lock().expect("state lock").clone();
+        assert_eq!(before.perf, after.perf);
+        assert_eq!(before.gpu, after.gpu);
+        assert_eq!(before.gpu_governor, after.gpu_governor);
+    }
+
+    #[test]
+    fn a_foreground_that_does_not_answer_keeps_the_profile_of_the_app() {
+        let app = App::new(0, "com.example.kept").expect("app");
+        let profile = Profile::parse(&json!({"enabled":true,"touch":2})).expect("profile");
+        let mut hardware = MockHardware::default();
+        let mut owner = Ownership::<Saved>::default();
+        owner
+            .transition(&mut hardware, Some(&app), Some(&profile), true, true)
+            .expect("apply");
+        assert!(!owner.held().is_empty());
+        let mut config = Config::default();
+        config.enabled = true;
+        config.profiles.insert(app.clone(), profile);
+        let mut runtime = Runtime {
+            config,
+            config_error: None,
+            owner,
+            foreground: Some(app.clone()),
+            error: None,
+            watching: true,
+            source: "test",
+        };
+        // The framework does not answer.
+        let result = reconcile_with(&mut runtime, Wake::Changed, true, || {
+            Err("framework silent".to_string())
+        });
+        assert!(result.is_err());
+        // The profile of the app is still in effect: it was not given back
+        // because the platform was slow.
+        assert!(!runtime.owner.held().is_empty());
+        assert!(matches!(runtime.owner.status, Status::Active(_)));
+    }
+
+    #[test]
+    fn a_per_app_profile_keeps_the_gpu_from_the_global_writers() {
+        assert!(global_may_write_gpu());
+        publish_owned(control_bit(&Control::Gpu));
+        assert!(!global_may_write_gpu());
+        assert!(owns_gpu());
+        publish_owned(0);
+        assert!(global_may_write_gpu());
+        assert!(!owns_gpu());
     }
 }

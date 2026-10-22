@@ -8,6 +8,11 @@ publish = false
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# The crash reporter talks to the C library directly: the signal
+# disposition, the signal information and the machine context of a fault
+# have no safe standard library equivalent, and a fault handler cannot
+# afford a wrapper that allocates.
+libc = "0.2"
 
 [lib]
 name = "dash_essential_backend"

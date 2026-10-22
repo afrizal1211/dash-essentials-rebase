@@ -89,8 +89,11 @@ install -m 0644 "$DASH_APK" "$DASH_STAGE/app/DashEssential.apk"
 install -m 0755 "$DASH_DAEMON" "$DASH_STAGE/bin/dash_daemon"
 install -m 0755 "$DASH_CTL" "$DASH_STAGE/bin/dash_ctl"
 
-"$DASH_STRIP" --strip-unneeded "$DASH_STAGE/bin/dash_daemon"
-"$DASH_STRIP" --strip-unneeded "$DASH_STAGE/bin/dash_ctl"
+# The symbol table is kept. The daemon is the root of every control on the
+# device, and a fault that only shows up as the module restarting it cannot
+# be found without the names of the functions in the binary.
+"$DASH_STRIP" --strip-debug "$DASH_STAGE/bin/dash_daemon"
+"$DASH_STRIP" --strip-debug "$DASH_STAGE/bin/dash_ctl"
 
 for DASH_SCRIPT in customize.sh service.sh action.sh uninstall.sh; do
     bash -n "$DASH_STAGE/$DASH_SCRIPT"

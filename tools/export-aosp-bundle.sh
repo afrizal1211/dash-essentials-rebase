@@ -77,8 +77,9 @@ cp -a "$DASH_ROOT/tools/prepare-aosp-touch-policy.py" "$DASH_DESTINATION/tools/p
 install -m 0644 "$DASH_APK" "$DASH_DESTINATION/prebuilt/DashEssential.apk"
 install -m 0755 "$DASH_DAEMON" "$DASH_DESTINATION/prebuilt/dash_daemon"
 install -m 0755 "$DASH_CTL" "$DASH_DESTINATION/prebuilt/dash_ctl"
-"$DASH_STRIP" --strip-unneeded "$DASH_DESTINATION/prebuilt/dash_daemon"
-"$DASH_STRIP" --strip-unneeded "$DASH_DESTINATION/prebuilt/dash_ctl"
+# The symbol table is kept, for the same reason as in the module build.
+"$DASH_STRIP" --strip-debug "$DASH_DESTINATION/prebuilt/dash_daemon"
+"$DASH_STRIP" --strip-debug "$DASH_DESTINATION/prebuilt/dash_ctl"
 
 "$DASH_APKSIGNER" verify --print-certs-pem "$DASH_APK" 2>/dev/null \
     | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' \

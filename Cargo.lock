@@ -32,15 +32,16 @@ dependencies = [
 
 [[package]]
 name = "dash-essential-daemon"
-version = "1.18.15"
+version = "1.18.16"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "dash-essential-host"
-version = "1.18.15"
+version = "1.18.16"
 dependencies = [
  "jni",
  "serde_json",
@@ -95,6 +96,12 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "libc"
+version = "0.2.191"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "log"

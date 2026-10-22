@@ -185,7 +185,7 @@ impl VendorLimits {
 /// The file reads `<temp_mC>,<ceiling_hz>,<floor_hz>`. A ceiling below the
 /// lowest operating point is the deep-idle marker rather than a real cap.
 pub fn gpu_thermal_ceiling_hz(lowest_hz: u64) -> Option<u64> {
-    let raw = std::fs::read_to_string("/sys/kernel/thermal/gpu_info").ok()?;
+    let raw = super::read_node_text("/sys/kernel/thermal/gpu_info").ok()?;
     let mut parts = raw.trim().split(',');
     let _temperature = parts.next()?;
     let ceiling = parts.next()?.trim().parse::<u64>().ok()?;
@@ -262,10 +262,10 @@ fn parse_limiter_id(line: &str) -> Option<i32> {
 pub fn gpu_vendor_limits() -> VendorLimits {
     let mut limits = VendorLimits::default();
 
-    let Ok(status) = std::fs::read_to_string("/proc/gpufreqv2/gpufreq_status") else {
+    let Ok(status) = super::read_node_text("/proc/gpufreqv2/gpufreq_status") else {
         return limits;
     };
-    let Ok(table) = std::fs::read_to_string("/proc/gpufreqv2/limit_table") else {
+    let Ok(table) = super::read_node_text("/proc/gpufreqv2/limit_table") else {
         return limits;
     };
     let names = parse_limit_table(&table);
@@ -353,20 +353,20 @@ impl GameServices {
 }
 
 fn read_khz(path: &str) -> Option<u64> {
-    std::fs::read_to_string(path)
+    super::read_node_text(path)
         .ok()
         .and_then(|value| value.trim().parse().ok())
 }
 
 fn read_int(path: &str) -> Option<i32> {
-    std::fs::read_to_string(path)
+    super::read_node_text(path)
         .ok()
         .and_then(|value| value.trim().parse().ok())
 }
 
 /// Read what the platform's game services are currently holding.
 pub fn game_services() -> GameServices {
-    let loom_tasks = std::fs::read_to_string("/sys/kernel/game/loom_task_cfg")
+    let loom_tasks = super::read_node_text("/sys/kernel/game/loom_task_cfg")
         .ok()
         .and_then(|raw| {
             raw.split("loom_task_cfg_list_length:")
