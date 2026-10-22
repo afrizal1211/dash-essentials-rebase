@@ -5517,7 +5517,11 @@ fn cpu_frequency_guard() {
                 .unwrap_or_default();
 
             let has_saved_range = persisted_cpu_ranges_active(&state);
-            if has_saved_range {
+            // Also check if a per-app profile currently owns the CPU range.
+            // If a per-app profile owns the CPU range, we should not re-apply
+            // global CPU ranges as that would overwrite the per-app settings.
+            let per_app_cpu_range = app_runtime::owns_cpu_range();
+            if has_saved_range && !per_app_cpu_range {
                 if ensure_cpu_unrestricted_mode_unlocked().is_ok() {
                     for (policy, min_mhz, max_mhz) in [
                         (0, state.cpu_min_freq0, state.cpu_max_freq0),
