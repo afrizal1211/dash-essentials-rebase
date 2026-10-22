@@ -967,9 +967,9 @@ static BYPASS_MONITOR_DIRTY: Mutex<bool> = Mutex::new(true);
 static BYPASS_MONITOR_WAKE: Condvar = Condvar::new();
 
 fn wake_bypass_monitor() {
-    *BYPASS_MONITOR_DIRTY
-        .lock()
-        .expect("bypass monitor poisoned") = true;
+    if let Ok(mut dirty) = BYPASS_MONITOR_DIRTY.lock() {
+        *dirty = true;
+    }
     BYPASS_MONITOR_WAKE.notify_one();
 }
 
@@ -1015,17 +1015,15 @@ fn reconcile_bypass(enabled: bool, threshold: i32, explicit: bool) -> Result<(),
 }
 
 fn maintain_bypass_policy() {
-    let _transaction = BYPASS_TRANSACTION
-        .lock()
-        .expect("bypass transaction poisoned");
+    let Some(_transaction) = BYPASS_TRANSACTION.lock().ok() else {
+        return;
+    };
     let state = persisted_state().lock().ok().map(|state| state.clone());
-    if let Some(state) = state.filter(|state| state.bypass_charging == 1) {
-        if let Err(error) = reconcile_bypass(true, state.bypass_threshold, false) {
-            if BYPASS_POLICY_ERROR.swap(1, Ordering::AcqRel) == 0 {
+    if let Some(state) = state.filter(|state| state.bypass_charging == 1)
+        && let Err(error) = reconcile_bypass(true, state.bypass_threshold, false)
+            && BYPASS_POLICY_ERROR.swap(1, Ordering::AcqRel) == 0 {
                 eprintln!("DASH_BYPASS_POLICY_FAIL {error}");
             }
-        }
-    }
 }
 
 fn configure_bypass(enabled: Option<bool>, threshold: Option<i32>) -> Result<(), String> {
@@ -1451,7 +1449,7 @@ fn policy_governor(policy: i32) -> String {
 }
 
 fn gpu_governor() -> String {
-    read_trimmed(&format!("{DASH_GPU_DEVFREQ_SYSFS}/governor")).unwrap_or_else(|_| "unknown".into())
+    read_trimmed(format!("{DASH_GPU_DEVFREQ_SYSFS}/governor")).unwrap_or_else(|_| "unknown".into())
 }
 
 fn scheduler_name(path: &Path) -> Option<String> {
@@ -2976,11 +2974,10 @@ fn select_dash_htsr_rate(samples: &[String]) -> Option<u16> {
             // about the rate the node holds.
             continue;
         };
-        if let Some((previous_text, _)) = previous {
-            if previous_text == text {
+        if let Some((previous_text, _)) = previous
+            && previous_text == text {
                 return Some(rate);
             }
-        }
         previous = Some((text, rate));
     }
     None
@@ -3007,7 +3004,7 @@ fn dash_htsr_rate() -> Option<u16> {
 /// panel, so every profile that asks the panel for a rate asks for 240.
 fn dash_touch_target_rate(profile: i32) -> Option<u16> {
     match profile {
-        1 | 2 | 3 => Some(240),
+        1..=3 => Some(240),
         _ => None,
     }
 }
@@ -3881,11 +3878,12 @@ fn load_persisted_state() -> PersistedState {
 }
 
 fn parse_persisted_state(raw: &str) -> PersistedState {
-    let mut state = PersistedState::default();
-
     // State written before GPU/CPU profile isolation did not carry this key.
     // Mark an existing file as legacy until the parser finds the new marker.
-    state.gpu_profile_cpu_isolated = 0;
+    let mut state = PersistedState {
+        gpu_profile_cpu_isolated: 0,
+        ..PersistedState::default()
+    };
 
     for line in raw.lines() {
         let line = line.trim();
@@ -4136,16 +4134,16 @@ fn parse_persisted_state(raw: &str) -> PersistedState {
     if !matches!(state.display_temp, -1 | 1..=3) {
         state.display_temp = -1;
     }
-    if !matches!(state.sunlight, -1 | 0 | 1) {
+    if !matches!(state.sunlight, -1..=1) {
         state.sunlight = -1;
     }
-    if !matches!(state.silky, -1 | 0 | 1) {
+    if !matches!(state.silky, -1..=1) {
         state.silky = -1;
     }
-    if !matches!(state.video, -1 | 0 | 1) {
+    if !matches!(state.video, -1..=1) {
         state.video = -1;
     }
-    if !matches!(state.dolby, -1 | 0 | 1) {
+    if !matches!(state.dolby, -1..=1) {
         state.dolby = -1;
     }
 
@@ -5073,8 +5071,8 @@ fn restore_persisted_state() {
         wake_bypass_monitor();
     }
 
-    if (1..=3).contains(&state.touch) {
-        if let Ok(_guard) = touch_profile_apply_lock().lock() {
+    if (1..=3).contains(&state.touch)
+        && let Ok(_guard) = touch_profile_apply_lock().lock() {
             let owned = persisted_state()
                 .lock()
                 .is_ok_and(|s| s.touch == state.touch);
@@ -5083,7 +5081,6 @@ fn restore_persisted_state() {
                 let _ = apply_touch_profile_locked(state.touch);
             }
         }
-    }
 
     if let Ok(_guard) = display_mode_apply_lock().lock() {
         if (0..=2).contains(&state.display_color)
@@ -5320,7 +5317,9 @@ fn late_boot_restore_loop() {
     // events, never by this timer.
     for (attempt, delay_seconds) in [2u64, 4, 8].into_iter().enumerate() {
         std::thread::sleep(Duration::from_secs(delay_seconds));
-        let _gate = service_control::GATE.read().expect("service gate poisoned");
+        let Some(_gate) = service_control::GATE.read().ok() else {
+            continue;
+        };
         if !service_control::active() {
             continue;
         }
@@ -5494,7 +5493,9 @@ fn reassert_persisted_governors() {
 
 fn cpu_frequency_guard() {
     loop {
-        let service_gate = service_control::GATE.read().expect("service gate poisoned");
+        let Some(service_gate) = service_control::GATE.read().ok() else {
+            continue;
+        };
         if !service_control::active() {
             drop(service_gate);
             service_control::wait_until_active();
@@ -5556,7 +5557,9 @@ fn gaming_dynamic_guard() {
     let mut boost_until = Instant::now();
 
     loop {
-        let service_gate = service_control::GATE.read().expect("service gate poisoned");
+        let Some(service_gate) = service_control::GATE.read().ok() else {
+            continue;
+        };
         if !service_control::active() {
             drop(service_gate);
             service_control::wait_until_active();
@@ -5680,15 +5683,17 @@ fn observe_bypass_telemetry() {
 fn bypass_monitor_loop() {
     let mut interval = Duration::from_secs(60);
     loop {
-        let dirty = BYPASS_MONITOR_DIRTY
-            .lock()
-            .expect("bypass monitor poisoned");
-        let (mut dirty, _) = BYPASS_MONITOR_WAKE
-            .wait_timeout_while(dirty, interval, |dirty| !*dirty)
-            .expect("bypass monitor poisoned");
+        let Some(dirty) = BYPASS_MONITOR_DIRTY.lock().ok() else {
+            continue;
+        };
+        let Ok((mut dirty, _)) = BYPASS_MONITOR_WAKE.wait_timeout_while(dirty, interval, |dirty| !*dirty) else {
+            continue;
+        };
         *dirty = false;
         drop(dirty);
-        let _gate = service_control::GATE.read().expect("service gate poisoned");
+        let Some(_gate) = service_control::GATE.read().ok() else {
+            continue;
+        };
         let enabled = persisted_state()
             .lock()
             .ok()
@@ -5726,7 +5731,9 @@ fn maintenance_loop() {
     let mut screen_was_on: Option<bool> = None;
 
     loop {
-        let gate = service_control::GATE.read().expect("service gate poisoned");
+        let Some(gate) = service_control::GATE.read().ok() else {
+            continue;
+        };
         if !service_control::active() {
             drop(gate);
             service_control::wait_until_active();
@@ -5824,7 +5831,9 @@ fn charging_power_supply_event_loop() {
                 continue;
             }
 
-            let _gate = service_control::GATE.read().expect("service gate poisoned");
+            let Some(_gate) = service_control::GATE.read().ok() else {
+                continue;
+            };
             if !service_control::active() {
                 continue;
             }
@@ -6212,12 +6221,13 @@ pub fn start_background_services() {
     #[cfg(target_os = "android")]
     std::thread::spawn(charging_power_supply_event_loop);
     std::thread::spawn(|| {
-        let _gate = service_control::GATE.read().expect("service gate poisoned");
-        if service_control::release_pending() && !service_control::enabled() {
-            if restore_released_controls().is_ok() {
+        let Some(_gate) = service_control::GATE.read().ok() else {
+            return;
+        };
+        if service_control::release_pending() && !service_control::enabled()
+            && restore_released_controls().is_ok() {
                 let _ = service_control::set_release_pending(false);
             }
-        }
         restore_persisted_state();
     });
     std::thread::spawn(refresh_display_info);
@@ -7510,16 +7520,16 @@ fn snapshot() -> String {
         .and_then(|value| parse_kernel_bool(&value))
         .map(i32::from)
         .unwrap_or(-1);
-    let bypass_phase = bypass_policy::phase(
-        bypass_saved == 1,
-        bypass_threshold,
-        battery("capacity").parse().ok(),
-        usb("online").parse().unwrap_or(-1),
-        bypass_live,
-        bypass_verified,
-        battery_current_ua.parse().ok(),
-        BYPASS_POLICY_ERROR.load(Ordering::Acquire) == 1,
-    );
+    let bypass_phase = bypass_policy::phase(bypass_policy::PhaseInput {
+        enabled: bypass_saved == 1,
+        threshold: bypass_threshold,
+        capacity: battery("capacity").parse().ok(),
+        online: usb("online").parse().unwrap_or(-1),
+        requested: bypass_live,
+        verified: bypass_verified,
+        current_ua: battery_current_ua.parse().ok(),
+        error: BYPASS_POLICY_ERROR.load(Ordering::Acquire) == 1,
+    });
     let charging_live_mw = battery_voltage_uv
         .parse::<i64>()
         .ok()
@@ -7801,10 +7811,9 @@ fn restore_released_controls() -> Result<(), String> {
     // Open the range before restoring either end. A prior exact lock can
     // reject the original minimum when it lies above the current maximum.
     for (path, value) in service_control::originals() {
-        if path.ends_with("/scaling_min_freq")
-            || (path.contains("/devfreq/") && path.ends_with("/min_freq"))
-        {
-            if let Some(value) = value.as_str() {
+        if (path.ends_with("/scaling_min_freq")
+            || (path.contains("/devfreq/") && path.ends_with("/min_freq")))
+            && let Some(value) = value.as_str() {
                 let max_path = if path.ends_with("/scaling_min_freq") {
                     path.replace("/scaling_min_freq", "/scaling_max_freq")
                 } else {
@@ -7814,17 +7823,15 @@ fn restore_released_controls() -> Result<(), String> {
                     value.trim().parse::<i64>(),
                     read_trimmed(&max_path)
                         .and_then(|v| v.parse::<i64>().map_err(|e| e.to_string())),
-                ) {
-                    if minimum > maximum {
+                )
+                    && minimum > maximum {
                         run(
                             &max_path,
                             fs::write(&max_path, minimum.to_string()).map_err(|e| e.to_string()),
                         );
                     }
-                }
                 run(&path, fs::write(&path, value).map_err(|e| e.to_string()));
             }
-        }
     }
     let mut original_nodes = service_control::originals();
     // Restore manual core states while core_ctl is still paused, then hand
@@ -8137,12 +8144,11 @@ fn diagnostics_report_export() -> Result<serde_json::Value, String> {
     let text = diagnostics_report_text();
     let mut tried = Vec::new();
     for path in diagnostics_report_paths() {
-        if let Some(parent) = path.parent() {
-            if let Err(error) = fs::create_dir_all(parent) {
+        if let Some(parent) = path.parent()
+            && let Err(error) = fs::create_dir_all(parent) {
                 tried.push(format!("{}: {error}", parent.display()));
                 continue;
             }
-        }
         match fs::write(&path, text.as_bytes()) {
             Ok(()) => {
                 diagnostics::record(
@@ -8298,11 +8304,10 @@ fn handle_command_inner(line: &str) -> String {
         if let Err(error) = capture_feature_original(cmd) {
             return format!("ERR {error}");
         }
-        if !service_control::configured() {
-            if let Err(error) = service_control::set_intent(true, true) {
+        if !service_control::configured()
+            && let Err(error) = service_control::set_intent(true, true) {
                 return format!("ERR {error}");
             }
-        }
     }
     handle_enabled_command(line)
 }
@@ -9050,7 +9055,7 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
             Some(DASH_GPU_OPP_TABLE_HZ.len() as u32 - 1)
         );
         assert_eq!(gpu_ged_index_for_floor(598_000_000, &ladder), Some(39));
-        assert_eq!(gpu_ged_index_for_floor(1612_000_000, &ladder), Some(0));
+        assert_eq!(gpu_ged_index_for_floor(1_612_000_000, &ladder), Some(0));
         // A request below the whole ladder still resolves to its slowest step.
         assert_eq!(gpu_ged_index_for_floor(1, &ladder), Some(51));
     }
@@ -9058,7 +9063,7 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
     #[test]
     fn resolves_a_ceiling_to_the_fastest_step_that_is_still_slow_enough() {
         let ladder = DASH_GPU_OPP_TABLE_HZ.to_vec();
-        assert_eq!(gpu_ged_index_for_ceiling(1612_000_000, &ladder), Some(0));
+        assert_eq!(gpu_ged_index_for_ceiling(1_612_000_000, &ladder), Some(0));
         assert_eq!(gpu_ged_index_for_ceiling(598_000_000, &ladder), Some(39));
         // Three entries publish 338 MHz; the first of them is the ceiling.
         assert_eq!(gpu_ged_index_for_ceiling(338_000_000, &ladder), Some(49));

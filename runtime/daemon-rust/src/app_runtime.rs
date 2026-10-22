@@ -1027,7 +1027,13 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
                 .ok_or("invalid user")? as u32,
             v["package"].as_str().ok_or("missing package")?,
         )?;
-        let profile = Profile::parse(&v["profile"])?;
+        let mut profile = Profile::parse(&v["profile"])?;
+        // Merge with existing profile to preserve controls not explicitly overridden
+        if let Some(existing) = config.profiles.get(&app) {
+            let mut merged = existing.clone();
+            merged.merge(profile);
+            profile = merged;
+        }
         capabilities()?.validate(&profile)?;
         config.profiles.insert(app, profile);
     } else if let Some(arg) = cmd.strip_prefix("SET app.enabled ") {
@@ -1211,12 +1217,11 @@ pub(super) fn start() {
             }
 
             for delay in [0, 150, 350] {
-                if delay > 0 {
-                    if receiver.recv_timeout(Duration::from_millis(delay)).is_ok() {
+                if delay > 0
+                    && receiver.recv_timeout(Duration::from_millis(delay)).is_ok() {
                         // A newer event supersedes the pending settling check.
                         while receiver.try_recv().is_ok() {}
                     }
-                }
                 let _gate = service_control::GATE.write().expect("service gate");
                 if let Ok(mut r) = runtime().lock() {
                     r.error = reconcile(&mut r, Wake::Changed).err();
@@ -1380,9 +1385,7 @@ mod tests {
     }
     #[test]
     fn gpu_baseline_copy_does_not_touch_cpu_or_touch() {
-        let mut global = PersistedState::default();
-        global.cpu_min_freq0 = 1000;
-        global.touch = 2;
+        let global = PersistedState { cpu_min_freq0: 1000, touch: 2, ..PersistedState::default() };
         let mut effective = global.clone();
         effective.perf = 3;
         effective.cpu_min_freq0 = 2100;
@@ -1394,8 +1397,7 @@ mod tests {
     }
     #[test]
     fn cpu_range_baseline_does_not_change_governor() {
-        let mut global = PersistedState::default();
-        global.cpu0 = "schedutil".into();
+        let global = PersistedState { cpu0: "schedutil".into(), ..PersistedState::default() };
         let mut effective = global.clone();
         effective.cpu0 = "performance".into();
         copy_preference(&Control::CpuRange(0), &global, &mut effective);
@@ -1487,8 +1489,7 @@ mod tests {
             .transition(&mut hardware, Some(&app), Some(&profile), true, true)
             .expect("apply");
         assert!(!owner.held().is_empty());
-        let mut config = Config::default();
-        config.enabled = true;
+        let mut config = Config { enabled: true, ..Config::default() };
         config.profiles.insert(app.clone(), profile);
         let mut runtime = Runtime {
             config,

@@ -249,6 +249,16 @@ impl Profile {
         }
         value
     }
+
+    /// Merges another profile into this one, preserving controls not specified in `other`.
+    /// Used when updating a per-app profile to preserve controls not explicitly overridden.
+    pub fn merge(&mut self, other: Self) {
+        self.enabled = other.enabled;
+        // Only replace controls that are explicitly set in `other`
+        for (control, target) in other.controls {
+            self.controls.insert(control, target);
+        }
+    }
 }
 
 impl Config {
@@ -534,8 +544,8 @@ impl<S: Clone> Ownership<S> {
                     &format!("control={control:?} target={target:?} error={error}"),
                 );
                 let fresh = captured_now.contains(control);
-                if fresh {
-                    if let Some(saved) = self.baseline.get(control).cloned() {
+                if fresh
+                    && let Some(saved) = self.baseline.get(control).cloned() {
                         if let Err(restore_error) = hardware.restore(control, &saved) {
                             // The control could not be given back, so the
                             // state of the hardware is unknown. That is not a
@@ -547,7 +557,6 @@ impl<S: Clone> Ownership<S> {
                         }
                         self.baseline.remove(control);
                     }
-                }
                 self.refused.insert(control.clone(), (target.clone(), error));
                 self.applied.remove(control);
                 continue;
@@ -998,8 +1007,7 @@ mod tests {
     }
     #[test]
     fn config_round_trip_duplicates_and_version_guard() {
-        let mut config = Config::default();
-        config.profiles.insert(app(), profile());
+        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
         assert_eq!(Config::parse(&config.json().to_string()).unwrap(), config);
         let mut v = config.json();
         v["schema"] = json!(99);
@@ -1010,9 +1018,39 @@ mod tests {
         assert!(Config::parse(&v.to_string()).is_err());
     }
     #[test]
+    fn profile_merge_preserves_existing_controls() {
+        let mut original = Profile::parse(&json!({"enabled":true,"cpu":{"0":{"range":[1000,2000]},"4":{"governor":"schedutil"}}})).unwrap();
+        let update = Profile::parse(&json!({"cpu":{"0":{"governor":"performance"}}})).unwrap();
+        original.merge(update);
+        assert_eq!(
+            original.controls.get(&Control::CpuRange(0)),
+            Some(&Target::CpuRange { min: 1000, max: 2000 })
+        );
+        assert_eq!(
+            original.controls.get(&Control::CpuGovernor(0)),
+            Some(&Target::CpuGovernor("performance".to_string()))
+        );
+        assert_eq!(
+            original.controls.get(&Control::CpuGovernor(4)),
+            Some(&Target::CpuGovernor("schedutil".to_string()))
+        );
+    }
+    #[test]
+    fn profile_merge_replaces_only_specified_controls() {
+        let mut original = Profile::parse(&json!({"enabled":true,"touch":2,"gpu":1,"cpu":{"0":{"range":[1000,2000]},"4":{"governor":"schedutil"}}})).unwrap();
+        let update = Profile::parse(&json!({"enabled":true,"gpu":2})).unwrap();
+        original.merge(update);
+        assert_eq!(original.controls.get(&Control::Gpu), Some(&Target::Gpu(2)));
+        assert_eq!(original.controls.get(&Control::Touch), Some(&Target::Touch(2)));
+        assert_eq!(
+            original.controls.get(&Control::CpuRange(0)),
+            Some(&Target::CpuRange { min: 1000, max: 2000 })
+        );
+        assert!(original.enabled);
+    }
+    #[test]
     fn multi_user_profiles_never_share_an_owner() {
-        let mut config = Config::default();
-        config.profiles.insert(app(), profile());
+        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
         assert!(
             !config
                 .profiles
@@ -1036,8 +1074,7 @@ mod tests {
     }
     #[test]
     fn resetting_current_profile_releases_all_borrowed_controls() {
-        let mut config = Config::default();
-        config.enabled = true;
+        let mut config = Config { enabled: true, ..Config::default() };
         config.profiles.insert(app(), profile());
         let mut h = hardware();
         let original = h.values.clone();
@@ -1121,8 +1158,7 @@ mod tests {
         ));
         let path = dir.join("profiles.json");
         assert_eq!(Config::load(&path).unwrap(), Config::default());
-        let mut config = Config::default();
-        config.profiles.insert(app(), profile());
+        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);
         assert_eq!(

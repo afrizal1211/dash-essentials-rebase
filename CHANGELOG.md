@@ -6,6 +6,18 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.17
+
+### Changed
+
+- Release codename updated to **Selene** (Greek goddess of the moon).
+- Per-app profile updates now merge with existing profiles, preserving CPU frequency ranges and other controls when only specific settings are updated.
+
+### Fixed
+
+- Fixed 10 lock poisoning panic risks by replacing `.expect("poisoned")` with graceful error handling.
+- Fixed too_many_arguments warning in bypass policy by introducing `PhaseInput` struct.
+
 ## 1.18.16
 
 ### Changed
