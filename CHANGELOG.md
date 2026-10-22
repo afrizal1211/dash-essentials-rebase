@@ -8,8 +8,6 @@ The port's own changes are at the top.
 
 ## 1.18.16
 
-Pre-release.
-
 ### Changed
 
 - The vendor's own EB DVFS policy is taken into account. The daemon reads the
