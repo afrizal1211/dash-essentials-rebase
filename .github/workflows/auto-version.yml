@@ -1,0 +1,112 @@
+name: Auto Version Bump
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      codename:
+        description: 'Custom codename (optional)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  bump-version:
+    if: "github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[version-bump]')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "afrizal1211"
+          git config user.email "344513460+afrizal1211@users.noreply.github.com"
+
+      - name: Bump version and codename
+        id: bump
+        run: |
+          # Moon/celestial codenames
+          MOONS=("Atlas" "Phoebe" "Selene" "Tsuki" "Hoshi" "Sakura" "Astraea" "Yuzuki" "Rigel" "Spica" "Lyra" "Mizar" "Alcor" "Polaris" "Vega" "Sirius" "Betelgeuse" "Rigel" "Procyon" "Deneb")
+          
+          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Current: $CURRENT_VERSION"
+          
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          
+          # Determine bump type from commit message or workflow_dispatch input
+          BUMP_TYPE="${{ github.event.inputs.bump_type || 'patch' }}"
+          
+          if [[ "${{ github.event.head_commit.message }}" == *"[version-bump major]"* ]] || [[ "${{ github.event.inputs.bump_type }}" == "major" ]]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif [[ "${{ github.event.head_commit.message }}" == *"[version-bump minor]"* ]] || [[ "${{ github.event.inputs.bump_type }}" == "minor" ]]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          
+          MOONS=("Atlas" "Phoebe" "Selene" "Tsuki" "Hoshi" "Sakura" "Astraea" "Yuzuki" "Rigel" "Spica" "Lyra" "Mizar" "Alcor" "Polaris" "Vega" "Sirius" "Betelgeuse" "Rigel" "Procyon" "Deneb")
+          CODENAME_INDEX=$((PATCH % ${#MOONS[@]}))
+          CODENAME=${MOONS[$CODENAME_INDEX]}
+          
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "CODENAME=$CODENAME" >> $GITHUB_OUTPUT
+          
+      - name: Update version files
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
+          CODENAME: ${{ steps.bump.outputs.CODENAME }}
+        run: |
+          sed -i "s/version = \"[0-9.]*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
+          sed -i "s/version: [0-9.]*+[0-9]*/version: ${NEW_VERSION}+${NEW_VERSION//./}/" ui/flutter/pubspec.yaml
+          sed -i "s/version=v[0-9.]*/version=v${NEW_VERSION}/" android/kernelsu-next/module.prop
+          sed -i "s/versionCode=[0-9]*/versionCode=$(date +%y%m%d)/" android/kernelsu-next/module.prop
+          sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"$(date +%y%m%d)\"/" android/package/AndroidManifest.xml
+          sed -i "s/android:versionName=\"[0-9.]*\"/android:versionName=\"${NEW_VERSION}\"/" android/package/AndroidManifest.xml
+          sed -i "s/const String dashVersionName = '[0-9.]*'/const String dashVersionName = '${NEW_VERSION}';/" ui/flutter/lib/release_identity.dart
+          sed -i "s/const int dashVersionCode = [0-9]*/const int dashVersionCode = $(date +%y%m%d)/" ui/flutter/lib/release_identity.dart
+          sed -i "s/const String dashReleaseCodename = '.*'/const String dashReleaseCodename = '${CODENAME}';/" ui/flutter/lib/release_identity.dart
+          
+          cargo update -p dash-essential-daemon -p dash-essential-host --offline
+
+      - name: Update CHANGELOG.md
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
+          CODENAME: ${{ steps.bump.outputs.CODENAME }}
+        run: |
+          DATE=$(date +%Y-%m-%d)
+          sed -i "1,/^## /s/^## /## ${NEW_VERSION}\n\n### Changed\n- Auto version bump with codename **${CODENAME}**.\n\n## /" CHANGELOG.md
+
+      - name: Commit and tag
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.NEW_VERSION }}
+          CODENAME: ${{ steps.bump.outputs.CODENAME }}
+        run: |
+          git add -A
+          git -c user.name="afrizal1211" -c user.email="344513460+afrizal1211@users.noreply.github.com" commit -m "chore(release): ${NEW_VERSION} codename ${CODENAME} [version-bump]"
+          git tag -a v${{ steps.bump.outputs.NEW_VERSION }}-dash -m "Dash Essential ${{ steps.bump.outputs.NEW_VERSION }} (codename ${{ steps.bump.outputs.CODENAME }})"
+          git push origin main --follow-tags
+
