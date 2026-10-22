@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Accessibility Service Configuration for ForegroundDetectorService
+
+  This configuration enables the service to detect foreground app changes
+  via TYPE_WINDOW_STATE_CHANGED events, similar to RedFox Prism.
+
+  Key settings:
+  - eventTypes: TYPE_WINDOW_STATE_CHANGED only (foreground app changes)
+  - feedbackType: GENERIC (no audio/haptic feedback)
+  - notificationTimeout: 100ms (debounce rapid events)
+  - flags: Include non-important views (system UI)
+  - packageNames: null (monitor all packages)
+  - canRetrieveWindowContent: false (privacy)
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:packageNames="" />
