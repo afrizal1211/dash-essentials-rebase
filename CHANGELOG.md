@@ -6,6 +6,17 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.18
+
+### Changed
+
+- Release codename updated to **Phoebe** (moon of Saturn).
+- Per-app profile foreground detection now uses AccessibilityService (RedFox Prism style) for real-time app switching.
+
+### Fixed
+
+- Fixed lock poisoning panics in 10 mutex locations with graceful error handling.
+
 ## 1.18.17
 
 ### Changed

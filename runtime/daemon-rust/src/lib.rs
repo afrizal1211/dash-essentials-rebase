@@ -15,6 +15,7 @@ mod app_controls;
 mod app_runtime;
 mod bypass_policy;
 mod diagnostics;
+mod foreground_app;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;

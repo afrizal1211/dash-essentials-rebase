@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">RedFox Daemon</string>
+    <string name="accessibility_service_description">
+        Detects foreground app changes for per-app profile switching and battery monitoring.
+        This service runs in the background and detects when the foreground app changes.
+    </string>
+    <string name="accessibility_service_summary">
+        Detects foreground app changes for per-app profiles.
+    </string>
+</resources>
