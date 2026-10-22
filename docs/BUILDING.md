@@ -100,6 +100,17 @@ git diff --check
 The NativeActivity host intentionally links Android system libraries and is not
 linked as a Linux test executable. `build-and-install.sh` cross-compiles it with
 the Android NDK and verifies the resulting ARM64 shared object.
+CI runs the checks that do not need the Android toolchain. The `Rust checks`
+workflow (`.github/workflows/rust-check.yml`) runs on every pull request and on
+every push to `main`:
+```bash
+cargo fmt --all -- --check
+cargo clippy -p dash-essential-daemon --all-targets -- -D warnings
+```
+Formatting covers both crates. Clippy covers only the daemon, because
+`runtime/host-rust` links the Android system libraries unconditionally and
+depends on `jni`, with no stub for a non-Android host. That crate is compiled by
+the module build instead.
 
 Build verification additionally checks:
 
