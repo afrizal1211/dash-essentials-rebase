@@ -3235,8 +3235,7 @@ fn touch_profile_apply_lock() -> &'static Mutex<()> {
     TOUCH_PROFILE_APPLY_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[derive(Clone)]
 struct PersistedState {
     charging: i32,
     bypass_charging: i32,
@@ -3281,9 +3280,396 @@ struct PersistedState {
     cpu_thermal_mode_prev: i32,
 }
 
+/// One `key=value` line of state.conf. Persistence is driven entirely by
+/// `PERSISTED_FIELDS`, in both directions, so a field cannot be written
+/// without also being read back: every field of `PersistedState` needs an
+/// entry here.
+struct PersistedField {
+    key: &'static str,
+    read: fn(&PersistedState) -> i32,
+    write: fn(&mut PersistedState, i32),
+    text: bool,
+    read_text: fn(&PersistedState) -> &str,
+    write_text: fn(&mut PersistedState, &str),
+    /// Validates a parsed value; `None` keeps the current one, which is how a
+    /// corrupt line never replaces a good default.
+    parse: fn(i32) -> Option<i32>,
+    /// Normalizes what is written, so an in-memory value that `parse` would
+    /// reject cannot turn a reload into a silent reset.
+    emit: fn(i32) -> i32,
+}
+
+const fn number<S>(
+    key: &'static str,
+    read: fn(&S) -> i32,
+    write: fn(&mut S, i32),
+    emit: fn(i32) -> i32,
+) -> PersistedField {
+    PersistedField {
+        key,
+        read,
+        write,
+        text: false,
+        read_text: |_| "",
+        write_text: |_, _| {},
+        parse: Some,
+        emit,
+    }
+}
+
+const fn flag<S>(
+    key: &'static str,
+    read: fn(&S) -> i32,
+    write: fn(&mut S, i32),
+) -> PersistedField {
+    PersistedField {
+        // A stored boolean that is not exactly 1 is 0, in both directions.
+        parse: |value| Some(i32::from(value == 1)),
+        emit: |value| i32::from(value == 1),
+        ..number(key, read, write, |value| value)
+    }
+}
+
+/// Core 0 cannot be offlined, and the mask is an eight-core bitfield. A value
+/// the file does not carry that bit for is corrected rather than kept, and
+/// what is written carries it too.
+const fn online_mask<S>(
+    key: &'static str,
+    read: fn(&S) -> i32,
+    write: fn(&mut S, i32),
+) -> PersistedField {
+    PersistedField {
+        parse: |mask| Some((mask | 0x01) & 0xFF),
+        emit: |value| value | 0x01,
+        ..number(key, read, write, |value| value)
+    }
+}
+
+const fn checked<S>(
+    key: &'static str,
+    read: fn(&S) -> i32,
+    write: fn(&mut S, i32),
+    parse: fn(i32) -> Option<i32>,
+) -> PersistedField {
+    PersistedField {
+        parse,
+        ..number(key, read, write, |value| value)
+    }
+}
+
+const fn text<S>(
+    key: &'static str,
+    read_text: fn(&S) -> &str,
+    write_text: fn(&mut S, &str),
+) -> PersistedField {
+    PersistedField {
+        key,
+        read: |_| 0,
+        write: |_, _| {},
+        text: true,
+        read_text,
+        write_text,
+        parse: |_| None,
+        emit: |value| value,
+    }
+}
+
+const PERSISTED_FIELDS: &[PersistedField] = &[
+    checked(
+        "charging",
+        |state| state.charging,
+        |state, value| state.charging = value,
+        // -1 is the "never set" marker and survives as is. Everything else is
+        // a profile, and a file written by an older build carried the old
+        // boost switch as 8, which is the full Dash tier now.
+        |profile| {
+            Some(if profile == -1 {
+                -1
+            } else {
+                normalize_charging_profile(profile)
+            })
+        },
+    ),
+    flag(
+        "bypass_charging",
+        |state| state.bypass_charging,
+        |state, value| state.bypass_charging = value,
+    ),
+    checked(
+        "bypass_threshold",
+        |state| state.bypass_threshold,
+        |state, value| state.bypass_threshold = value,
+        |threshold| bypass_policy::valid_threshold(threshold).then_some(threshold),
+    ),
+    checked(
+        "touch",
+        |state| state.touch,
+        |state, value| state.touch = value,
+        |profile| (1..=3).contains(&profile).then_some(profile),
+    ),
+    checked(
+        "display_color",
+        |state| state.display_color,
+        |state, value| state.display_color = value,
+        |mode| (-1..=2).contains(&mode).then_some(mode),
+    ),
+    checked(
+        "display_temp",
+        |state| state.display_temp,
+        |state, value| state.display_temp = value,
+        |mode| matches!(mode, -1 | 1..=3).then_some(mode),
+    ),
+    number(
+        "display_width",
+        |state| state.display_width,
+        |state, value| state.display_width = value,
+        |value| value,
+    ),
+    number(
+        "display_height",
+        |state| state.display_height,
+        |state, value| state.display_height = value,
+        |value| value,
+    ),
+    number(
+        "display_density",
+        |state| state.display_density,
+        |state, value| state.display_density = value,
+        |value| value,
+    ),
+    checked(
+        "sunlight",
+        |state| state.sunlight,
+        |state, value| state.sunlight = value,
+        |mode| matches!(mode, -1..=1).then_some(mode),
+    ),
+    checked(
+        "silky",
+        |state| state.silky,
+        |state, value| state.silky = value,
+        |mode| matches!(mode, -1..=1).then_some(mode),
+    ),
+    checked(
+        "video",
+        |state| state.video,
+        |state, value| state.video = value,
+        |mode| matches!(mode, -1..=1).then_some(mode),
+    ),
+    checked(
+        "dolby",
+        |state| state.dolby,
+        |state, value| state.dolby = value,
+        |mode| matches!(mode, -1..=1).then_some(mode),
+    ),
+    number(
+        "expert_gamut",
+        |state| state.expert_gamut,
+        |state, value| state.expert_gamut = value,
+        |value| value,
+    ),
+    number(
+        "expert_1",
+        |state| state.expert[0],
+        |state, value| state.expert[0] = value,
+        |value| value,
+    ),
+    number(
+        "expert_2",
+        |state| state.expert[1],
+        |state, value| state.expert[1] = value,
+        |value| value,
+    ),
+    number(
+        "expert_3",
+        |state| state.expert[2],
+        |state, value| state.expert[2] = value,
+        |value| value,
+    ),
+    number(
+        "expert_4",
+        |state| state.expert[3],
+        |state, value| state.expert[3] = value,
+        |value| value,
+    ),
+    number(
+        "expert_5",
+        |state| state.expert[4],
+        |state, value| state.expert[4] = value,
+        |value| value,
+    ),
+    number(
+        "expert_6",
+        |state| state.expert[5],
+        |state, value| state.expert[5] = value,
+        |value| value,
+    ),
+    number(
+        "expert_7",
+        |state| state.expert[6],
+        |state, value| state.expert[6] = value,
+        |value| value,
+    ),
+    number(
+        "expert_8",
+        |state| state.expert[7],
+        |state, value| state.expert[7] = value,
+        |value| value,
+    ),
+    number(
+        "perf",
+        |state| state.perf,
+        |state, value| state.perf = value,
+        |value| value,
+    ),
+    flag(
+        "gpu_profile_cpu_isolated",
+        |state| state.gpu_profile_cpu_isolated,
+        |state, value| state.gpu_profile_cpu_isolated = value,
+    ),
+    checked(
+        "cpu_manual",
+        |state| state.cpu_manual,
+        |state, value| state.cpu_manual = value,
+        |mode| Some(match mode {
+            -1 => -1,
+            1 => 1,
+            _ => 0,
+        }),
+    ),
+    online_mask(
+        "cpu_online_mask",
+        |state| state.cpu_online_mask,
+        |state, value| state.cpu_online_mask = value,
+    ),
+    text(
+        "cpu0",
+        |state| &state.cpu0,
+        |state, value| state.cpu0 = value.to_string(),
+    ),
+    text(
+        "cpu4",
+        |state| &state.cpu4,
+        |state, value| state.cpu4 = value.to_string(),
+    ),
+    text(
+        "cpu7",
+        |state| &state.cpu7,
+        |state, value| state.cpu7 = value.to_string(),
+    ),
+    text("gpu", |state| &state.gpu, |state, value| {
+        state.gpu = value.to_string()
+    }),
+    text("io", |state| &state.io, |state, value| {
+        state.io = value.to_string()
+    }),
+    number(
+        "brightness_prev",
+        |state| state.brightness_prev,
+        |state, value| state.brightness_prev = value,
+        |value| value,
+    ),
+    number(
+        "zram_size_mb",
+        |state| state.zram_size_mb,
+        |state, value| state.zram_size_mb = value,
+        |value| value,
+    ),
+    text(
+        "zram_algorithm",
+        |state| &state.zram_algorithm,
+        |state, value| state.zram_algorithm = value.to_string(),
+    ),
+    number(
+        "zram_swappiness",
+        |state| state.zram_swappiness,
+        |state, value| state.zram_swappiness = value,
+        |value| value,
+    ),
+    number(
+        "gpu_min_freq_mhz",
+        |state| state.gpu_min_freq_mhz,
+        |state, value| state.gpu_min_freq_mhz = value,
+        |value| value,
+    ),
+    number(
+        "gpu_max_freq_mhz",
+        |state| state.gpu_max_freq_mhz,
+        |state, value| state.gpu_max_freq_mhz = value,
+        |value| value,
+    ),
+    text(
+        "gpu_governor",
+        |state| &state.gpu_governor,
+        |state, value| state.gpu_governor = value.to_string(),
+    ),
+    number(
+        "gpu_ged_boost",
+        |state| state.gpu_ged_boost,
+        |state, value| state.gpu_ged_boost = value,
+        |value| value,
+    ),
+    number(
+        "gpu_uncap",
+        |state| state.gpu_uncap,
+        |state, value| state.gpu_uncap = value,
+        |value| value,
+    ),
+    text(
+        "gpu_power_policy",
+        |state| &state.gpu_power_policy,
+        |state, value| state.gpu_power_policy = value.to_string(),
+    ),
+    number(
+        "cpu_min_freq0",
+        |state| state.cpu_min_freq0,
+        |state, value| state.cpu_min_freq0 = value,
+        |value| value,
+    ),
+    number(
+        "cpu_max_freq0",
+        |state| state.cpu_max_freq0,
+        |state, value| state.cpu_max_freq0 = value,
+        |value| value,
+    ),
+    number(
+        "cpu_min_freq4",
+        |state| state.cpu_min_freq4,
+        |state, value| state.cpu_min_freq4 = value,
+        |value| value,
+    ),
+    number(
+        "cpu_max_freq4",
+        |state| state.cpu_max_freq4,
+        |state, value| state.cpu_max_freq4 = value,
+        |value| value,
+    ),
+    number(
+        "cpu_min_freq7",
+        |state| state.cpu_min_freq7,
+        |state, value| state.cpu_min_freq7 = value,
+        |value| value,
+    ),
+    number(
+        "cpu_max_freq7",
+        |state| state.cpu_max_freq7,
+        |state, value| state.cpu_max_freq7 = value,
+        |value| value,
+    ),
+    checked(
+        "cpu_thermal_mode_prev",
+        |state| state.cpu_thermal_mode_prev,
+        |state, value| state.cpu_thermal_mode_prev = value,
+        |mode| Some(if valid_mi_thermal_config_mode(mode) {
+            mode
+        } else {
+            -1
+        }),
+    ),
+];
+
 impl Default for PersistedState {
     fn default() -> Self {
-        Self {
+        let mut state = Self {
             charging: 0,
             bypass_charging: 0,
             bypass_threshold: 0,
@@ -3325,7 +3711,16 @@ impl Default for PersistedState {
             cpu_min_freq7: -1,
             cpu_max_freq7: -1,
             cpu_thermal_mode_prev: -1,
+        };
+        // Defaults live above because they carry ROM-specific values. The
+        // loop enforces that every non-text field is table-driven, so none can
+        // be added to the struct and read back as nothing but its bare default.
+        for field in PERSISTED_FIELDS {
+            if !field.text {
+                (field.write)(&mut state, (field.emit)((field.read)(&state)));
+            }
         }
+        state
     }
 }
 
@@ -3441,257 +3836,19 @@ fn parse_persisted_state(raw: &str) -> PersistedState {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
+        let (key, value) = (key.trim(), value.trim());
 
-        let key = key.trim();
-        let value = value.trim();
-        let int_value = || value.parse::<i32>().ok();
-
-        match key {
-            "charging" => {
-                if let Some(v) = int_value() {
-                    state.charging = v;
-                }
+        for field in PERSISTED_FIELDS {
+            if field.key != key {
+                continue;
             }
-            "bypass_charging" => {
-                if let Some(v) = int_value() {
-                    state.bypass_charging = if v == 1 { 1 } else { 0 };
-                }
+            if field.text {
+                (field.write_text)(&mut state, value);
+            } else if let Some(parsed) = value.parse().ok().and_then(field.parse) {
+                (field.write)(&mut state, parsed);
             }
-            "bypass_threshold" => {
-                if let Some(v) = int_value().filter(|v| bypass_policy::valid_threshold(*v)) {
-                    state.bypass_threshold = v;
-                }
-            }
-            "touch" => {
-                if let Some(v) = int_value() {
-                    state.touch = v;
-                }
-            }
-            "display_color" => {
-                if let Some(v) = int_value() {
-                    state.display_color = v;
-                }
-            }
-            "display_temp" => {
-                if let Some(v) = int_value() {
-                    state.display_temp = v;
-                }
-            }
-            "display_width" => {
-                if let Some(v) = int_value() {
-                    state.display_width = v;
-                }
-            }
-            "display_height" => {
-                if let Some(v) = int_value() {
-                    state.display_height = v;
-                }
-            }
-            "display_density" => {
-                if let Some(v) = int_value() {
-                    state.display_density = v;
-                }
-            }
-            "sunlight" => {
-                if let Some(v) = int_value() {
-                    state.sunlight = v;
-                }
-            }
-            "silky" => {
-                if let Some(v) = int_value() {
-                    state.silky = v;
-                }
-            }
-            "video" => {
-                if let Some(v) = int_value() {
-                    state.video = v;
-                }
-            }
-            "dolby" => {
-                if let Some(v) = int_value() {
-                    state.dolby = v;
-                }
-            }
-            "expert_gamut" => {
-                if let Some(v) = int_value() {
-                    state.expert_gamut = v;
-                }
-            }
-            "expert_1" => {
-                if let Some(v) = int_value() {
-                    state.expert[0] = v;
-                }
-            }
-            "expert_2" => {
-                if let Some(v) = int_value() {
-                    state.expert[1] = v;
-                }
-            }
-            "expert_3" => {
-                if let Some(v) = int_value() {
-                    state.expert[2] = v;
-                }
-            }
-            "expert_4" => {
-                if let Some(v) = int_value() {
-                    state.expert[3] = v;
-                }
-            }
-            "expert_5" => {
-                if let Some(v) = int_value() {
-                    state.expert[4] = v;
-                }
-            }
-            "expert_6" => {
-                if let Some(v) = int_value() {
-                    state.expert[5] = v;
-                }
-            }
-            "expert_7" => {
-                if let Some(v) = int_value() {
-                    state.expert[6] = v;
-                }
-            }
-            "expert_8" => {
-                if let Some(v) = int_value() {
-                    state.expert[7] = v;
-                }
-            }
-            "perf" => {
-                if let Some(v) = int_value() {
-                    state.perf = v;
-                }
-            }
-            "gpu_profile_cpu_isolated" => {
-                if let Some(v) = int_value() {
-                    state.gpu_profile_cpu_isolated = if v == 1 { 1 } else { 0 };
-                }
-            }
-            "cpu_manual" => {
-                if let Some(v) = int_value() {
-                    state.cpu_manual = if v == -1 {
-                        -1
-                    } else if v == 1 {
-                        1
-                    } else {
-                        0
-                    };
-                }
-            }
-            "cpu_online_mask" => {
-                if let Some(v) = int_value() {
-                    state.cpu_online_mask = (v | 0x01) & 0xFF;
-                }
-            }
-            "cpu0" => state.cpu0 = value.to_string(),
-            "cpu4" => state.cpu4 = value.to_string(),
-            "cpu7" => state.cpu7 = value.to_string(),
-            "gpu" => state.gpu = value.to_string(),
-            "io" => state.io = value.to_string(),
-            "brightness_prev" => {
-                if let Some(v) = int_value() {
-                    state.brightness_prev = v;
-                }
-            }
-            "zram_size_mb" => {
-                if let Some(v) = int_value() {
-                    state.zram_size_mb = v;
-                }
-            }
-            "zram_algorithm" => state.zram_algorithm = value.to_string(),
-            "zram_swappiness" => {
-                if let Some(v) = int_value() {
-                    state.zram_swappiness = v;
-                }
-            }
-            "gpu_min_freq_mhz" => {
-                if let Some(v) = int_value() {
-                    state.gpu_min_freq_mhz = v;
-                }
-            }
-            "gpu_max_freq_mhz" => {
-                if let Some(v) = int_value() {
-                    state.gpu_max_freq_mhz = v;
-                }
-            }
-            "gpu_governor" => state.gpu_governor = value.to_string(),
-            "gpu_ged_boost" => {
-                if let Some(v) = int_value() {
-                    state.gpu_ged_boost = v;
-                }
-            }
-            "gpu_uncap" => {
-                if let Some(v) = int_value() {
-                    state.gpu_uncap = v;
-                }
-            }
-            "gpu_power_policy" => state.gpu_power_policy = value.to_string(),
-            "cpu_min_freq0" => {
-                if let Some(v) = int_value() {
-                    state.cpu_min_freq0 = v;
-                }
-            }
-            "cpu_max_freq0" => {
-                if let Some(v) = int_value() {
-                    state.cpu_max_freq0 = v;
-                }
-            }
-            "cpu_min_freq4" => {
-                if let Some(v) = int_value() {
-                    state.cpu_min_freq4 = v;
-                }
-            }
-            "cpu_max_freq4" => {
-                if let Some(v) = int_value() {
-                    state.cpu_max_freq4 = v;
-                }
-            }
-            "cpu_min_freq7" => {
-                if let Some(v) = int_value() {
-                    state.cpu_min_freq7 = v;
-                }
-            }
-            "cpu_max_freq7" => {
-                if let Some(v) = int_value() {
-                    state.cpu_max_freq7 = v;
-                }
-            }
-            "cpu_thermal_mode_prev" => {
-                if let Some(v) = int_value() {
-                    state.cpu_thermal_mode_prev = if valid_mi_thermal_config_mode(v) {
-                        v
-                    } else {
-                        -1
-                    };
-                }
-            }
-            _ => {}
+            break;
         }
-    }
-
-    if state.charging != -1 {
-        state.charging = normalize_charging_profile(state.charging);
-    }
-    if !(1..=3).contains(&state.touch) {
-        state.touch = -1;
-    }
-    if !(-1..=2).contains(&state.display_color) {
-        state.display_color = -1;
-    }
-    if !matches!(state.display_temp, -1 | 1..=3) {
-        state.display_temp = -1;
-    }
-    if !matches!(state.sunlight, -1..=1) {
-        state.sunlight = -1;
-    }
-    if !matches!(state.silky, -1..=1) {
-        state.silky = -1;
-    }
-    if !matches!(state.video, -1..=1) {
-        state.video = -1;
-    }
-    if !matches!(state.dolby, -1..=1) {
-        state.dolby = -1;
     }
 
     state
@@ -3701,71 +3858,28 @@ fn persisted_state() -> &'static Mutex<PersistedState> {
     PERSISTED_STATE.get_or_init(|| Mutex::new(load_persisted_state()))
 }
 
+fn persisted_state_text(state: &PersistedState) -> String {
+    let mut out = String::new();
+    for field in PERSISTED_FIELDS {
+        let value = if field.text {
+            (field.read_text)(state).to_string()
+        } else {
+            (field.emit)((field.read)(state)).to_string()
+        };
+        out.push_str(&format!("{}={}\n", field.key, value));
+    }
+    out
+}
+
 fn save_persisted_state(state: &PersistedState) -> Result<(), String> {
     // Maintenance guards consume effective targets. Only the user's global
     // preferences may reach state.conf while an app temporarily owns controls.
     let global = app_runtime::global_preferences(state)?;
-    let state = &global;
+    let out = persisted_state_text(&global);
     let state_dir = state_dir();
     fs::create_dir_all(state_dir).map_err(|e| format!("state mkdir: {e}"))?;
     fs::set_permissions(state_dir, fs::Permissions::from_mode(0o700))
         .map_err(|e| format!("state directory permissions: {e}"))?;
-
-    let mut out = String::new();
-    out.push_str(&format!("charging={}\n", state.charging));
-    out.push_str(&format!("bypass_charging={}\n", state.bypass_charging));
-    out.push_str(&format!("bypass_threshold={}\n", state.bypass_threshold));
-    out.push_str(&format!("touch={}\n", state.touch));
-    out.push_str(&format!("display_color={}\n", state.display_color));
-    out.push_str(&format!("display_temp={}\n", state.display_temp));
-    out.push_str(&format!("display_width={}\n", state.display_width));
-    out.push_str(&format!("display_height={}\n", state.display_height));
-    out.push_str(&format!("display_density={}\n", state.display_density));
-    out.push_str(&format!("sunlight={}\n", state.sunlight));
-    out.push_str(&format!("silky={}\n", state.silky));
-    out.push_str(&format!("video={}\n", state.video));
-    out.push_str(&format!("dolby={}\n", state.dolby));
-    out.push_str(&format!("expert_gamut={}\n", state.expert_gamut));
-
-    for i in 0..8 {
-        out.push_str(&format!("expert_{}={}\n", i + 1, state.expert[i]));
-    }
-
-    out.push_str(&format!("perf={}\n", state.perf));
-    out.push_str(&format!(
-        "gpu_profile_cpu_isolated={}\n",
-        state.gpu_profile_cpu_isolated
-    ));
-    out.push_str(&format!("cpu_manual={}\n", state.cpu_manual));
-    out.push_str(&format!(
-        "cpu_online_mask={}\n",
-        state.cpu_online_mask | 0x01
-    ));
-    out.push_str(&format!("cpu0={}\n", state.cpu0));
-    out.push_str(&format!("cpu4={}\n", state.cpu4));
-    out.push_str(&format!("cpu7={}\n", state.cpu7));
-    out.push_str(&format!("gpu={}\n", state.gpu));
-    out.push_str(&format!("io={}\n", state.io));
-    out.push_str(&format!("brightness_prev={}\n", state.brightness_prev));
-    out.push_str(&format!("zram_size_mb={}\n", state.zram_size_mb));
-    out.push_str(&format!("zram_algorithm={}\n", state.zram_algorithm));
-    out.push_str(&format!("zram_swappiness={}\n", state.zram_swappiness));
-    out.push_str(&format!("gpu_min_freq_mhz={}\n", state.gpu_min_freq_mhz));
-    out.push_str(&format!("gpu_max_freq_mhz={}\n", state.gpu_max_freq_mhz));
-    out.push_str(&format!("gpu_governor={}\n", state.gpu_governor));
-    out.push_str(&format!("gpu_ged_boost={}\n", state.gpu_ged_boost));
-    out.push_str(&format!("gpu_uncap={}\n", state.gpu_uncap));
-    out.push_str(&format!("gpu_power_policy={}\n", state.gpu_power_policy));
-    out.push_str(&format!("cpu_min_freq0={}\n", state.cpu_min_freq0));
-    out.push_str(&format!("cpu_max_freq0={}\n", state.cpu_max_freq0));
-    out.push_str(&format!("cpu_min_freq4={}\n", state.cpu_min_freq4));
-    out.push_str(&format!("cpu_max_freq4={}\n", state.cpu_max_freq4));
-    out.push_str(&format!("cpu_min_freq7={}\n", state.cpu_min_freq7));
-    out.push_str(&format!("cpu_max_freq7={}\n", state.cpu_max_freq7));
-    out.push_str(&format!(
-        "cpu_thermal_mode_prev={}\n",
-        state.cpu_thermal_mode_prev
-    ));
 
     let state_file = state_file();
     let tmp = state_dir.join("state.conf.tmp");
@@ -8301,6 +8415,80 @@ mod tests {
         assert_eq!(state.cpu_manual, -1);
         assert_eq!(state.display_color, -1);
         assert_eq!(state.perf, -1);
+    }
+    #[test]
+    fn every_persisted_field_survives_a_write_and_read() {
+        let state = super::PersistedState {
+            charging: 65,
+            bypass_charging: 1,
+            bypass_threshold: 80,
+            touch: 2,
+            display_color: 0,
+            display_temp: 3,
+            display_width: 1080,
+            display_height: 2400,
+            display_density: 440,
+            sunlight: 1,
+            silky: 1,
+            video: 0,
+            dolby: 1,
+            expert_gamut: 3,
+            expert: [1, 2, 3, 4, -5, 6, 7, 260],
+            perf: 2,
+            gpu_profile_cpu_isolated: 1,
+            cpu_manual: -1,
+            cpu_online_mask: 0xFF,
+            cpu0: "performance".into(),
+            cpu4: "schedutil".into(),
+            cpu7: "sugov_ext".into(),
+            gpu: "performance".into(),
+            io: "bfq".into(),
+            brightness_prev: 123,
+            zram_size_mb: 4096,
+            zram_algorithm: "zstd".into(),
+            zram_swappiness: 60,
+            gpu_min_freq_mhz: 200,
+            gpu_max_freq_mhz: 800,
+            gpu_governor: "performance".into(),
+            gpu_ged_boost: 2,
+            gpu_uncap: 1,
+            gpu_power_policy: "always_on".into(),
+            cpu_min_freq0: 300,
+            cpu_max_freq0: 2100,
+            cpu_min_freq4: 400,
+            cpu_max_freq4: 3000,
+            cpu_min_freq7: 1000,
+            cpu_max_freq7: 3250,
+            cpu_thermal_mode_prev: 6,
+            ..super::cleared_device_state()
+        };
+        let raw = super::persisted_state_text(&state);
+        let keys: Vec<&str> = raw
+            .lines()
+            .map(|line| line.split_once('=').unwrap().0)
+            .collect();
+        let mut unique = keys.clone();
+        unique.dedup();
+        assert_eq!(unique, keys, "duplicate key in {raw}");
+        let loaded = super::parse_persisted_state(&raw);
+        for field in super::PERSISTED_FIELDS {
+            assert!(keys.contains(&field.key), "{} is never written", field.key);
+            if field.text {
+                assert_eq!(
+                    (field.read_text)(&loaded),
+                    (field.read_text)(&state),
+                    "{} was not parsed",
+                    field.key
+                );
+            } else {
+                assert_eq!(
+                    (field.read)(&loaded),
+                    (field.read)(&state),
+                    "{} was not parsed",
+                    field.key
+                );
+            }
+        }
     }
     #[test]
     fn bypass_readback_accepts_explicit_kernel_booleans_only() {
