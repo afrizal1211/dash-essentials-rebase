@@ -4,13 +4,16 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <group
-        android:pivotX="54"
-        android:pivotY="54">
-        <!-- Clean Crisp Solid White "R" Monogram -->
-        <path
-            android:fillColor="#FFFFFFFF"
-            android:fillType="evenOdd"
-            android:pathData="M33,78 L33,33 C33,31 35,30 37,30 L61,30 C74,30 74,54 61,54 L45,54 L62,76 C63,78 62,79 59,79 L48,79 L35,59 L35,78 Z M45,38 L59,38 C65,38 65,46 59,46 L45,46 Z" />
-    </group>
+    <!-- Background circle -->
+    <path
+        android:fillColor="#1A1A2E"
+        android:pathData="M54,54m-50,0a50,50 0,1,1 100,0a50,50 0,1,1 -100,0" />
+    <!-- Letter D - Outer curve -->
+    <path
+        android:fillColor="#35C997"
+        android:pathData="M54,18c-19.9,0-36,16.1-36,36s16.1,36 36,36s36-16.1,36-36S73.9,18,54,18zM54,22c-17.6,0-32,14.3-36,32s14.3,32,36,32s36-14.3,36-32S75.6,22,54,22z" />
+    <!-- Letter D - Inner cutout (counter) -->
+    <path
+        android:fillColor="#1A1A2E"
+        android:pathData="M54,28c-11,0-20,9-20,20s9,20,20,20s20-9,20-20S65,28,54,28zM54,32c-8.8,0-16,7.2-16,16s7.2,16,16,16s16-7.2,16-16S62.8,32,54,32z" />
 </vector>
