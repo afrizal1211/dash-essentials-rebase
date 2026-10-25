@@ -1259,6 +1259,9 @@ fn validate_cpu_frequency_range(policy: i32, min_mhz: i32, max_mhz: i32) -> Resu
 const MI_THERMAL_CPU_LIMITS: &str = "/sys/devices/virtual/thermal/thermal_message/cpu_limits";
 const MI_THERMAL_SCONFIG: &str = "/sys/devices/virtual/thermal/thermal_message/sconfig";
 const MI_THERMAL_NO_LIMITS_MODE: i32 = 6;
+// ponytail: -1 disables the GPU thermal borrow; set to the device's thermal_ap
+// mode id after verifying on device (sconfig readback per ROM thermal profile).
+const MI_THERMAL_AP_MODE: i32 = -1;
 const MTK_POWERHAL_CPU_FREQ: &str = "/proc/powerhal_cpu_ctrl/perfserv_freq";
 
 static CPU_FREQ_APPLY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1395,6 +1398,66 @@ fn restore_cpu_thermal_mode() -> Result<(), String> {
         .lock()
         .map_err(|_| "CPU frequency apply lock poisoned".to_string())?;
     restore_cpu_thermal_mode_unlocked()
+}
+
+/// GPU thermal borrow: for Gaming Dynamic / Extreme Beast profiles, take the
+/// vendor's thermal_ap config instead of the nolimits one CPU ranges use.
+/// Disabled by default (MI_THERMAL_AP_MODE = -1). Enable after on-device
+/// verification by setting the mode id.
+fn ensure_gpu_thermal_mode_unlocked() -> Result<(), String> {
+    if MI_THERMAL_AP_MODE < 0 {
+        return Ok(());
+    }
+    let state = persisted_state()
+        .lock()
+        .ok()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    // CPU range ownership already holds the stricter nolimits mode.
+    if persisted_cpu_ranges_active(&state) {
+        return Ok(());
+    }
+    // Journal the baseline the same way EB DVFS does.
+    let current = read_mi_thermal_config_mode()?;
+    if service_control::original("gpu.thermal_mode").is_none() {
+        service_control::remember("gpu.thermal_mode", serde_json::json!(current))?;
+    }
+    if current != MI_THERMAL_AP_MODE {
+        write_mi_thermal_config_mode(MI_THERMAL_AP_MODE)?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    Ok(())
+}
+
+fn ensure_gpu_thermal_mode() -> Result<(), String> {
+    let _guard = cpu_freq_apply_lock()
+        .lock()
+        .map_err(|_| "CPU frequency apply lock poisoned".to_string())?;
+    ensure_gpu_thermal_mode_unlocked()
+}
+
+fn restore_gpu_thermal_mode_unlocked() -> Result<(), String> {
+    if MI_THERMAL_AP_MODE < 0 {
+        return Ok(());
+    }
+    let Some(mode) = service_control::original("gpu.thermal_mode").and_then(|v| {
+        v.as_i64().map(|m| m as i32)
+    }) else {
+        return Ok(());
+    };
+    if read_mi_thermal_config_mode()? != mode {
+        write_mi_thermal_config_mode(mode)?;
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    service_control::forget(&["gpu.thermal_mode".to_string()])?;
+    Ok(())
+}
+
+fn restore_gpu_thermal_mode() -> Result<(), String> {
+    let _guard = cpu_freq_apply_lock()
+        .lock()
+        .map_err(|_| "CPU frequency apply lock poisoned".to_string())?;
+    restore_gpu_thermal_mode_unlocked()
 }
 
 fn write_optional_cpu_control(path: &str, value: &str, label: &str) -> Result<(), String> {
@@ -2031,6 +2094,9 @@ fn settle_beast_gpu_lock(attempts: usize, delay: Duration) -> bool {
 pub fn enforce_performance_profile(profile: i32) -> bool {
     if matches!(profile, 1 | 3) {
         clear_gpu_cooling_cap();
+        let _ = ensure_gpu_thermal_mode();
+    } else {
+        let _ = restore_gpu_thermal_mode();
     }
 
     // The vendor's EB DVFS policy shapes the GPU's own curve, and that shape
@@ -2674,64 +2740,7 @@ fn dash_touch_effective_rates(profile: i32) -> (i32, i32) {
     }
 }
 
-/// Whether the daemon drives the touch feature modes itself.
-///
-/// Dash's own ROM drives them: the stock power HAL sets the game mode
-/// while a game is in the foreground and the stock Settings service sets
-/// the active mode with the high sampling rate toggle. The daemon only
-/// drives the rate and leaves the modes to the ROM that owns them.
-fn dash_owns_touch_modes() -> bool {
-    !dash_htsr_present()
-}
 
-/// Dash's touch feature modes. The stock power HAL and the stock Settings
-/// service drive the panel through the GAME and ACTIVE modes, so those are
-/// the required ones. The response calibration and the super touch modes are
-/// Xiaomi panel extras that the Novatek panel may not implement: they are
-/// requested, and the ones the HAL refuses are reported instead of taken
-/// as a failure.
-fn apply_dash_touch_hal_profile(profile: i32) -> Result<(), String> {
-    let steps: &[(i32, i32, bool)] = match profile {
-        0 => &[(202, 0, true), (0, 0, true)],
-        1 => &[(0, 1, true), (202, 1, true)],
-        2 | 3 => &[
-            (0, 1, true),
-            (202, 1, true),
-            (2, 4, false),
-            (3, 4, false),
-            (4, 4, false),
-            (5, 4, false),
-            (6, 0, false),
-        ],
-        _ => return Err("invalid touch profile".into()),
-    };
-    let mut required = Vec::new();
-    let mut refused = Vec::new();
-    for &(mode, value, is_required) in steps {
-        if !vendor_binder::set_touch_mode(0, mode, value) {
-            if is_required {
-                required.push(mode);
-            } else {
-                refused.push(mode);
-            }
-        }
-    }
-    if !refused.is_empty() {
-        diagnostics::record(
-            diagnostics::AREA_TOUCH,
-            "info",
-            "touch.hal.optional",
-            &format!("refused modes {refused:?}"),
-        );
-    }
-    if required.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "touch HAL rejected required modes {required:?}"
-        ))
-    }
-}
 
 /// Ask the ROM's Settings service to change a setting.
 fn dash_settings_put(key: &str, value: &str) -> Result<(), String> {
@@ -3075,9 +3084,7 @@ fn apply_touch_profile_locked(profile: i32) -> Result<(), String> {
     // that is what a profile uses when the node is there.
     let control_path = if dash_htsr_present() {
         apply_dash_touch_rate(profile)?;
-        if dash_owns_touch_modes() {
-            apply_dash_touch_hal_profile(profile)?;
-        }
+        apply_touch_hal_profile(if profile == 3 { 2 } else { profile })?;
         if profile == 3 {
             touch_resampler::set_target_hz(1000)?;
         }
@@ -3159,12 +3166,9 @@ fn release_touch_control() -> Result<(), String> {
     let originals = service_control::originals();
     let mut released = Vec::new();
     if service_control::original("touch.hal").is_some()
-        && dash_owns_touch_modes()
         && vendor_binder::touch_available()
     {
         // Release game/super-report requests once, not on every wake or boot.
-        // On Dash the modes belong to the stock ROM, so there is nothing of
-        // the daemon's to release there.
         apply_touch_hal_profile(0)?;
     }
     // The ROM's own toggle is put back when the rate went through it.
@@ -5375,6 +5379,15 @@ fn cpu_frequency_guard() {
                 && restore_cpu_thermal_mode_unlocked().is_err()
             {
                 CPU_THERMAL_MODE_ACK.store(0, Ordering::Release);
+            } else if read_mi_thermal_config_mode() == Ok(MI_THERMAL_NO_LIMITS_MODE) {
+                // No owner holds mode 6: a daemon restart or a lost save left it live.
+                let _ = write_mi_thermal_config_mode(0);
+                diagnostics::record(
+                    diagnostics::AREA_GPU,
+                    "warn",
+                    "thermal.sconfig.stuck",
+                    "restored mode 0",
+                );
             }
 
             has_saved_range
@@ -5451,7 +5464,10 @@ fn gaming_dynamic_guard() {
         // Gaming and Beast own only the Mali cooling device. The vendor thermal
         // services remain running for CPU and platform management while this
         // guard prevents a GPU cooling cap from replacing their target.
+        // Reassert the GPU thermal borrow since mi_thermald republishes its
+        // own config periodically.
         clear_gpu_cooling_cap();
+        let _ = ensure_gpu_thermal_mode();
 
         if profile == 3 {
             // MediaTek's power HAL can publish its own stock target after boot
@@ -7620,6 +7636,7 @@ fn restore_released_controls() -> Result<(), String> {
     }
     run("touch output", touch_resampler::set_target_hz(0));
     run("EB DVFS policy", restore_eb_dvfs_policy());
+    run("GPU thermal mode", restore_gpu_thermal_mode());
     if service_control::original("touch.hal").is_some() {
         if vendor_binder::touch_available() {
             run("OEM touch", apply_touch_hal_profile(0));

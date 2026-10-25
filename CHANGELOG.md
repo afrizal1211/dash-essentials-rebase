@@ -6,6 +6,30 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.21
+
+### Changed
+
+- Release codename updated to **Hyperion** (moon of Saturn).
+- Touch HAL rework: removed dead `apply_dash_touch_hal_profile` path; Dash branch
+  now calls the real Xiaomi TouchFeature HAL sequence (game mode, active mode,
+  response calibration, super-report) so vendor modes reach
+  `vendor.xiaomi.hw.touchfeature-service`.
+- GPU thermal borrow: Gaming Dynamic / Extreme Beast can borrow the vendor's
+  `thermal_ap` config (mode `MI_THERMAL_AP_MODE`) instead of the CPU-range
+  `thermal-nolimits` mode. Disabled by default (`-1`); enable after on-device
+  verification by setting the mode id. CPU range ownership (mode 6) takes
+  precedence. Borrow is journaled via service control and restored on release.
+- sconfig self-heal: `cpu_frequency_guard` now detects and restores a stuck
+  `sconfig=6` (nolimits) left by a daemon restart or lost save. Fresh-boot `-1`
+  sentinel normalized to `0` prevents false positives.
+
+### Fixed
+
+- Touch HAL modes (game 0, active 1, response 2-6, super-report 202) now
+  applied on Dash where HTSR node exists — previously skipped entirely.
+- Thermal mode 6 no longer sticks after daemon restart or save loss.
+
 ## 1.18.20
 
 ### Changed

@@ -165,6 +165,20 @@ cpufreq, and the guard verifies both the mode and each saved range. The kernel's
 fresh-boot `sconfig=-1` sentinel is normalized to the default normal mode `0`
 before ownership is recorded.
 
+Gaming Dynamic and Extreme Beast profiles borrow the vendor's `thermal_ap`
+configuration (mode `MI_THERMAL_AP_MODE`) instead of the `thermal-nolimits`
+mode CPU ranges use. The borrow is disabled by default (`MI_THERMAL_AP_MODE = -1`);
+enable it after on-device verification by setting the mode id. GPU thermal
+borrow applies only when no CPU range is saved — CPU range ownership holds
+the stricter `nolimits` mode, which takes precedence. The borrow is journaled
+via the service control journal and restored on release.
+
+A background guard (`cpu_frequency_guard`) self-heals a stuck `sconfig=6`
+(nolimits) left by a daemon restart or a lost save: when no saved range or
+thermal mode owner exists and the live mode reads `6`, it immediately writes
+`0` (normal) and logs a warning. The fresh-boot `-1` sentinel is normalized
+to `0` by `normalize_mi_thermal_config_mode`, so clean boots never false-trigger.
+
 Vendor CPU and platform thermal services remain running in every GPU mode.
 Gaming Dynamic and Extreme Beast retain ownership of the Mali cooling constraint
 required by their requested GPU policy without stopping those global services.

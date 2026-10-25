@@ -116,6 +116,15 @@ exact lock with a lower ceiling. It keeps the thermal services alive, remembers
 the configuration that was active beforehand, and restores it when the final
 custom CPU range is reset.
 
+Gaming Dynamic and Extreme Beast borrow the vendor's `thermal_ap` configuration
+instead of the `thermal-nolimits` mode CPU ranges use. The borrow is disabled by
+default (`MI_THERMAL_AP_MODE = -1`); enable it after on-device verification by
+setting the mode id. GPU thermal borrow applies only when no CPU range is saved
+— CPU range ownership holds the stricter `nolimits` mode, which takes precedence.
+A background guard self-heals a stuck `sconfig=6` (nolimits) left by a daemon
+restart or a lost save: when no saved range or thermal mode owner exists and the
+live mode reads `6`, it immediately writes `0` (normal) and logs a warning.
+
 ## Integration choices
 
 | Method | APK privilege | Backend | Persistence |
@@ -336,6 +345,20 @@ Dash's thermal interface is the same one the upstream target used, including
 the `thermal_message/sconfig` configuration mode that suppresses the vendor's
 competing CPU policy while a custom CPU range is held. The vendor thermal
 services stay running in every mode.
+
+Gaming Dynamic and Extreme Beast borrow the vendor's `thermal_ap` configuration
+(mode `MI_THERMAL_AP_MODE`) instead of the `thermal-nolimits` mode CPU ranges
+use. The borrow is disabled by default (`MI_THERMAL_AP_MODE = -1`); enable it
+after on-device verification by setting the mode id. GPU thermal borrow applies
+only when no CPU range is saved — CPU range ownership holds the stricter
+`nolimits` mode, which takes precedence. The borrow is journaled via the
+service control journal and restored on release.
+
+A background guard self-heals a stuck `sconfig=6` (nolimits) left by a daemon
+restart or a lost save: when no saved range or thermal mode owner exists and the
+live mode reads `6`, it immediately writes `0` (normal) and logs a warning. The
+fresh-boot `-1` sentinel is normalized to `0` by `normalize_mi_thermal_config_mode`,
+so clean boots never false-trigger.
 
 ### The platform's GPU ceiling
 
