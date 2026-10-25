@@ -33,6 +33,7 @@ cmake-build-*/
 local.properties
 .env
 __pycache__/
+.ua/
 
 # Logs / captures
 *.log
