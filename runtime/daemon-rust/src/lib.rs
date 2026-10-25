@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 mod app_controls;
 mod app_runtime;
 mod bypass_policy;
