@@ -3362,7 +3362,7 @@ fn touch_profile_apply_lock() -> &'static Mutex<()> {
     TOUCH_PROFILE_APPLY_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PersistedState {
     charging: i32,
     bypass_charging: i32,
@@ -3844,7 +3844,8 @@ impl Default for PersistedState {
         // be added to the struct and read back as nothing but its bare default.
         for field in PERSISTED_FIELDS {
             if !field.text {
-                (field.write)(&mut state, (field.emit)((field.read)(&state)));
+                let value = (field.emit)((field.read)(&state));
+                (field.write)(&mut state, value);
             }
         }
         state
