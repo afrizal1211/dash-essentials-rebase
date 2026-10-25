@@ -988,8 +988,23 @@ fn policy_governor(policy: i32) -> String {
     .unwrap_or_else(|_| "unknown".into())
 }
 
+/// Reads a node from the GPU devfreq sysfs, trying both primary and fallback paths.
+fn gpu_read_sysfs(node: &str) -> Option<String> {
+    gpu_devfreq_sysfs_path().and_then(|path| read_trimmed(path.join(node)).ok())
+}
+
+/// Reads a node from the GPU devfreq misc path, trying both primary and fallback paths.
+fn gpu_read_misc(node: &str) -> Option<String> {
+    gpu_devfreq_misc_path().and_then(|path| read_trimmed(path.join(node)).ok())
+}
+
+/// Reads a GPU node trying sysfs first, then misc path.
+fn gpu_read(node: &str) -> Option<String> {
+    gpu_read_sysfs(node).or_else(|| gpu_read_misc(node))
+}
+
 fn gpu_governor() -> String {
-    read_trimmed(format!("{DASH_GPU_DEVFREQ_SYSFS}/governor")).unwrap_or_else(|_| "unknown".into())
+    gpu_read("governor").unwrap_or_else(|| "unknown".into())
 }
 
 fn scheduler_name(path: &Path) -> Option<String> {
@@ -1617,8 +1632,10 @@ fn set_gpu_governor(governor: &str) -> Result<(), String> {
     if !SAFE.contains(&governor) {
         return Err("invalid gpu governor request".into());
     }
-    let path = format!("{DASH_GPU_DEVFREQ_MISC}/governor");
-    let actual = write_verified(Path::new(&path), governor)?;
+    let path = gpu_devfreq_misc_path()
+        .map(|p| p.join("governor"))
+        .ok_or_else(|| "GPU devfreq misc path not found".to_string())?;
+    let actual = write_verified(&path, governor)?;
     if actual == governor {
         mutate_persisted_state(|state| {
             state.gpu = governor.to_string();
@@ -1786,19 +1803,36 @@ fn profile_uses_ged_boost(profile: i32) -> bool {
 
 /// Write a devfreq node of the Mali device.
 fn gpu_write_devfreq(node: &str, value: &str) -> Result<(), String> {
-    gpu_write_file(
-        &format!("{DASH_GPU_DEVFREQ_SYSFS}/{node}"),
-        &format!("{DASH_GPU_DEVFREQ_MISC}/{node}"),
-        value,
-    )
+    // Try sysfs path first
+    if let Some(path) = gpu_devfreq_sysfs_path() {
+        let full = path.join(node);
+        if full.exists() {
+            service_control::write(&full, value).map_err(|e| format!("{node}: {e}"))?;
+            let actual = read_trimmed(&full).map_err(|e| format!("{node} verify: {e}"))?;
+            if actual == value {
+                return Ok(());
+            }
+            return Err(format!("gpu {node} verify: requested {value}, got {actual}"));
+        }
+    }
+    // Try misc path
+    if let Some(path) = gpu_devfreq_misc_path() {
+        let full = path.join(node);
+        if full.exists() {
+            service_control::write(&full, value).map_err(|e| format!("{node}: {e}"))?;
+            let actual = read_trimmed(&full).map_err(|e| format!("{node} verify: {e}"))?;
+            if actual == value {
+                return Ok(());
+            }
+            return Err(format!("gpu {node} verify: requested {value}, got {actual}"));
+        }
+    }
+    Err("GPU devfreq path not found".into())
 }
 
 /// Read a devfreq node of the Mali device.
 fn gpu_read_devfreq(node: &str) -> Option<String> {
-    gpu_read_file(
-        &format!("{DASH_GPU_DEVFREQ_SYSFS}/{node}"),
-        &format!("{DASH_GPU_DEVFREQ_MISC}/{node}"),
-    )
+    gpu_read(node)
 }
 
 /// The ladder's highest operating point, in hertz.
@@ -2291,7 +2325,7 @@ fn touch_panel_code() -> i32 {
     }
     // Dash's Xiaomi touch bridge (`xiaomi_touch_dash.ko`) exposes the touch
     // supplier through its own class device instead of /proc/tp_fw_version.
-    if let Ok(vendor) = read_node_text("/sys/class/touch/touch_dev/panel_vendor") {
+    if let Some(vendor) = touch_panel_vendor() {
         let detected = classify_touch_panel_version(&vendor);
         if detected != 0 {
             return detected;
@@ -2299,8 +2333,8 @@ fn touch_panel_code() -> i32 {
     }
     if Path::new("/sys/devices/platform/goodix_ts.0").exists() {
         1
-    } else if Path::new("/sys/class/touch/touch_dev").exists() {
-        // The Xiaomi touch class device only exists on Novatek NT38771 Dash.
+    } else if touch_class_path().is_some() {
+        // The Xiaomi/NT38771 touch class device exists on Dash.
         3
     } else {
         0
@@ -2477,6 +2511,77 @@ fn write_touch_thp_rate(rate: u16) -> Result<TouchThpLayout, String> {
 /// the panel runs at, 240 Hz the high rate. The Novatek panel on Dash has no
 /// THP timing block, so this node is the rate channel on this device.
 const DASH_HTSR_NODE: &str = "/proc/xm_htc_report_rate";
+
+/// Touch device class paths — try known locations for Xiaomi/NT38771/Goodix drivers.
+const TOUCH_CLASS_PRIMARY: &str = "/sys/class/touch/touch_dev";
+const TOUCH_CLASS_XIAOMI: &str = "/sys/class/touch/xiaomi_touch";
+const TOUCH_CLASS_NT38771: &str = "/sys/class/touch/nt38771";
+
+/// Returns the touch device class path, trying known locations first then
+/// scanning /sys/class/touch for any touch device.
+fn touch_class_path() -> Option<PathBuf> {
+    // Primary known path
+    let primary = PathBuf::from(TOUCH_CLASS_PRIMARY);
+    if primary.exists() {
+        return Some(primary);
+    }
+    // Xiaomi touch driver
+    let xiaomi = PathBuf::from(TOUCH_CLASS_XIAOMI);
+    if xiaomi.exists() {
+        return Some(xiaomi);
+    }
+    // NT38771 touch driver
+    let nt38771 = PathBuf::from(TOUCH_CLASS_NT38771);
+    if nt38771.exists() {
+        return Some(nt38771);
+    }
+    // Fallback: scan for any touch class device
+    if let Ok(entries) = fs::read_dir("/sys/class/touch") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("touch") || name.contains("ts") {
+                let path = entry.path();
+                if path.join("panel_vendor").exists() || path.join("switch_report_rate").exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns the touch panel vendor string from the touch class device.
+fn touch_panel_vendor() -> Option<String> {
+    touch_class_path().and_then(|path| read_node_text(path.join("panel_vendor")).ok())
+}
+
+/// Returns the touch switch_report_rate node path for the detected touch driver.
+fn touch_report_rate_path() -> Option<PathBuf> {
+    // Try Xiaomi touch driver path first (xm_htc_report_rate)
+    let xm_htc = PathBuf::from("/proc/xm_htc_report_rate");
+    if xm_htc.exists() {
+        return Some(xm_htc);
+    }
+    // Try touch class device switch_report_rate
+    if let Some(class_path) = touch_class_path() {
+        let switch_rate = class_path.join("switch_report_rate");
+        if switch_rate.exists() {
+            return Some(switch_rate);
+        }
+    }
+    // Try goodix platform device
+    let goodix = PathBuf::from("/sys/devices/platform/goodix_ts.0/switch_report_rate");
+    if goodix.exists() {
+        return Some(goodix);
+    }
+    // Try NT38771 platform device
+    let nt38771 = PathBuf::from("/sys/devices/platform/nt38771_ts.0/switch_report_rate");
+    if nt38771.exists() {
+        return Some(nt38771);
+    }
+    None
+}
 const DASH_HTSR_BASELINE: &str = "120";
 const DASH_HTSR_HIGH: &str = "240";
 
@@ -2494,7 +2599,7 @@ const DASH_HTSR_RATE_RANGE: std::ops::RangeInclusive<u16> = 60..=1000;
 
 /// Whether this build exposes the high touch sampling rate knob.
 fn dash_htsr_present() -> bool {
-    Path::new(DASH_HTSR_NODE).exists()
+    touch_report_rate_path().is_some()
 }
 
 /// Choose the rate the node is really holding.
@@ -2536,9 +2641,10 @@ fn select_dash_htsr_rate(samples: &[String]) -> Option<u16> {
 /// value is taken from after the label. The node is read several times,
 /// because it answers some reads with a value that was never written.
 fn dash_htsr_rate() -> Option<u16> {
+    let path = touch_report_rate_path()?;
     let mut samples = Vec::new();
     for _ in 0..8 {
-        match read_node_text_retry(Path::new(DASH_HTSR_NODE), 1) {
+        match read_node_text_retry(&path, 1) {
             Ok(raw) => samples.push(raw),
             Err(_) => continue,
         }
@@ -2659,8 +2765,9 @@ fn remember_dash_htsr_original() -> Result<(), String> {
         Some(_) => return Ok(()),
         None => {}
     }
-    let raw = read_node_text_retry(Path::new(DASH_HTSR_NODE), 8).unwrap_or_default();
-    let original = service_control::normalized_original(Path::new(DASH_HTSR_NODE), &raw);
+    let path = touch_report_rate_path().ok_or("touch rate node not found")?;
+    let raw = read_node_text_retry(&path, 8).unwrap_or_default();
+    let original = service_control::normalized_original(&path, &raw);
     let value = if original.is_empty() {
         DASH_HTSR_BASELINE.to_string()
     } else {
@@ -2685,7 +2792,8 @@ fn apply_dash_touch_rate(profile: i32) -> Result<u16, String> {
     // The node is the rate channel on this device. A device that has no node
     // or refuses the write is asked through the ROM's own toggle, and the
     // answer is logged so that the route the rate took is known.
-    if let Err(error) = write_verified(Path::new(DASH_HTSR_NODE), expected) {
+    let path = touch_report_rate_path().ok_or("touch rate node not found")?;
+    if let Err(error) = write_verified(&path, expected) {
         let high = rate == 240;
         match dash_settings_put(DASH_HTSR_SETTING, if high { "1" } else { "0" }) {
             Ok(()) => {
@@ -2741,7 +2849,14 @@ fn touch_profile_rates(profile: i32) -> (i32, i32) {
 }
 
 fn goodix_report_rate_hz() -> Option<u16> {
-    let raw = read_node_text("/sys/devices/platform/goodix_ts.0/switch_report_rate").ok()?;
+    // Try Goodix platform device first
+    let goodix = PathBuf::from("/sys/devices/platform/goodix_ts.0/switch_report_rate");
+    let raw = if goodix.exists() {
+        read_node_text(&goodix).ok()?
+    } else {
+        // Fall back to touch class device if it's a Goodix panel
+        touch_report_rate_path().and_then(|p| read_node_text(&p).ok())?
+    };
     let normalized = raw.trim().to_ascii_lowercase();
     if normalized == "0" || normalized.contains("240hz") {
         Some(240)
@@ -2907,11 +3022,16 @@ fn apply_touch_driver_fallback(profile: i32, panel: i32) -> Result<(), String> {
     }
 
     let value = if profile == 1 { "0" } else { "1" };
-    service_control::write(
-        "/sys/devices/platform/goodix_ts.0/switch_report_rate",
-        value,
-    )
-    .map_err(|e| format!("Goodix report-rate fallback: {e}"))?;
+    let goodix = PathBuf::from("/sys/devices/platform/goodix_ts.0/switch_report_rate");
+    if goodix.exists() {
+        service_control::write(&goodix, value)
+            .map_err(|e| format!("Goodix report-rate fallback: {e}"))?;
+    } else if let Some(path) = touch_report_rate_path() {
+        service_control::write(&path, value)
+            .map_err(|e| format!("Touch report-rate fallback: {e}"))?;
+    } else {
+        return Err("no touch report rate node found".into());
+    }
 
     let expected = if profile == 1 { 240 } else { 480 };
     for _ in 0..4 {
@@ -2921,7 +3041,7 @@ fn apply_touch_driver_fallback(profile: i32, panel: i32) -> Result<(), String> {
         }
     }
     Err(format!(
-        "Goodix report-rate verify failed: requested {expected}, live {:?}",
+        "Touch report-rate verify failed: requested {expected}, live {:?}",
         goodix_report_rate_hz()
     ))
 }
@@ -3084,21 +3204,28 @@ fn release_touch_control() -> Result<(), String> {
             // value to put back. The rate node falls back to the rate the
             // panel runs at when the daemon is not driving it; the others
             // are left as they are rather than written empty.
+            let path = if key == DASH_HTSR_NODE {
+                touch_report_rate_path().map(PathBuf::from)
+            } else {
+                Some(PathBuf::from(&key))
+            };
             if original.is_empty() {
                 if key == DASH_HTSR_NODE {
                     let baseline = DASH_HTSR_BASELINE;
-                    fs::write(&key, baseline).map_err(|e| format!("restore {key}: {e}"))?;
-                    let actual = read_trimmed_retry(Path::new(&key), 8)?;
-                    if service_control::normalized_original(Path::new(&key), &actual) != baseline {
-                        return Err(format!("OEM touch readback mismatch: {key}"));
+                    if let Some(p) = path {
+                        fs::write(&p, baseline).map_err(|e| format!("restore {key}: {e}"))?;
+                        let actual = read_trimmed_retry(&p, 8)?;
+                        if service_control::normalized_original(&p, &actual) != baseline {
+                            return Err(format!("OEM touch readback mismatch: {key}"));
+                        }
                     }
                 }
-            } else {
-                fs::write(&key, original).map_err(|e| format!("restore {key}: {e}"))?;
+            } else if let Some(p) = path {
+                fs::write(&p, original).map_err(|e| format!("restore {key}: {e}"))?;
                 // The node answers some reads with nothing, so the readback is
                 // taken again until it says something.
-                let actual = read_trimmed_retry(Path::new(&key), 8)?;
-                if service_control::normalized_original(Path::new(&key), &actual) != original {
+                let actual = read_trimmed_retry(&p, 8)?;
+                if service_control::normalized_original(&p, &actual) != original {
                     return Err(format!("OEM touch readback mismatch: {key}"));
                 }
             }
@@ -4372,11 +4499,58 @@ fn refresh_display_info() {
         density = native_density;
     }
 
-    for path in [
+    /// Returns the display feature dynamic_fps node path, trying known locations first
+/// then scanning for any mi_display device.
+fn display_feature_dynamic_fps_path() -> Option<PathBuf> {
+    // Known paths from device tree init.rc
+    let paths = [
         "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
         "/sys/class/mi_display/disp-DSI-0/dynamic_fps",
-    ] {
-        if let Ok(raw) = read_node_text(path)
+        "/sys/class/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
+    ];
+    for path in paths {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // Fallback: scan for mi_display devices
+    if let Ok(entries) = fs::read_dir("/sys/class/mi_display") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let dyn_fps = path.join("dynamic_fps");
+            if dyn_fps.exists() {
+                return Some(dyn_fps);
+            }
+            // Check disp_feature subdirectory
+            let disp_feature = path.join("disp_feature");
+            if let Ok(subentries) = fs::read_dir(&disp_feature) {
+                for sub in subentries.flatten() {
+                    let dyn_fps = sub.path().join("dynamic_fps");
+                    if dyn_fps.exists() {
+                        return Some(dyn_fps);
+                    }
+                }
+            }
+        }
+    }
+    // Check virtual/mi_display
+    if let Ok(entries) = fs::read_dir("/sys/devices/virtual/mi_display") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let dyn_fps = path.join("dynamic_fps");
+            if dyn_fps.exists() {
+                return Some(dyn_fps);
+            }
+        }
+    }
+    None
+}
+
+for path in [
+        display_feature_dynamic_fps_path(),
+    ].into_iter().flatten() {
+        if let Ok(raw) = read_node_text(&path)
             && let Ok(rate) = raw.trim().parse::<f64>()
             && (1.0..=1000.0).contains(&rate)
         {
@@ -6190,9 +6364,71 @@ fn compact_zram() -> Result<(), String> {
 // 338 MHz. An index is therefore always resolved against the ladder the
 // driver publishes, never computed from a formula.
 
-const DASH_GPU_DEVFREQ_SYSFS: &str = "/sys/class/devfreq/48000000.mali";
-const DASH_GPU_DEVFREQ_MISC: &str = "/sys/class/misc/mali0/device/devfreq/48000000.mali";
+// GPU devfreq paths — try the known MT6991/Immortalis-G925 address first,
+// then fall back to dynamic discovery by matching the Mali devfreq name.
+const DASH_GPU_DEVFREQ_PRIMARY: &str = "/sys/class/devfreq/48000000.mali";
+const DASH_GPU_DEVFREQ_MISC_PRIMARY: &str = "/sys/class/misc/mali0/device/devfreq/48000000.mali";
 const DASH_GPU_GED_LADDER: &str = "/proc/gpufreqv2/gpu_working_opp_table";
+
+/// Returns the GPU devfreq sysfs path, trying known locations first then
+/// scanning /sys/class/devfreq for a Mali device.
+fn gpu_devfreq_sysfs_path() -> Option<PathBuf> {
+    // Primary known path for MT6991/Immortalis-G925
+    let primary = PathBuf::from(DASH_GPU_DEVFREQ_PRIMARY);
+    if primary.exists() {
+        return Some(primary);
+    }
+    // Secondary path via misc class
+    let misc = PathBuf::from(DASH_GPU_DEVFREQ_MISC_PRIMARY);
+    if misc.exists() {
+        return Some(misc);
+    }
+    // Fallback: scan for any Mali devfreq node
+    if let Ok(entries) = fs::read_dir("/sys/class/devfreq") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("mali") || name.contains("gpu") {
+                let path = entry.path();
+                if path.join("available_frequencies").exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns the GPU devfreq misc path, trying known locations first.
+fn gpu_devfreq_misc_path() -> Option<PathBuf> {
+    let primary = PathBuf::from(DASH_GPU_DEVFREQ_MISC_PRIMARY);
+    if primary.exists() {
+        return Some(primary);
+    }
+    // Try to find via misc class
+    if let Ok(entries) = fs::read_dir("/sys/class/misc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.contains("mali") {
+                let path = entry.path().join("device/devfreq");
+                if let Ok(subentries) = fs::read_dir(&path) {
+                    for sub in subentries.flatten() {
+                        let subname = sub.file_name();
+                        let subname = subname.to_string_lossy();
+                        if subname.contains("mali") || subname.contains("gpu") {
+                            let devfreq_path = sub.path();
+                            if devfreq_path.join("available_frequencies").exists() {
+                                return Some(devfreq_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 
 /// The top of Dash's GPU ladder, in MHz. The device tree's first operating
 /// point is 1612000000 Hz, which the driver publishes as 1612 MHz.
@@ -6231,17 +6467,14 @@ fn gpu_hz_to_mhz(hz: u64) -> i32 {
 /// The devfreq node advertises exactly the frequencies the driver can hold,
 /// so a ceiling or floor written to it always names a real operating point.
 fn gpu_devfreq_table_hz() -> Vec<u64> {
-    let mut table: Vec<u64> = gpu_read_file(
-        &format!("{DASH_GPU_DEVFREQ_SYSFS}/available_frequencies"),
-        &format!("{DASH_GPU_DEVFREQ_MISC}/available_frequencies"),
-    )
-    .map(|raw| {
-        raw.split_whitespace()
-            .filter_map(|part| part.parse::<u64>().ok())
-            .filter(|hz| *hz > 0)
-            .collect()
-    })
-    .unwrap_or_default();
+    let mut table: Vec<u64> = gpu_read("available_frequencies")
+        .map(|raw| {
+            raw.split_whitespace()
+                .filter_map(|part| part.parse::<u64>().ok())
+                .filter(|hz| *hz > 0)
+                .collect()
+        })
+        .unwrap_or_default();
 
     if table.is_empty() {
         table = DASH_GPU_OPP_TABLE_HZ.to_vec();
@@ -6411,7 +6644,7 @@ fn gpu_get_lowest_opp_index() -> i32 {
         })
         .map(|count| count.saturating_sub(1))
         .or_else(|| {
-            gpu_read_raw(&format!("{DASH_GPU_DEVFREQ_SYSFS}/available_frequencies"))
+            gpu_read("available_frequencies")
                 .map(|value| value.split_whitespace().count().saturating_sub(1) as i32)
         })
         .unwrap_or(DASH_GPU_OPP_TABLE_HZ.len() as i32 - 1)
@@ -6471,8 +6704,7 @@ fn gpu_get_cur_freq_mhz() -> i32 {
         return mhz;
     }
 
-    gpu_read_raw(&format!("{DASH_GPU_DEVFREQ_SYSFS}/cur_freq"))
-        .or_else(|| gpu_read_raw(&format!("{DASH_GPU_DEVFREQ_MISC}/cur_freq")))
+    gpu_read("cur_freq")
         .and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|hz| *hz > 0)
         .map(|hz| gpu_hz_to_mhz(hz as u64))
@@ -7204,7 +7436,7 @@ fn snapshot() -> String {
         })
         .unwrap_or(-1);
     let touch_hal = if vendor_binder::touch_available()
-        || Path::new("/sys/devices/platform/goodix_ts.0/switch_report_rate").exists()
+        || touch_report_rate_path().is_some()
     {
         1
     } else {
@@ -9001,15 +9233,21 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // The node reads back in the labelled form, but it only accepts a
         // bare rate of at most six bytes, so an original that is put back
         // has to be the number alone.
-        let path = std::path::Path::new("/proc/xm_htc_report_rate");
-        let original = super::service_control::normalized_original(path, "report_rate: 240\n");
+        let path = std::env::temp_dir().join(format!(
+            "dash-rate-node-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::write(&path, "report_rate: 240\n").unwrap();
+        let original = super::service_control::normalized_original(&path, "report_rate: 240\n");
         assert_eq!(original, "240");
         assert!(original.len() <= 6, "original {original} is too long");
-        let original = super::service_control::normalized_original(path, "report_rate: 120\n");
+        let original = super::service_control::normalized_original(&path, "report_rate: 120\n");
         assert_eq!(original, "120");
         // An answer that carries no rate has no original to put back.
-        let original = super::service_control::normalized_original(path, "");
+        let original = super::service_control::normalized_original(&path, "");
         assert_eq!(original, "");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// The environment variable that turns the crash test into the child.
