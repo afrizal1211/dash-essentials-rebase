@@ -10,7 +10,7 @@ The port's own changes are at the top.
 
 ### Changed
 
-- Release codename updated to **Hyperion** (moon of Saturn).
+- Release codename updated to **Iapetus** (moon of Saturn).
 - Touch HAL rework: removed dead `apply_dash_touch_hal_profile` path; Dash branch
   now calls the real Xiaomi TouchFeature HAL sequence (game mode, active mode,
   response calibration, super-report) so vendor modes reach
