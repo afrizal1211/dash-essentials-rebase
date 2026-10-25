@@ -5917,6 +5917,7 @@ fn fault_place(context: *mut c_void) -> (usize, usize, usize) {
     if context.is_null() {
         return (0, 0, 0);
     }
+    #[cfg_attr(not(target_arch = "aarch64"), allow(unused_variables))]
     let context = unsafe { &*context.cast::<libc::ucontext_t>() };
     #[cfg(target_arch = "aarch64")]
     {
@@ -6618,35 +6619,6 @@ fn gpu_devfreq_floor_hz(hz: u64) -> Option<u64> {
         .into_iter()
         .filter(|entry| *entry >= hz)
         .min()
-}
-
-fn gpu_read_file(primary: &str, fallback: &str) -> Option<String> {
-    read_node_text(primary)
-        .or_else(|_| read_node_text(fallback))
-        .ok()
-}
-
-fn gpu_write_file(primary: &str, fallback: &str, value: &str) -> Result<(), String> {
-    let mut wrote = false;
-    let mut errors = Vec::new();
-
-    for path in [primary, fallback] {
-        if !Path::new(path).exists() {
-            continue;
-        }
-        match service_control::write(path, value) {
-            Ok(()) => wrote = true,
-            Err(error) => errors.push(format!("{path}: {error}")),
-        }
-    }
-
-    if wrote {
-        Ok(())
-    } else if errors.is_empty() {
-        Err(format!("GPU control node missing: {primary} or {fallback}"))
-    } else {
-        Err(format!("GPU control write failed: {}", errors.join("; ")))
-    }
 }
 
 fn gpu_read_raw(path: &str) -> Option<String> {
@@ -9289,9 +9261,11 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
     fn the_rate_node_original_is_a_bare_rate_the_driver_accepts() {
         // The node reads back in the labelled form, but it only accepts a
         // bare rate of at most six bytes, so an original that is put back
-        // has to be the number alone.
-        let path =
-            std::env::temp_dir().join(format!("dash-rate-node-{}-{}", std::process::id(), line!()));
+        // has to be the number alone. The node is named after the real
+        // sysfs node because the label is dropped by node name.
+        let dir = std::env::temp_dir().join(format!("dash-rate-node-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xm_htc_report_rate");
         std::fs::write(&path, "report_rate: 240\n").unwrap();
         let original = super::service_control::normalized_original(&path, "report_rate: 240\n");
         assert_eq!(original, "240");
@@ -9301,7 +9275,7 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // An answer that carries no rate has no original to put back.
         let original = super::service_control::normalized_original(&path, "");
         assert_eq!(original, "");
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The environment variable that turns the crash test into the child.
@@ -9449,10 +9423,15 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
             .nth(1)
             .and_then(|rest| rest.split(' ').next())
             .unwrap_or_default();
-        assert!(
-            !place.is_empty() && place != "0",
-            "the program counter is not in the report: {report}"
-        );
+        // `fault_place` reads the aarch64 signal context only. On another
+        // architecture the report carries zeros, and the address of the
+        // fault is what is checked there instead.
+        if cfg!(target_arch = "aarch64") {
+            assert!(
+                !place.is_empty() && place != "0",
+                "the program counter is not in the report: {report}"
+            );
+        }
         assert!(
             report.contains(" lr=0x") && report.contains(" sp=0x"),
             "the report is missing the place of the fault: {report}"

@@ -4,15 +4,14 @@
 //! and integrates with the per-app profile system.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-use crate::app_controls::App;
 
 /// Information about the currently foreground app
 #[derive(Debug, Clone)]
 pub struct ForegroundAppInfo {
     pub package_name: String,
+    #[allow(dead_code)]
     pub class_name: String,
     pub timestamp: Instant,
 }
@@ -30,10 +29,12 @@ impl ForegroundAppInfo {
         !self.package_name.is_empty() && self.timestamp.elapsed() < Duration::from_secs(30)
     }
 
+    #[allow(dead_code)]
     pub fn package_name(&self) -> &str {
         &self.package_name
     }
 
+    #[allow(dead_code)]
     pub fn class_name(&self) -> &str {
         &self.class_name
     }
