@@ -3426,10 +3426,10 @@ struct PersistedField {
     emit: fn(i32) -> i32,
 }
 
-const fn number<S>(
+const fn number(
     key: &'static str,
-    read: fn(&S) -> i32,
-    write: fn(&mut S, i32),
+    read: fn(&PersistedState) -> i32,
+    write: fn(&mut PersistedState, i32),
     emit: fn(i32) -> i32,
 ) -> PersistedField {
     PersistedField {
@@ -3444,10 +3444,10 @@ const fn number<S>(
     }
 }
 
-const fn flag<S>(
+const fn flag(
     key: &'static str,
-    read: fn(&S) -> i32,
-    write: fn(&mut S, i32),
+    read: fn(&PersistedState) -> i32,
+    write: fn(&mut PersistedState, i32),
 ) -> PersistedField {
     PersistedField {
         // A stored boolean that is not exactly 1 is 0, in both directions.
@@ -3460,10 +3460,10 @@ const fn flag<S>(
 /// Core 0 cannot be offlined, and the mask is an eight-core bitfield. A value
 /// the file does not carry that bit for is corrected rather than kept, and
 /// what is written carries it too.
-const fn online_mask<S>(
+const fn online_mask(
     key: &'static str,
-    read: fn(&S) -> i32,
-    write: fn(&mut S, i32),
+    read: fn(&PersistedState) -> i32,
+    write: fn(&mut PersistedState, i32),
 ) -> PersistedField {
     PersistedField {
         parse: |mask| Some((mask | 0x01) & 0xFF),
@@ -3472,10 +3472,10 @@ const fn online_mask<S>(
     }
 }
 
-const fn checked<S>(
+const fn checked(
     key: &'static str,
-    read: fn(&S) -> i32,
-    write: fn(&mut S, i32),
+    read: fn(&PersistedState) -> i32,
+    write: fn(&mut PersistedState, i32),
     parse: fn(i32) -> Option<i32>,
 ) -> PersistedField {
     PersistedField {
@@ -3484,10 +3484,10 @@ const fn checked<S>(
     }
 }
 
-const fn text<S>(
+const fn text(
     key: &'static str,
-    read_text: fn(&S) -> &str,
-    write_text: fn(&mut S, &str),
+    read_text: fn(&PersistedState) -> &str,
+    write_text: fn(&mut PersistedState, &str),
 ) -> PersistedField {
     PersistedField {
         key,
