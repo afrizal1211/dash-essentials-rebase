@@ -10,6 +10,7 @@ DASH_STAGE="$DASH_BUILD_ROOT/module"
 DASH_APP_BUILD="$DASH_BUILD_ROOT/application"
 
 DASH_VERSION="$(sed -n 's/^version=//p' "$DASH_MODULE_SOURCE/module.prop")"
+DASH_CODENAME="$(sed -n 's/^codename=//p' "$DASH_MODULE_SOURCE/module.prop")"
 
 # An official build must be signed with the release certificate recorded in
 # android/package/release-cert.sha256. A build without that key is still
@@ -25,7 +26,11 @@ elif [ "$DASH_UNOFFICIAL_SIGNING" != "0" ]; then
     exit 1
 fi
 
-DASH_ZIP_NAME="Dash-Essential-KernelSU-Next-Magisk-${DASH_VERSION}${DASH_ZIP_SUFFIX}.zip"
+DASH_ZIP_NAME="Dash-Essential-KernelSU-Next-Magisk-${DASH_VERSION}"
+if [ -n "$DASH_CODENAME" ]; then
+    DASH_ZIP_NAME="${DASH_ZIP_NAME}-${DASH_CODENAME}"
+fi
+DASH_ZIP_NAME="${DASH_ZIP_NAME}${DASH_ZIP_SUFFIX}.zip"
 DASH_ZIP="$DASH_BUILD_ROOT/$DASH_ZIP_NAME"
 DASH_STABLE_ZIP="$DASH_PROJECT_ROOT/out/Dash-Essential-KernelSU-Next-Magisk${DASH_ZIP_SUFFIX}.zip"
 

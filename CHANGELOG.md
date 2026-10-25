@@ -6,6 +6,22 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.20
+
+### Changed
+
+- Release codename updated to **Hyperion** (moon of Saturn).
+- GPU devfreq paths updated with dynamic discovery for MT6991/Immortalis-G925.
+- Touch sysfs paths updated with multi-driver support (Xiaomi touch, NT38771, Goodix).
+- Display feature dynamic_fps path with dynamic discovery via mi_display class.
+- Added serde Deserialize derive to PersistedState for IPC serialization.
+
+### Fixed
+
+- Fixed Rust compilation errors from generic type parameters in const helper functions.
+- Fixed borrow checker issue in PersistedState default implementation.
+- Fixed module version to match release tag (v1.18.20-dash).
+
 ## 1.18.19
 
 ### Changed
