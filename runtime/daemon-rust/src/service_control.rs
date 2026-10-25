@@ -215,9 +215,10 @@ pub(super) fn original(key: &str) -> Option<Value> {
 
 fn canonical_key(key: &str) -> String {
     if key.starts_with("/sys/")
-        && let Ok(path) = fs::canonicalize(key) {
-            return path.to_string_lossy().into_owned();
-        }
+        && let Ok(path) = fs::canonicalize(key)
+    {
+        return path.to_string_lossy().into_owned();
+    }
     key.to_string()
 }
 
@@ -314,13 +315,12 @@ pub(super) fn normalized_original(path: &Path, raw: &str) -> String {
     if matches!(
         path.file_name().and_then(|v| v.to_str()),
         Some("scheduler" | "power_policy")
-    )
-        && let Some(selected) = raw
-            .split_whitespace()
-            .find_map(|s| s.strip_prefix('[').and_then(|s| s.strip_suffix(']')))
-        {
-            return selected.to_string();
-        }
+    ) && let Some(selected) = raw
+        .split_whitespace()
+        .find_map(|s| s.strip_prefix('[').and_then(|s| s.strip_suffix(']')))
+    {
+        return selected.to_string();
+    }
     if path.file_name().and_then(|v| v.to_str()) == Some("switch_report_rate") {
         if raw.contains("240") {
             return "0".into();
@@ -358,11 +358,8 @@ pub(super) fn write(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::R
         let raw = super::read_node_text_retry(path, 8)?;
         let original = normalized_original(path, &raw);
         if !original.is_empty() {
-            remember_captured(
-                &path.to_string_lossy(),
-                Value::String(original),
-            )
-            .map_err(io::Error::other)?;
+            remember_captured(&path.to_string_lossy(), Value::String(original))
+                .map_err(io::Error::other)?;
         }
     }
     fs::write(path, contents)

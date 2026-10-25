@@ -522,7 +522,8 @@ impl<S: Clone> Ownership<S> {
                     "control.capture",
                     &format!("control={control:?} target={target:?} error={error}"),
                 );
-                self.refused.insert(control.clone(), (target.clone(), error.clone()));
+                self.refused
+                    .insert(control.clone(), (target.clone(), error.clone()));
                 self.applied.remove(control);
                 continue;
             }
@@ -544,20 +545,20 @@ impl<S: Clone> Ownership<S> {
                     &format!("control={control:?} target={target:?} error={error}"),
                 );
                 let fresh = captured_now.contains(control);
-                if fresh
-                    && let Some(saved) = self.baseline.get(control).cloned() {
-                        if let Err(restore_error) = hardware.restore(control, &saved) {
-                            // The control could not be given back, so the
-                            // state of the hardware is unknown. That is not a
-                            // profile that can be reported as applied.
-                            return self.rollback(
-                                hardware,
-                                format!("{error}; restore failed: {restore_error}"),
-                            );
-                        }
-                        self.baseline.remove(control);
+                if fresh && let Some(saved) = self.baseline.get(control).cloned() {
+                    if let Err(restore_error) = hardware.restore(control, &saved) {
+                        // The control could not be given back, so the
+                        // state of the hardware is unknown. That is not a
+                        // profile that can be reported as applied.
+                        return self.rollback(
+                            hardware,
+                            format!("{error}; restore failed: {restore_error}"),
+                        );
                     }
-                self.refused.insert(control.clone(), (target.clone(), error));
+                    self.baseline.remove(control);
+                }
+                self.refused
+                    .insert(control.clone(), (target.clone(), error));
                 self.applied.remove(control);
                 continue;
             }
@@ -810,7 +811,10 @@ mod tests {
         owner
             .transition(&mut h, Some(&app()), Some(&profile()), true, true)
             .unwrap();
-        assert!(h.writes > writes, "the taken-back control was not written again");
+        assert!(
+            h.writes > writes,
+            "the taken-back control was not written again"
+        );
         assert_eq!(h.values.get(&Control::Gpu), Some(&Target::Gpu(1)));
         assert_eq!(owner.status, Status::Active(app()));
     }
@@ -1007,7 +1011,10 @@ mod tests {
     }
     #[test]
     fn config_round_trip_duplicates_and_version_guard() {
-        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
+        let config = Config {
+            profiles: BTreeMap::from([(app(), profile())]),
+            ..Config::default()
+        };
         assert_eq!(Config::parse(&config.json().to_string()).unwrap(), config);
         let mut v = config.json();
         v["schema"] = json!(99);
@@ -1019,12 +1026,18 @@ mod tests {
     }
     #[test]
     fn profile_merge_preserves_existing_controls() {
-        let mut original = Profile::parse(&json!({"enabled":true,"cpu":{"0":{"range":[1000,2000]},"4":{"governor":"schedutil"}}})).unwrap();
+        let mut original = Profile::parse(
+            &json!({"enabled":true,"cpu":{"0":{"range":[1000,2000]},"4":{"governor":"schedutil"}}}),
+        )
+        .unwrap();
         let update = Profile::parse(&json!({"cpu":{"0":{"governor":"performance"}}})).unwrap();
         original.merge(update);
         assert_eq!(
             original.controls.get(&Control::CpuRange(0)),
-            Some(&Target::CpuRange { min: 1000, max: 2000 })
+            Some(&Target::CpuRange {
+                min: 1000,
+                max: 2000
+            })
         );
         assert_eq!(
             original.controls.get(&Control::CpuGovernor(0)),
@@ -1041,16 +1054,25 @@ mod tests {
         let update = Profile::parse(&json!({"enabled":true,"gpu":2})).unwrap();
         original.merge(update);
         assert_eq!(original.controls.get(&Control::Gpu), Some(&Target::Gpu(2)));
-        assert_eq!(original.controls.get(&Control::Touch), Some(&Target::Touch(2)));
+        assert_eq!(
+            original.controls.get(&Control::Touch),
+            Some(&Target::Touch(2))
+        );
         assert_eq!(
             original.controls.get(&Control::CpuRange(0)),
-            Some(&Target::CpuRange { min: 1000, max: 2000 })
+            Some(&Target::CpuRange {
+                min: 1000,
+                max: 2000
+            })
         );
         assert!(original.enabled);
     }
     #[test]
     fn multi_user_profiles_never_share_an_owner() {
-        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
+        let config = Config {
+            profiles: BTreeMap::from([(app(), profile())]),
+            ..Config::default()
+        };
         assert!(
             !config
                 .profiles
@@ -1074,7 +1096,10 @@ mod tests {
     }
     #[test]
     fn resetting_current_profile_releases_all_borrowed_controls() {
-        let mut config = Config { enabled: true, ..Config::default() };
+        let mut config = Config {
+            enabled: true,
+            ..Config::default()
+        };
         config.profiles.insert(app(), profile());
         let mut h = hardware();
         let original = h.values.clone();
@@ -1152,13 +1177,14 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "dash-profiles-test-{}-{nonce}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("dash-profiles-test-{}-{nonce}", std::process::id()));
         let path = dir.join("profiles.json");
         assert_eq!(Config::load(&path).unwrap(), Config::default());
-        let config = Config { profiles: BTreeMap::from([(app(), profile())]), ..Config::default() };
+        let config = Config {
+            profiles: BTreeMap::from([(app(), profile())]),
+            ..Config::default()
+        };
         config.save(&path).unwrap();
         assert_eq!(Config::load(&path).unwrap(), config);
         assert_eq!(

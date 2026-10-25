@@ -21,7 +21,16 @@ impl PhaseInput {
     /// Creates a new `PhaseInput` with all fields specified.
     /// Prefer struct literal syntax: `PhaseInput { enabled: true, ..Default::default() }`
     #[allow(dead_code, clippy::too_many_arguments)]
-    pub fn with(enabled: bool, threshold: i32, capacity: Option<i32>, online: i32, requested: i32, verified: i32, current_ua: Option<i64>, error: bool) -> Self {
+    pub fn with(
+        enabled: bool,
+        threshold: i32,
+        capacity: Option<i32>,
+        online: i32,
+        requested: i32,
+        verified: i32,
+        current_ua: Option<i64>,
+        error: bool,
+    ) -> Self {
         Self {
             enabled,
             threshold,
@@ -45,7 +54,10 @@ pub fn phase(input: PhaseInput) -> i32 {
     if input.online == 0 {
         return 2;
     }
-    if input.requested == 0 && input.threshold > 0 && input.capacity.is_some_and(|value| value < input.threshold) {
+    if input.requested == 0
+        && input.threshold > 0
+        && input.capacity.is_some_and(|value| value < input.threshold)
+    {
         return 1;
     }
     if input.requested != 1 {
@@ -132,13 +144,94 @@ mod tests {
 
     #[test]
     fn activity_is_measured_not_inferred_from_the_saved_toggle() {
-        let base = PhaseInput { enabled: true, threshold: 80, capacity: Some(60), online: 1, requested: 0, verified: 0, current_ua: Some(-900_000), error: false };
+        let base = PhaseInput {
+            enabled: true,
+            threshold: 80,
+            capacity: Some(60),
+            online: 1,
+            requested: 0,
+            verified: 0,
+            current_ua: Some(-900_000),
+            error: false,
+        };
         assert_eq!(phase(base), 1);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 0, current_ua: Some(0), error: false }), 3);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 1, current_ua: Some(0), error: false }), 4);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 1, current_ua: Some(-900_000), error: false }), 7);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 1, verified: 0, current_ua: Some(900_000), error: false }), 6);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 0, requested: 1, verified: 0, current_ua: None, error: false }), 2);
-        assert_eq!(phase(PhaseInput { enabled: true, threshold: 20, capacity: Some(60), online: 1, requested: 0, verified: 0, current_ua: Some(0), error: true }), 5);
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 1,
+                requested: 1,
+                verified: 0,
+                current_ua: Some(0),
+                error: false
+            }),
+            3
+        );
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 1,
+                requested: 1,
+                verified: 1,
+                current_ua: Some(0),
+                error: false
+            }),
+            4
+        );
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 1,
+                requested: 1,
+                verified: 1,
+                current_ua: Some(-900_000),
+                error: false
+            }),
+            7
+        );
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 1,
+                requested: 1,
+                verified: 0,
+                current_ua: Some(900_000),
+                error: false
+            }),
+            6
+        );
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 0,
+                requested: 1,
+                verified: 0,
+                current_ua: None,
+                error: false
+            }),
+            2
+        );
+        assert_eq!(
+            phase(PhaseInput {
+                enabled: true,
+                threshold: 20,
+                capacity: Some(60),
+                online: 1,
+                requested: 0,
+                verified: 0,
+                current_ua: Some(0),
+                error: true
+            }),
+            5
+        );
     }
 }

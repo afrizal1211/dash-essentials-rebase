@@ -3,8 +3,8 @@
 //! Tracks the currently foreground app via AccessibilityService events
 //! and integrates with the per-app profile system.
 
-use std::sync::{Arc, Mutex, OnceLock};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::app_controls::App;
@@ -101,7 +101,9 @@ impl ForegroundAppTracker {
 
     /// Check if a specific app is currently in foreground
     pub fn is_app_foreground(&self, package_name: &str) -> bool {
-        self.current_app.lock().unwrap()
+        self.current_app
+            .lock()
+            .unwrap()
             .as_ref()
             .map(|info| info.package_name == package_name && info.is_valid())
             .unwrap_or(false)
@@ -109,7 +111,11 @@ impl ForegroundAppTracker {
 
     /// Get timestamp of last seen for an app
     pub fn app_last_seen(&self, package_name: &str) -> Option<Instant> {
-        self.app_timestamps.lock().unwrap().get(package_name).copied()
+        self.app_timestamps
+            .lock()
+            .unwrap()
+            .get(package_name)
+            .copied()
     }
 
     /// Trigger per-app profile re-evaluation
@@ -142,8 +148,16 @@ pub extern "C" fn Java_com_redfox_daemon_jni_ForegroundDetectorJni_notifyForegro
     package_name: *const std::os::raw::c_char,
     class_name: *const std::os::raw::c_char,
 ) -> std::os::raw::c_int {
-    let package_name = unsafe { std::ffi::CStr::from_ptr(package_name).to_string_lossy().into_owned() };
-    let class_name = unsafe { std::ffi::CStr::from_ptr(class_name).to_string_lossy().into_owned() };
+    let package_name = unsafe {
+        std::ffi::CStr::from_ptr(package_name)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let class_name = unsafe {
+        std::ffi::CStr::from_ptr(class_name)
+            .to_string_lossy()
+            .into_owned()
+    };
 
     ForegroundAppTracker::global().on_foreground_app_changed(package_name, class_name);
 
@@ -171,14 +185,20 @@ mod tests {
         assert!(!tracker.is_app_foreground("com.test.app"));
 
         // Set foreground app
-        tracker.on_foreground_app_changed("com.test.app".to_string(), "com.test.app.MainActivity".to_string());
+        tracker.on_foreground_app_changed(
+            "com.test.app".to_string(),
+            "com.test.app.MainActivity".to_string(),
+        );
 
         // Should now be foreground
         assert!(tracker.is_app_foreground("com.test.app"));
         assert_eq!(tracker.current_app().unwrap().package_name, "com.test.app");
 
         // Different app
-        tracker.on_foreground_app_changed("com.other.app".to_string(), "com.other.app.MainActivity".to_string());
+        tracker.on_foreground_app_changed(
+            "com.other.app".to_string(),
+            "com.other.app.MainActivity".to_string(),
+        );
 
         assert!(tracker.is_app_foreground("com.other.app"));
         assert!(!tracker.is_app_foreground("com.test.app"));

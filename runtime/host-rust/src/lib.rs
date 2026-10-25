@@ -1,7 +1,7 @@
 mod app_metadata;
 mod backend_bridge;
-mod platform_bridge;
 mod bypass_tile;
+mod platform_bridge;
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
@@ -17,8 +17,7 @@ use std::time::Duration;
 // FFI reads are atomic only; permission UI is requested from the
 // NativeActivity/main choreographer thread.
 
-static DASH_PHOTO_ACTIVITY: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static DASH_PHOTO_ACTIVITY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static DASH_PHOTO_CHOREOGRAPHER: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 static DASH_PHOTO_PERMISSION_STATE: std::sync::atomic::AtomicI32 =
@@ -623,8 +622,7 @@ pub fn dash_host_open_url_jni(code: i32) -> bool {
 }
 static DASH_BACK_INTERCEPT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-static DASH_BACK_PENDING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static DASH_BACK_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[link(name = "android")]
 unsafe extern "C" {
@@ -642,7 +640,9 @@ unsafe extern "C" {
 pub extern "C" fn dash_host_set_back_intercept(enabled: i32) -> i32 {
     let value = enabled != 0;
     let previous = DASH_BACK_INTERCEPT.swap(value, std::sync::atomic::Ordering::AcqRel);
-    if previous != value { platform_bridge::refresh_back(); }
+    if previous != value {
+        platform_bridge::refresh_back();
+    }
 
     if !value {
         DASH_BACK_PENDING.store(false, std::sync::atomic::Ordering::Release);
@@ -1865,7 +1865,8 @@ unsafe fn init_egl(state: *mut HostState, window: *mut ANativeWindow) -> Result<
         // The raster and upload contexts run on different threads, so they must
         // never share one current pbuffer. Keep the raster context usable when
         // Android temporarily removes its window (Home/Recents/predictive exit).
-        let raster_fallback = unsafe { eglCreatePbufferSurface(display, config, pbuffer_attribs.as_ptr()) };
+        let raster_fallback =
+            unsafe { eglCreatePbufferSurface(display, config, pbuffer_attribs.as_ptr()) };
         if raster_fallback.is_null() {
             unsafe {
                 eglDestroySurface(display, resource_surface);
@@ -1873,7 +1874,10 @@ unsafe fn init_egl(state: *mut HostState, window: *mut ANativeWindow) -> Result<
                 eglDestroyContext(display, context);
                 eglTerminate(display);
             }
-            return Err(format!("eglCreatePbufferSurface(raster) failed {}", egl_error_hex()));
+            return Err(format!(
+                "eglCreatePbufferSurface(raster) failed {}",
+                egl_error_hex()
+            ));
         }
 
         egl.display = display as usize;

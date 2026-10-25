@@ -563,9 +563,10 @@ fn maintain_bypass_policy() {
     let state = persisted_state().lock().ok().map(|state| state.clone());
     if let Some(state) = state.filter(|state| state.bypass_charging == 1)
         && let Err(error) = reconcile_bypass(true, state.bypass_threshold, false)
-            && BYPASS_POLICY_ERROR.swap(1, Ordering::AcqRel) == 0 {
-                eprintln!("DASH_BYPASS_POLICY_FAIL {error}");
-            }
+        && BYPASS_POLICY_ERROR.swap(1, Ordering::AcqRel) == 0
+    {
+        eprintln!("DASH_BYPASS_POLICY_FAIL {error}");
+    }
 }
 
 fn configure_bypass(enabled: Option<bool>, threshold: Option<i32>) -> Result<(), String> {
@@ -1440,9 +1441,9 @@ fn restore_gpu_thermal_mode_unlocked() -> Result<(), String> {
     if MI_THERMAL_AP_MODE < 0 {
         return Ok(());
     }
-    let Some(mode) = service_control::original("gpu.thermal_mode").and_then(|v| {
-        v.as_i64().map(|m| m as i32)
-    }) else {
+    let Some(mode) =
+        service_control::original("gpu.thermal_mode").and_then(|v| v.as_i64().map(|m| m as i32))
+    else {
         return Ok(());
     };
     if read_mi_thermal_config_mode()? != mode {
@@ -1852,9 +1853,9 @@ fn disable_eb_dvfs_policy() -> Result<(), String> {
 
 /// Put the vendor's EB DVFS policy back the way it was.
 fn restore_eb_dvfs_policy() -> Result<(), String> {
-    let Some(mode) = service_control::original("gpu.eb_dvfs").and_then(|v| {
-        v.as_str().map(|mode| mode.to_string())
-    }) else {
+    let Some(mode) = service_control::original("gpu.eb_dvfs")
+        .and_then(|v| v.as_str().map(|mode| mode.to_string()))
+    else {
         return Ok(());
     };
     fs::write(EB_DVFS_POLICY, &mode).map_err(|e| format!("EB DVFS policy: {e}"))?;
@@ -1877,7 +1878,9 @@ fn gpu_write_devfreq(node: &str, value: &str) -> Result<(), String> {
             if actual == value {
                 return Ok(());
             }
-            return Err(format!("gpu {node} verify: requested {value}, got {actual}"));
+            return Err(format!(
+                "gpu {node} verify: requested {value}, got {actual}"
+            ));
         }
     }
     // Try misc path
@@ -1889,7 +1892,9 @@ fn gpu_write_devfreq(node: &str, value: &str) -> Result<(), String> {
             if actual == value {
                 return Ok(());
             }
-            return Err(format!("gpu {node} verify: requested {value}, got {actual}"));
+            return Err(format!(
+                "gpu {node} verify: requested {value}, got {actual}"
+            ));
         }
     }
     Err("GPU devfreq path not found".into())
@@ -1958,9 +1963,8 @@ fn gpu_ged_index(node: &str) -> Option<i32> {
 /// calls this on every tick, and rewriting the whole pair each time both
 /// fought the vendor's own services and hid which write had mattered.
 fn write_gpu_bounds(floor_hz: u64, ceiling_hz: u64) -> Result<(), String> {
-    let ladder = gpu_ged_ladder_hz().ok_or_else(|| {
-        format!("GPU ladder is unavailable at {DASH_GPU_GED_LADDER}")
-    })?;
+    let ladder = gpu_ged_ladder_hz()
+        .ok_or_else(|| format!("GPU ladder is unavailable at {DASH_GPU_GED_LADDER}"))?;
 
     let floor_index = gpu_ged_index_for_floor(floor_hz, &ladder).ok_or_else(|| {
         format!(
@@ -1995,15 +1999,16 @@ fn write_gpu_bounds(floor_hz: u64, ceiling_hz: u64) -> Result<(), String> {
     // on Dash and is left alone.
     let floor_khz = (floor_hz / 1_000).to_string();
     let ceiling_khz = (ceiling_hz / 1_000).to_string();
-    if read_trimmed("/sys/module/ged/parameters/gpu_cust_boost_freq").ok().as_deref()
+    if read_trimmed("/sys/module/ged/parameters/gpu_cust_boost_freq")
+        .ok()
+        .as_deref()
         != Some(floor_khz.as_str())
     {
-        let _ = service_control::write(
-            "/sys/module/ged/parameters/gpu_cust_boost_freq",
-            floor_khz,
-        );
+        let _ = service_control::write("/sys/module/ged/parameters/gpu_cust_boost_freq", floor_khz);
     }
-    if read_trimmed("/sys/module/ged/parameters/gpu_cust_upbound_freq").ok().as_deref()
+    if read_trimmed("/sys/module/ged/parameters/gpu_cust_upbound_freq")
+        .ok()
+        .as_deref()
         != Some(ceiling_khz.as_str())
     {
         let _ = service_control::write(
@@ -2022,7 +2027,11 @@ fn write_beast_gpu_constraints() {
     if gpu_get_power_policy() != "always_on" {
         let _ = service_control::write("/sys/class/misc/mali0/device/power_policy", "always_on");
     }
-    if read_trimmed("/sys/kernel/ged/hal/gpu_boost_level").ok().as_deref() != Some("2") {
+    if read_trimmed("/sys/kernel/ged/hal/gpu_boost_level")
+        .ok()
+        .as_deref()
+        != Some("2")
+    {
         let _ = service_control::write("/sys/kernel/ged/hal/gpu_boost_level", "2");
     }
     if !gpu_boost_pipeline_matches(true) {
@@ -2695,9 +2704,10 @@ fn select_dash_htsr_rate(samples: &[String]) -> Option<u16> {
             continue;
         };
         if let Some((previous_text, _)) = previous
-            && previous_text == text {
-                return Some(rate);
-            }
+            && previous_text == text
+        {
+            return Some(rate);
+        }
         previous = Some((text, rate));
     }
     None
@@ -2740,8 +2750,6 @@ fn dash_touch_effective_rates(profile: i32) -> (i32, i32) {
     }
 }
 
-
-
 /// Ask the ROM's Settings service to change a setting.
 fn dash_settings_put(key: &str, value: &str) -> Result<(), String> {
     let output = run_process_with_timeout(
@@ -2751,9 +2759,7 @@ fn dash_settings_put(key: &str, value: &str) -> Result<(), String> {
     )?;
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(format!(
-            "settings put {key} {value} failed: {message}"
-        ));
+        return Err(format!("settings put {key} {value} failed: {message}"));
     }
     Ok(())
 }
@@ -2767,10 +2773,7 @@ fn remember_dash_htsr_original() -> Result<(), String> {
     match service_control::original(DASH_HTSR_NODE) {
         Some(serde_json::Value::String(value)) if !value.is_empty() => return Ok(()),
         Some(serde_json::Value::String(_)) => {
-            service_control::replace(
-                DASH_HTSR_NODE,
-                serde_json::json!(DASH_HTSR_BASELINE),
-            )?;
+            service_control::replace(DASH_HTSR_NODE, serde_json::json!(DASH_HTSR_BASELINE))?;
             return Ok(());
         }
         Some(_) => return Ok(()),
@@ -3165,9 +3168,7 @@ fn release_touch_control() -> Result<(), String> {
     touch_resampler::set_target_hz(0)?;
     let originals = service_control::originals();
     let mut released = Vec::new();
-    if service_control::original("touch.hal").is_some()
-        && vendor_binder::touch_available()
-    {
+    if service_control::original("touch.hal").is_some() && vendor_binder::touch_available() {
         // Release game/super-report requests once, not on every wake or boot.
         apply_touch_hal_profile(0)?;
     }
@@ -3663,11 +3664,13 @@ const PERSISTED_FIELDS: &[PersistedField] = &[
         "cpu_manual",
         |state| state.cpu_manual,
         |state, value| state.cpu_manual = value,
-        |mode| Some(match mode {
-            -1 => -1,
-            1 => 1,
-            _ => 0,
-        }),
+        |mode| {
+            Some(match mode {
+                -1 => -1,
+                1 => 1,
+                _ => 0,
+            })
+        },
     ),
     online_mask(
         "cpu_online_mask",
@@ -3689,12 +3692,16 @@ const PERSISTED_FIELDS: &[PersistedField] = &[
         |state| &state.cpu7,
         |state, value| state.cpu7 = value.to_string(),
     ),
-    text("gpu", |state| &state.gpu, |state, value| {
-        state.gpu = value.to_string()
-    }),
-    text("io", |state| &state.io, |state, value| {
-        state.io = value.to_string()
-    }),
+    text(
+        "gpu",
+        |state| &state.gpu,
+        |state, value| state.gpu = value.to_string(),
+    ),
+    text(
+        "io",
+        |state| &state.io,
+        |state, value| state.io = value.to_string(),
+    ),
     number(
         "brightness_prev",
         |state| state.brightness_prev,
@@ -3792,11 +3799,13 @@ const PERSISTED_FIELDS: &[PersistedField] = &[
         "cpu_thermal_mode_prev",
         |state| state.cpu_thermal_mode_prev,
         |state, value| state.cpu_thermal_mode_prev = value,
-        |mode| Some(if valid_mi_thermal_config_mode(mode) {
-            mode
-        } else {
-            -1
-        }),
+        |mode| {
+            Some(if valid_mi_thermal_config_mode(mode) {
+                mode
+            } else {
+                -1
+            })
+        },
     ),
 ];
 
@@ -4507,56 +4516,54 @@ fn refresh_display_info() {
     }
 
     /// Returns the display feature dynamic_fps node path, trying known locations first
-/// then scanning for any mi_display device.
-fn display_feature_dynamic_fps_path() -> Option<PathBuf> {
-    // Known paths from device tree init.rc
-    let paths = [
-        "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
-        "/sys/class/mi_display/disp-DSI-0/dynamic_fps",
-        "/sys/class/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
-    ];
-    for path in paths {
-        let p = PathBuf::from(path);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // Fallback: scan for mi_display devices
-    if let Ok(entries) = fs::read_dir("/sys/class/mi_display") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let dyn_fps = path.join("dynamic_fps");
-            if dyn_fps.exists() {
-                return Some(dyn_fps);
+    /// then scanning for any mi_display device.
+    fn display_feature_dynamic_fps_path() -> Option<PathBuf> {
+        // Known paths from device tree init.rc
+        let paths = [
+            "/sys/devices/virtual/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
+            "/sys/class/mi_display/disp-DSI-0/dynamic_fps",
+            "/sys/class/mi_display/disp_feature/disp-DSI-0/dynamic_fps",
+        ];
+        for path in paths {
+            let p = PathBuf::from(path);
+            if p.exists() {
+                return Some(p);
             }
-            // Check disp_feature subdirectory
-            let disp_feature = path.join("disp_feature");
-            if let Ok(subentries) = fs::read_dir(&disp_feature) {
-                for sub in subentries.flatten() {
-                    let dyn_fps = sub.path().join("dynamic_fps");
-                    if dyn_fps.exists() {
-                        return Some(dyn_fps);
+        }
+        // Fallback: scan for mi_display devices
+        if let Ok(entries) = fs::read_dir("/sys/class/mi_display") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let dyn_fps = path.join("dynamic_fps");
+                if dyn_fps.exists() {
+                    return Some(dyn_fps);
+                }
+                // Check disp_feature subdirectory
+                let disp_feature = path.join("disp_feature");
+                if let Ok(subentries) = fs::read_dir(&disp_feature) {
+                    for sub in subentries.flatten() {
+                        let dyn_fps = sub.path().join("dynamic_fps");
+                        if dyn_fps.exists() {
+                            return Some(dyn_fps);
+                        }
                     }
                 }
             }
         }
-    }
-    // Check virtual/mi_display
-    if let Ok(entries) = fs::read_dir("/sys/devices/virtual/mi_display") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let dyn_fps = path.join("dynamic_fps");
-            if dyn_fps.exists() {
-                return Some(dyn_fps);
+        // Check virtual/mi_display
+        if let Ok(entries) = fs::read_dir("/sys/devices/virtual/mi_display") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let dyn_fps = path.join("dynamic_fps");
+                if dyn_fps.exists() {
+                    return Some(dyn_fps);
+                }
             }
         }
+        None
     }
-    None
-}
 
-for path in [
-        display_feature_dynamic_fps_path(),
-    ].into_iter().flatten() {
+    for path in [display_feature_dynamic_fps_path()].into_iter().flatten() {
         if let Ok(raw) = read_node_text(&path)
             && let Ok(rate) = raw.trim().parse::<f64>()
             && (1.0..=1000.0).contains(&rate)
@@ -4914,15 +4921,16 @@ fn restore_persisted_state() {
     }
 
     if (1..=3).contains(&state.touch)
-        && let Ok(_guard) = touch_profile_apply_lock().lock() {
-            let owned = persisted_state()
-                .lock()
-                .is_ok_and(|s| s.touch == state.touch);
-            // A per-app profile that holds the touch control keeps it.
-            if owned && !app_runtime::owns_touch() {
-                let _ = apply_touch_profile_locked(state.touch);
-            }
+        && let Ok(_guard) = touch_profile_apply_lock().lock()
+    {
+        let owned = persisted_state()
+            .lock()
+            .is_ok_and(|s| s.touch == state.touch);
+        // A per-app profile that holds the touch control keeps it.
+        if owned && !app_runtime::owns_touch() {
+            let _ = apply_touch_profile_locked(state.touch);
         }
+    }
 
     if let Ok(_guard) = display_mode_apply_lock().lock() {
         if (0..=2).contains(&state.display_color)
@@ -5544,7 +5552,9 @@ fn bypass_monitor_loop() {
         let Some(dirty) = BYPASS_MONITOR_DIRTY.lock().ok() else {
             continue;
         };
-        let Ok((mut dirty, _)) = BYPASS_MONITOR_WAKE.wait_timeout_while(dirty, interval, |dirty| !*dirty) else {
+        let Ok((mut dirty, _)) =
+            BYPASS_MONITOR_WAKE.wait_timeout_while(dirty, interval, |dirty| !*dirty)
+        else {
             continue;
         };
         *dirty = false;
@@ -5736,10 +5746,7 @@ fn open_crash_log() {
     {
         eprintln!("DASH_CRASH_LOG_DIR_FAIL {error}");
     }
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path);
+    let file = fs::OpenOptions::new().create(true).append(true).open(&path);
     match file {
         Ok(file) => {
             let fd = file.as_raw_fd();
@@ -5810,11 +5817,18 @@ extern "C" fn report_crash(
 /// A signal that was ignored must not be ignored again: the fault would
 /// run again and again with nothing to stop it.
 fn restore_previous_disposition(signal_number: libc::c_int) {
-    let Some(index) = CRASH_SIGNALS.iter().position(|number| *number == signal_number) else {
+    let Some(index) = CRASH_SIGNALS
+        .iter()
+        .position(|number| *number == signal_number)
+    else {
         end_with_the_default_action(signal_number);
         return;
     };
-    let previous = unsafe { core::ptr::addr_of!(CRASH_PREVIOUS[index]).read().assume_init() };
+    let previous = unsafe {
+        core::ptr::addr_of!(CRASH_PREVIOUS[index])
+            .read()
+            .assume_init()
+    };
     if previous.sa_sigaction == libc::SIG_IGN {
         end_with_the_default_action(signal_number);
         return;
@@ -6082,10 +6096,12 @@ pub fn start_background_services() {
         let Some(_gate) = service_control::GATE.read().ok() else {
             return;
         };
-        if service_control::release_pending() && !service_control::enabled()
-            && restore_released_controls().is_ok() {
-                let _ = service_control::set_release_pending(false);
-            }
+        if service_control::release_pending()
+            && !service_control::enabled()
+            && restore_released_controls().is_ok()
+        {
+            let _ = service_control::set_release_pending(false);
+        }
         restore_persisted_state();
     });
     std::thread::spawn(refresh_display_info);
@@ -6520,7 +6536,11 @@ fn gpu_devfreq_table_hz() -> Vec<u64> {
 fn gpu_ged_ladder_hz() -> Option<Vec<u64>> {
     let raw = read_node_text(DASH_GPU_GED_LADDER).ok()?;
     let ladder = parse_gpu_ged_ladder(&raw)?;
-    if ladder.is_empty() { None } else { Some(ladder) }
+    if ladder.is_empty() {
+        None
+    } else {
+        Some(ladder)
+    }
 }
 
 /// Parse the GPUEB working operating-point table.
@@ -6553,7 +6573,11 @@ fn parse_gpu_ged_ladder(raw: &str) -> Option<Vec<u64>> {
         ladder.push(hz);
     }
 
-    if ladder.is_empty() { None } else { Some(ladder) }
+    if ladder.is_empty() {
+        None
+    } else {
+        Some(ladder)
+    }
 }
 
 /// The operating point that publishes a floor.
@@ -6562,14 +6586,20 @@ fn parse_gpu_ged_ladder(raw: &str) -> Option<Vec<u64>> {
 /// ladder position of that step, which for Dash's three equal 338 MHz entries
 /// is the last of them.
 fn gpu_ged_index_for_floor(hz: u64, ladder: &[u64]) -> Option<u32> {
-    ladder.iter().rposition(|entry| *entry >= hz).map(|i| i as u32)
+    ladder
+        .iter()
+        .rposition(|entry| *entry >= hz)
+        .map(|i| i as u32)
 }
 
 /// The operating point that publishes a ceiling.
 ///
 /// A ceiling names the fastest step the GPU may still reach.
 fn gpu_ged_index_for_ceiling(hz: u64, ladder: &[u64]) -> Option<u32> {
-    ladder.iter().position(|entry| *entry <= hz).map(|i| i as u32)
+    ladder
+        .iter()
+        .position(|entry| *entry <= hz)
+        .map(|i| i as u32)
 }
 
 /// The fastest operating point at or below `hz` that the devfreq node
@@ -6881,8 +6911,7 @@ fn gpu_profile_configured(profile: i32) -> bool {
         }
         1 => {
             min == floor
-                && (max == top
-                    || (gpu_profile_capped(1).is_some() && (floor..top).contains(&max)))
+                && (max == top || (gpu_profile_capped(1).is_some() && (floor..top).contains(&max)))
                 && governor == "simple_ondemand"
                 && gpu_boost_pipeline_matches(true)
                 && dvfs == 1
@@ -6890,8 +6919,7 @@ fn gpu_profile_configured(profile: i32) -> bool {
         }
         2 => {
             min == floor
-                && (max == saver
-                    || (gpu_profile_capped(2).is_some() && max < saver))
+                && (max == saver || (gpu_profile_capped(2).is_some() && max < saver))
                 && governor == "powersave"
                 && gpu_boost_pipeline_matches(false)
                 && dvfs == 1
@@ -6976,7 +7004,9 @@ fn set_gpu_min_freq(mhz: i32) -> Result<(), String> {
         ));
     };
     let Some(ladder) = gpu_ged_ladder_hz() else {
-        return Err(format!("GPU ladder is unavailable at {DASH_GPU_GED_LADDER}"));
+        return Err(format!(
+            "GPU ladder is unavailable at {DASH_GPU_GED_LADDER}"
+        ));
     };
     let Some(opp_boost) = gpu_ged_index_for_floor(hz, &ladder) else {
         return Err(format!(
@@ -7025,7 +7055,9 @@ fn set_gpu_max_freq(mhz: i32) -> Result<(), String> {
         ));
     };
     let Some(ladder) = gpu_ged_ladder_hz() else {
-        return Err(format!("GPU ladder is unavailable at {DASH_GPU_GED_LADDER}"));
+        return Err(format!(
+            "GPU ladder is unavailable at {DASH_GPU_GED_LADDER}"
+        ));
     };
     let Some(opp_upbound) = gpu_ged_index_for_ceiling(hz, &ladder) else {
         return Err(format!(
@@ -7454,9 +7486,7 @@ fn snapshot() -> String {
             ((voltage as i128 * (current as i128).abs()) / 1_000_000_000) as i64
         })
         .unwrap_or(-1);
-    let touch_hal = if vendor_binder::touch_available()
-        || touch_report_rate_path().is_some()
-    {
+    let touch_hal = if vendor_binder::touch_available() || touch_report_rate_path().is_some() {
         1
     } else {
         0
@@ -7544,7 +7574,11 @@ fn snapshot() -> String {
         format!("display_hal={display_hal}"),
         format!(
             "display_route={}",
-            if display_hal == 1 { "vendor" } else { "unavailable" }
+            if display_hal == 1 {
+                "vendor"
+            } else {
+                "unavailable"
+            }
         ),
         format!("touch={}", TOUCH_STATE.load(Ordering::Acquire)),
         format!(
@@ -7641,7 +7675,7 @@ fn restore_released_controls() -> Result<(), String> {
         if vendor_binder::touch_available() {
             run("OEM touch", apply_touch_hal_profile(0));
         }
-    if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
+        if let Some(rate) = service_control::original("touch.thp_rate").and_then(|v| v.as_u64()) {
             // Restore the saved timing, including OEM values outside fixed-rate presets.
             run(
                 "touch timing",
@@ -7730,25 +7764,25 @@ fn restore_released_controls() -> Result<(), String> {
     for (path, value) in service_control::originals() {
         if (path.ends_with("/scaling_min_freq")
             || (path.contains("/devfreq/") && path.ends_with("/min_freq")))
-            && let Some(value) = value.as_str() {
-                let max_path = if path.ends_with("/scaling_min_freq") {
-                    path.replace("/scaling_min_freq", "/scaling_max_freq")
-                } else {
-                    path.replace("/min_freq", "/max_freq")
-                };
-                if let (Ok(minimum), Ok(maximum)) = (
-                    value.trim().parse::<i64>(),
-                    read_trimmed(&max_path)
-                        .and_then(|v| v.parse::<i64>().map_err(|e| e.to_string())),
-                )
-                    && minimum > maximum {
-                        run(
-                            &max_path,
-                            fs::write(&max_path, minimum.to_string()).map_err(|e| e.to_string()),
-                        );
-                    }
-                run(&path, fs::write(&path, value).map_err(|e| e.to_string()));
+            && let Some(value) = value.as_str()
+        {
+            let max_path = if path.ends_with("/scaling_min_freq") {
+                path.replace("/scaling_min_freq", "/scaling_max_freq")
+            } else {
+                path.replace("/min_freq", "/max_freq")
+            };
+            if let (Ok(minimum), Ok(maximum)) = (
+                value.trim().parse::<i64>(),
+                read_trimmed(&max_path).and_then(|v| v.parse::<i64>().map_err(|e| e.to_string())),
+            ) && minimum > maximum
+            {
+                run(
+                    &max_path,
+                    fs::write(&max_path, minimum.to_string()).map_err(|e| e.to_string()),
+                );
             }
+            run(&path, fs::write(&path, value).map_err(|e| e.to_string()));
+        }
     }
     let mut original_nodes = service_control::originals();
     // Restore manual core states while core_ctl is still paused, then hand
@@ -8062,10 +8096,11 @@ fn diagnostics_report_export() -> Result<serde_json::Value, String> {
     let mut tried = Vec::new();
     for path in diagnostics_report_paths() {
         if let Some(parent) = path.parent()
-            && let Err(error) = fs::create_dir_all(parent) {
-                tried.push(format!("{}: {error}", parent.display()));
-                continue;
-            }
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            tried.push(format!("{}: {error}", parent.display()));
+            continue;
+        }
         match fs::write(&path, text.as_bytes()) {
             Ok(()) => {
                 diagnostics::record(
@@ -8112,7 +8147,10 @@ fn diagnostics_area(cmd: &str) -> &'static str {
         diagnostics::AREA_SERVICE
     } else if cmd.starts_with("SET app.") || cmd.starts_with("ACTION app.") {
         diagnostics::AREA_PER_APP
-    } else if cmd.starts_with("SET perf") || cmd.starts_with("SET gpu.") || cmd.starts_with("ACTION gpu.") {
+    } else if cmd.starts_with("SET perf")
+        || cmd.starts_with("SET gpu.")
+        || cmd.starts_with("ACTION gpu.")
+    {
         diagnostics::AREA_GPU
     } else {
         diagnostics::AREA_SERVICE
@@ -8125,9 +8163,7 @@ pub fn handle_command(line: &str) -> String {
     // Every control the app owns is recorded with its outcome, so a user who
     // cannot tell which feature is broken can see which command failed and
     // what the daemon answered.
-    if (cmd.starts_with("SET ") || cmd.starts_with("ACTION "))
-        && !cmd.starts_with("ACTION logs.")
-    {
+    if (cmd.starts_with("SET ") || cmd.starts_with("ACTION ")) && !cmd.starts_with("ACTION logs.") {
         let ok = response.starts_with("OK");
         diagnostics::record(
             diagnostics_area(cmd),
@@ -8222,9 +8258,10 @@ fn handle_command_inner(line: &str) -> String {
             return format!("ERR {error}");
         }
         if !service_control::configured()
-            && let Err(error) = service_control::set_intent(true, true) {
-                return format!("ERR {error}");
-            }
+            && let Err(error) = service_control::set_intent(true, true)
+        {
+            return format!("ERR {error}");
+        }
     }
     handle_enabled_command(line)
 }
@@ -8765,12 +8802,12 @@ mod tests {
         gpu_ged_index_for_floor, mi_thermal_cpu_limit_request,
         migrate_legacy_gpu_profile_cpu_state, mtk_powerhal_cpu_range_request,
         normalize_charging_profile, normalize_mi_thermal_config_mode, normalize_reported_power_w,
-        package_app_id_from_packages_list,         parse_cpu_frequency_table, parse_cpu_time_in_state,
-        parse_eb_dvfs_mode, parse_gpu_ged_ladder, parse_ged_current_frequency_mhz,
-        persisted_cpu_ranges_active, profile_uses_ged_boost, select_dash_htsr_rate,
-        scaled_display_density, tcp_client_uid_from_table, touch_hal_profile_sequence,
-        vendor_ceiling_caps_target,
+        package_app_id_from_packages_list, parse_cpu_frequency_table, parse_cpu_time_in_state,
+        parse_eb_dvfs_mode, parse_ged_current_frequency_mhz, parse_gpu_ged_ladder,
+        persisted_cpu_ranges_active, profile_uses_ged_boost, scaled_display_density,
+        select_dash_htsr_rate, tcp_client_uid_from_table, touch_hal_profile_sequence,
         valid_charging_profile, valid_mi_thermal_config_mode, validate_cpu_frequency_range_against,
+        vendor_ceiling_caps_target,
     };
 
     fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
@@ -9009,10 +9046,7 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
 [51] freq:  338000000, volt: 500000, vsram: 750000
 ";
         let ladder = parse_gpu_ged_ladder(raw).expect("ladder");
-        assert_eq!(
-            ladder,
-            vec![1612000000, 1586000000, 1430000000, 338000000]
-        );
+        assert_eq!(ladder, vec![1612000000, 1586000000, 1430000000, 338000000]);
     }
 
     #[test]
@@ -9068,7 +9102,12 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // resolved against the ladder the driver publishes rather than
         // against the device tree's table.
         let ladder = vec![
-            1_612_000_000u64, 1_430_000_000, 598_000_000, 365_000_000, 338_000_000, 338_000_000,
+            1_612_000_000u64,
+            1_430_000_000,
+            598_000_000,
+            365_000_000,
+            338_000_000,
+            338_000_000,
         ];
         assert_eq!(gpu_ged_index_for_floor(338_000_000, &ladder), Some(5));
         assert_eq!(gpu_ged_index_for_ceiling(598_000_000, &ladder), Some(2));
@@ -9200,11 +9239,8 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // daemon's own reader takes a large buffer instead, so the content
         // of a node comes back whole and the read leaves no trace on the
         // stack.
-        let path = std::env::temp_dir().join(format!(
-            "dash-node-read-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("dash-node-read-{}-{}", std::process::id(), line!()));
         std::fs::write(&path, "report_rate: 240\n").unwrap();
         let value = super::read_node_text(&path).unwrap();
         assert_eq!(value, "report_rate: 240\n");
@@ -9253,11 +9289,8 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // The node reads back in the labelled form, but it only accepts a
         // bare rate of at most six bytes, so an original that is put back
         // has to be the number alone.
-        let path = std::env::temp_dir().join(format!(
-            "dash-rate-node-{}-{}",
-            std::process::id(),
-            line!()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("dash-rate-node-{}-{}", std::process::id(), line!()));
         std::fs::write(&path, "report_rate: 240\n").unwrap();
         let original = super::service_control::normalized_original(&path, "report_rate: 240\n");
         assert_eq!(original, "240");
@@ -9274,7 +9307,8 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
     const CRASH_TEST_CHILD_ENV: &str = "DASH_CRASH_TEST_CHILD";
 
     /// The file the previous handler writes to when it is called.
-    static CRASH_TEST_MARKER_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+    static CRASH_TEST_MARKER_FD: std::sync::atomic::AtomicI32 =
+        std::sync::atomic::AtomicI32::new(-1);
 
     /// The handler that was in place before the daemon took the signal over.
     ///

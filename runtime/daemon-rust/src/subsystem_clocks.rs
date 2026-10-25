@@ -85,8 +85,9 @@ fn inspect(kind: Kind, root: &Path) -> Result<Value, String> {
     if name.trim() != kind.name() {
         return Err("unexpected devfreq device".into());
     }
-    let frequencies =
-        table(&super::read_node_text(root.join("available_frequencies")).map_err(|e| e.to_string())?)?;
+    let frequencies = table(
+        &super::read_node_text(root.join("available_frequencies")).map_err(|e| e.to_string())?,
+    )?;
     let governor = super::read_node_text(root.join("governor")).map_err(|e| e.to_string())?;
     let min = number(root, "min_freq")?;
     let max = number(root, "max_freq")?;
@@ -271,9 +272,10 @@ pub(super) fn start() {
         }
     }
     if trials().0.lock().unwrap().error.is_none()
-        && let Err(e) = restore_all() {
-            trials().0.lock().unwrap().error = Some(e);
-        }
+        && let Err(e) = restore_all()
+    {
+        trials().0.lock().unwrap().error = Some(e);
+    }
     std::thread::spawn(|| {
         let (lock, wake) = trials();
         let mut state = lock.lock().unwrap();

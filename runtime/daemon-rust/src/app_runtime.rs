@@ -598,7 +598,10 @@ fn refresh_setting(
     value: Option<&str>,
 ) -> Result<String, String> {
     if !matches!(table, "system" | "secure")
-        || !matches!(key, "user_refresh_rate" | "miui_refresh_rate" | "is_smart_fps")
+        || !matches!(
+            key,
+            "user_refresh_rate" | "miui_refresh_rate" | "is_smart_fps"
+        )
     {
         return Err("invalid ROM refresh setting".into());
     }
@@ -623,7 +626,10 @@ fn capture_vendor_refresh(user: u32) -> Result<Value, String> {
             }
         }
     }
-    if entries.iter().any(|entry| entry["key"] == "miui_refresh_rate") {
+    if entries
+        .iter()
+        .any(|entry| entry["key"] == "miui_refresh_rate")
+    {
         let value = refresh_setting(user, "system", "get", "is_smart_fps", None)?;
         if matches!(value.as_str(), "0" | "1") {
             entries.push(json!({"table":"system","key":"is_smart_fps","value":value}));
@@ -703,16 +709,16 @@ fn foreground() -> Result<Option<App>, String> {
             return App::new(0, &info.package_name).map(Some);
         }
     }
-    
+
     // Fallback to dumpsys parsing
     let raw = cli("/system/bin/dumpsys", &["activity", "activities"])?;
     parse_foreground(&raw)
 }
 fn parse_foreground(raw: &str) -> Result<Option<App>, String> {
-    if raw
-        .lines()
-        .any(|line| line.split_whitespace().any(|token| matches!(token, "mSleeping=true" | "mShuttingDown=true")))
-    {
+    if raw.lines().any(|line| {
+        line.split_whitespace()
+            .any(|token| matches!(token, "mSleeping=true" | "mShuttingDown=true"))
+    }) {
         return Ok(None);
     }
     let top: Vec<_> = raw
@@ -903,7 +909,10 @@ fn status(r: &Runtime) -> Value {
 /// The answer is about the hardware, so it is asked of the adapter rather
 /// than of the profile, and it is what tells a profile that was applied
 /// apart from a profile that is in effect.
-fn target_live(control: &super::app_controls::Control, target: &super::app_controls::Target) -> Option<bool> {
+fn target_live(
+    control: &super::app_controls::Control,
+    target: &super::app_controls::Target,
+) -> Option<bool> {
     let mut adapter = Adapter::new();
     adapter.is_live(control, target)
 }
@@ -1232,11 +1241,10 @@ pub(super) fn start() {
             }
 
             for delay in [0, 150, 350] {
-                if delay > 0
-                    && receiver.recv_timeout(Duration::from_millis(delay)).is_ok() {
-                        // A newer event supersedes the pending settling check.
-                        while receiver.try_recv().is_ok() {}
-                    }
+                if delay > 0 && receiver.recv_timeout(Duration::from_millis(delay)).is_ok() {
+                    // A newer event supersedes the pending settling check.
+                    while receiver.try_recv().is_ok() {}
+                }
                 let _gate = service_control::GATE.write().expect("service gate");
                 if let Ok(mut r) = runtime().lock() {
                     r.error = reconcile(&mut r, Wake::Changed).err();
@@ -1330,8 +1338,8 @@ mod tests {
             assert!(!vendor_refresh_value(value));
         }
     }
-    use super::*;
     use super::app_controls::control_bit;
+    use super::*;
     #[test]
     fn internal_modes_are_detected_not_assumed() {
         assert_eq!(
@@ -1400,7 +1408,11 @@ mod tests {
     }
     #[test]
     fn gpu_baseline_copy_does_not_touch_cpu_or_touch() {
-        let global = PersistedState { cpu_min_freq0: 1000, touch: 2, ..PersistedState::default() };
+        let global = PersistedState {
+            cpu_min_freq0: 1000,
+            touch: 2,
+            ..PersistedState::default()
+        };
         let mut effective = global.clone();
         effective.perf = 3;
         effective.cpu_min_freq0 = 2100;
@@ -1412,7 +1424,10 @@ mod tests {
     }
     #[test]
     fn cpu_range_baseline_does_not_change_governor() {
-        let global = PersistedState { cpu0: "schedutil".into(), ..PersistedState::default() };
+        let global = PersistedState {
+            cpu0: "schedutil".into(),
+            ..PersistedState::default()
+        };
         let mut effective = global.clone();
         effective.cpu0 = "performance".into();
         copy_preference(&Control::CpuRange(0), &global, &mut effective);
@@ -1473,10 +1488,7 @@ mod tests {
 
     #[test]
     fn a_borrowed_write_does_not_change_the_state_of_the_device() {
-        let before = persisted_state()
-            .lock()
-            .expect("state lock")
-            .clone();
+        let before = persisted_state().lock().expect("state lock").clone();
         {
             // A per-app profile borrows the control: the preferences of the
             // device stay what they are.
@@ -1504,7 +1516,10 @@ mod tests {
             .transition(&mut hardware, Some(&app), Some(&profile), true, true)
             .expect("apply");
         assert!(!owner.held().is_empty());
-        let mut config = Config { enabled: true, ..Config::default() };
+        let mut config = Config {
+            enabled: true,
+            ..Config::default()
+        };
         config.profiles.insert(app.clone(), profile);
         let mut runtime = Runtime {
             config,

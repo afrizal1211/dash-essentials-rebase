@@ -745,15 +745,26 @@ fn restore_saved_palette(prefix: &str) -> Result<(), String> {
         };
         for (setting, field) in [(SETTING, "theme"), (CONTRAST, "contrast")] {
             let desired = if field == "theme" {
-                let current = command(&["settings", "--user", &user.to_string(), "get", "secure", SETTING])?;
+                let current = command(&[
+                    "settings",
+                    "--user",
+                    &user.to_string(),
+                    "get",
+                    "secure",
+                    SETTING,
+                ])?;
                 let mut merged = decode((current != "null").then_some(current.as_str()))?;
                 let baseline = decode(original[field].as_str())?;
                 for key in COLOR_KEYS {
                     merged.remove(key);
-                    if let Some(value) = baseline.get(key) { merged.insert(key.into(), value.clone()); }
+                    if let Some(value) = baseline.get(key) {
+                        merged.insert(key.into(), value.clone());
+                    }
                 }
                 Some(encode(&merged))
-            } else { original[field].as_str().map(str::to_string) };
+            } else {
+                original[field].as_str().map(str::to_string)
+            };
             match desired.as_deref() {
                 Some(value) => command(&[
                     "settings",

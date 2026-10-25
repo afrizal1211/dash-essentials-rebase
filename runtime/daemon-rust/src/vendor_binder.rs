@@ -118,10 +118,7 @@ fn service_manager_check_service(instance: *const c_char) -> *mut AIBinder {
     }
 }
 
-fn class_for(
-    descriptor: &'static [u8],
-    slot: &'static OnceLock<usize>,
-) -> *const AIBinder_Class {
+fn class_for(descriptor: &'static [u8], slot: &'static OnceLock<usize>) -> *const AIBinder_Class {
     let raw = *slot.get_or_init(|| unsafe {
         AIBinder_Class_define(
             descriptor.as_ptr().cast(),
@@ -195,16 +192,14 @@ fn enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("DASH_VENDOR_BINDER").as_deref() != Ok("0"))
 }
 
-
 /// What the service manager answered the last time it was asked.
 ///
 /// The answer is kept for a while: the daemon cannot reach the vendor
 /// services from the module's context, and every attempt to ask for one
 /// is a fork, so the answer is not asked for again until it is worth
 /// asking.
-static AVAILABILITY: OnceLock<
-    std::sync::Mutex<(Option<std::time::Instant>, bool, bool)>,
-> = OnceLock::new();
+static AVAILABILITY: OnceLock<std::sync::Mutex<(Option<std::time::Instant>, bool, bool)>> =
+    OnceLock::new();
 const AVAILABILITY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn touch_available_inner() -> bool {
@@ -217,8 +212,7 @@ fn touch_available_inner() -> bool {
 }
 
 fn display_available_inner() -> bool {
-    const SERVICE: &[u8] =
-        b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
+    const SERVICE: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
     let Some(binder) = find_service(SERVICE) else {
         return false;
     };
@@ -297,7 +291,10 @@ fn guarded_call(call: impl FnOnce() -> bool) -> bool {
     }
     let pid = unsafe { fork() };
     if pid < 0 {
-        unsafe { close(fds[0]); close(fds[1]) };
+        unsafe {
+            close(fds[0]);
+            close(fds[1])
+        };
         return call();
     }
     if pid == 0 {
@@ -355,9 +352,8 @@ fn touch_mode_transaction(display_id: i32, mode: i32, value: i32) -> bool {
     }
 
     if ok {
-        ok &= unsafe {
-            AIBinder_transact(binder, 9, &mut input, &mut output, FLAG_PRIVATE_VENDOR)
-        } == STATUS_OK;
+        ok &= unsafe { AIBinder_transact(binder, 9, &mut input, &mut output, FLAG_PRIVATE_VENDOR) }
+            == STATUS_OK;
     } else if !input.is_null() {
         unsafe { AParcel_delete(input) };
     }
@@ -414,8 +410,7 @@ pub fn set_display_feature(case_id: i32, mode_id: i32, cookie: i32) -> bool {
 }
 
 fn display_feature_transaction(case_id: i32, mode_id: i32, cookie: i32, flags: u32) -> bool {
-    const SERVICE: &[u8] =
-        b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
+    const SERVICE: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature/default\0";
     const DESCRIPTOR: &[u8] = b"vendor.xiaomi.hardware.displayfeature_aidl.IDisplayFeature\0";
     let Some(binder) = check_service(SERVICE, DESCRIPTOR, &DISPLAY_CLASS) else {
         return false;

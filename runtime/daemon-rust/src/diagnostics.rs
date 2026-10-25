@@ -10,10 +10,10 @@
 //! timestamp and a bounded copy of the message; nothing here is allowed to
 //! block a hardware transaction, and no event may grow without limit.
 
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
