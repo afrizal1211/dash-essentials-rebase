@@ -95,11 +95,13 @@ impl ForegroundAppTracker {
     }
 
     /// Get the last known foreground app package name
+    #[allow(dead_code)]
     pub fn last_known_app(&self) -> Option<String> {
         self.last_known_app.lock().unwrap().clone()
     }
 
     /// Check if a specific app is currently in foreground
+    #[allow(dead_code)]
     pub fn is_app_foreground(&self, package_name: &str) -> bool {
         self.current_app
             .lock()
@@ -110,6 +112,7 @@ impl ForegroundAppTracker {
     }
 
     /// Get timestamp of last seen for an app
+    #[allow(dead_code)]
     pub fn app_last_seen(&self, package_name: &str) -> Option<Instant> {
         self.app_timestamps
             .lock()
@@ -133,6 +136,7 @@ impl ForegroundAppTracker {
     }
 
     /// Clean up stale entries (call periodically)
+    #[allow(dead_code)]
     pub fn cleanup_stale_entries(&self) {
         let cutoff = Instant::now() - Duration::from_secs(300); // 5 minutes
         let mut timestamps = self.app_timestamps.lock().unwrap();

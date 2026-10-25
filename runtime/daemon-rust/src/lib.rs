@@ -3212,7 +3212,7 @@ fn release_touch_control() -> Result<(), String> {
             // panel runs at when the daemon is not driving it; the others
             // are left as they are rather than written empty.
             let path = if key == DASH_HTSR_NODE {
-                touch_report_rate_path().map(PathBuf::from)
+                touch_report_rate_path()
             } else {
                 Some(PathBuf::from(&key))
             };
@@ -8706,6 +8706,7 @@ mod tests {
         assert_eq!(state.perf, -1);
     }
     #[test]
+    #[allow(clippy::needless_update)]
     fn every_persisted_field_survives_a_write_and_read() {
         let state = super::PersistedState {
             charging: 65,

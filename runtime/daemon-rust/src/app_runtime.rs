@@ -697,17 +697,17 @@ fn capabilities_json() -> Result<Value, String> {
 }
 fn foreground() -> Result<Option<App>, String> {
     // First try the AccessibilityService-based tracker (more efficient)
-    if let Some(info) = crate::foreground_app::ForegroundAppTracker::global().current_app() {
-        if info.is_valid() {
-            // Try to get user ID from dumpsys (lightweight check)
-            if let Ok(raw) = cli("/system/bin/dumpsys", &["activity", "activities"]) {
-                if let Ok(Some(app)) = parse_foreground(&raw) {
-                    return Ok(Some(app));
-                }
-            }
-            // Fallback: create App from package name (user 0)
-            return App::new(0, &info.package_name).map(Some);
+    if let Some(info) = crate::foreground_app::ForegroundAppTracker::global().current_app()
+        && info.is_valid()
+    {
+        // Try to get user ID from dumpsys (lightweight check)
+        if let Ok(raw) = cli("/system/bin/dumpsys", &["activity", "activities"])
+            && let Ok(Some(app)) = parse_foreground(&raw)
+        {
+            return Ok(Some(app));
         }
+        // Fallback: create App from package name (user 0)
+        return App::new(0, &info.package_name).map(Some);
     }
 
     // Fallback to dumpsys parsing
