@@ -118,25 +118,7 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
     });
   }
 
-  int _refreshRate() {
-    try {
-      // platformDispatcher is stable across all supported Flutter versions.
-      final double physical =
-          WidgetsBinding.instance.platformDispatcher.views[0].physicalSize.width;
-      final double logical =
-          MediaQuery.viewLogicalSizeOf(WidgetsBinding.instance).width;
-      if (logical > 0) {
-        final double density = physical / logical;
-        final int dpI = density.round();
-        // Common mobile densities map to typical refresh rates.
-        if (dpI <= 2) return 60;
-        if (dpI <= 3) return 120;
-      }
-      return 60;
-    } catch (_) {
-      return 60;
-    }
-  }
+  int _refreshRate() => 60;
 
   void _collect(List<FrameTiming> timings) {
     _frames.addAll(timings);
