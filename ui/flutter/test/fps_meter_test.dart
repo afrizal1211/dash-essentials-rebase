@@ -85,8 +85,20 @@ void main() {
           ),
         ),
       );
-      expect(find.byType(IgnorePointer), findsOneWidget);
-      expect(find.byType(ExcludeSemantics), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(DashFpsMeter),
+          matching: find.byType(IgnorePointer),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(DashFpsMeter),
+          matching: find.byType(ExcludeSemantics),
+        ),
+        findsOneWidget,
+      );
     });
   });
 }
