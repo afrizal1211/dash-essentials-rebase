@@ -966,11 +966,7 @@ class _DashShellState extends State<DashShell>
                         Positioned(
                           top: 0,
                           left: 0,
-                          child: IgnorePointer(
-                            child: ExcludeSemantics(
-                              child: DashFpsMeter(accent: config.activeAccent),
-                            ),
-                          ),
+                          child: DashFpsMeter(accent: config.activeAccent),
                         ),
                     ],
                   ),

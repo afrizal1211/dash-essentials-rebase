@@ -158,9 +158,11 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
         ? const Color(0xFFAEB8C5)
         : const Color(0xFF566477);
 
-    return RepaintBoundary(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+    return IgnorePointer(
+      child: ExcludeSemantics(
+        child: RepaintBoundary(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: bg,
@@ -220,6 +222,8 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
                   ),
           ),
         ),
+      ),
+      ),
       ),
     );
   }
