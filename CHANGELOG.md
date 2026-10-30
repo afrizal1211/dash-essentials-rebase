@@ -6,6 +6,33 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.22
+
+### Added
+
+- FPS meter overlay: an on-screen frame-rate readout with its own appearance
+  settings, accessible from the application settings.
+
+### Fixed
+
+- Per-app recovery no longer locks the daemon on a stale journal entry. A
+  control the platform had already moved (the Beast OPP lock while the GPU
+  was idle) aborted recovery, which left every per-app command refused with
+  "waiting for recovery" and the global GPU write refused in turn because the
+  foreground profile still owned the control. Each entry now restores
+  independently: a failed entry is pruned and named in the daemon error
+  instead of aborting, and the per-app path is marked ready either way, so
+  resetting the profiles and taking the controls back always works.
+- The Beast OPP "armed" state is no longer reported as a failed write. The
+  preferences are stored and the background guard locks the top operating
+  point when the GPU becomes active, so it is now a diagnostic warning.
+
+### Changed
+
+- Module and application build in GitHub Actions on every release tag, signed
+  with the recorded release certificate and published with its checksum.
+- Release codename kept at **Iapetus**.
+
 ## 1.18.21
 
 ### Changed
