@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show FramePhase;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
@@ -42,7 +43,12 @@ class DashFpsMeterModel {
     if (frames.length < 2) return DashFpsSample.empty;
 
     final List<int> starts =
-        frames.map((FrameTiming f) => f.timestampInMicroseconds).toList()
+        frames
+            .map(
+              (FrameTiming f) =>
+                  f.timestampInMicroseconds(FramePhase.vsyncStart),
+            )
+            .toList()
           ..sort();
     final int spanUs = starts.last - starts.first;
     if (spanUs <= 0) return DashFpsSample.empty;
@@ -59,7 +65,8 @@ class DashFpsMeterModel {
     // 1% low: the average of the worst 1% of frame intervals.
     final List<double> worst = intervals.toList()
       ..sort((a, b) => b.compareTo(a));
-    final int n = (worst.length * 0.01).clamp(1, worst.length);
+    final int n =
+        (worst.length * 0.01).clamp(1, worst.length).toInt();
     final double lowInterval =
         worst.sublist(0, n).reduce((a, b) => a + b) / n;
     final double low1 = 1000.0 / lowInterval;
