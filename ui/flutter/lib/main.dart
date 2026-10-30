@@ -17,6 +17,7 @@ import 'root_pager.dart';
 import 'touch_light.dart';
 import 'hub_headline.dart';
 import 'motion_diagnostics.dart';
+import 'fps_meter.dart';
 
 import 'backend/dash_backend.dart';
 import 'backend/per_app_backend.dart';
@@ -499,6 +500,11 @@ class _DashShellState extends State<DashShell>
     _persistAppearance();
   }
 
+  void _setFpsMeter(bool enabled) {
+    _appearance.value = _appearance.value.copyWith(fpsMeter: enabled);
+    _persistAppearance();
+  }
+
   void _setCustomBackgroundPath(String path) {
     _appearance.value = _appearance.value.copyWith(
       backgroundStyle: DashBackgroundStyle.custom,
@@ -775,6 +781,7 @@ class _DashShellState extends State<DashShell>
                   onCardStyleChanged: _setCardStyle,
                   onHeroGlowChanged: _setHeroGlow,
                   onCoreVisualizerStyleChanged: _setCoreVisualizerStyle,
+                  onFpsMeterChanged: _setFpsMeter,
                 );
               },
         );
@@ -955,6 +962,16 @@ class _DashShellState extends State<DashShell>
                           ],
                         ),
                       ),
+                      if (config.fpsMeter)
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          child: IgnorePointer(
+                            child: ExcludeSemantics(
+                              child: DashFpsMeter(accent: config.activeAccent),
+                            ),
+                          ),
+                        ),
                     ],
                   ),
                   bottomNavigationBar: Stack(
@@ -1014,6 +1031,7 @@ class DashAppearanceConfig {
     this.cardStyle = 0,
     this.heroGlow = true,
     this.coreVisualizerStyle = 0,
+    this.fpsMeter = false,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1025,7 +1043,8 @@ class DashAppearanceConfig {
       cardRadius = 22.0,
       cardStyle = 0,
       heroGlow = true,
-      coreVisualizerStyle = 0;
+      coreVisualizerStyle = 0,
+      fpsMeter = false;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1036,6 +1055,7 @@ class DashAppearanceConfig {
   final int cardStyle;
   final bool heroGlow;
   final int coreVisualizerStyle;
+  final bool fpsMeter;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1069,6 +1089,7 @@ class DashAppearanceConfig {
     int? cardStyle,
     bool? heroGlow,
     int? coreVisualizerStyle,
+    bool? fpsMeter,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1080,6 +1101,7 @@ class DashAppearanceConfig {
       cardStyle: cardStyle ?? this.cardStyle,
       heroGlow: heroGlow ?? this.heroGlow,
       coreVisualizerStyle: coreVisualizerStyle ?? this.coreVisualizerStyle,
+      fpsMeter: fpsMeter ?? this.fpsMeter,
     );
   }
 
@@ -1094,6 +1116,7 @@ class DashAppearanceConfig {
       'cardStyle': cardStyle,
       'heroGlow': heroGlow,
       'coreVisualizerStyle': coreVisualizerStyle,
+      'fpsMeter': fpsMeter,
     };
   }
 
@@ -1121,6 +1144,7 @@ class DashAppearanceConfig {
     final bool heroGlow = raw['heroGlow'] as bool? ?? true;
     final int coreVisualizerStyle =
         (raw['coreVisualizerStyle'] as num?)?.toInt() ?? 0;
+    final bool fpsMeter = raw['fpsMeter'] as bool? ?? false;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1132,6 +1156,7 @@ class DashAppearanceConfig {
       cardStyle: cardStyle,
       heroGlow: heroGlow,
       coreVisualizerStyle: coreVisualizerStyle,
+      fpsMeter: fpsMeter,
     );
   }
 }
@@ -1654,6 +1679,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onCardStyleChanged,
     required this.onHeroGlowChanged,
     required this.onCoreVisualizerStyleChanged,
+    required this.onFpsMeterChanged,
     super.key,
   });
 
@@ -1670,6 +1696,7 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<int> onCardStyleChanged;
   final ValueChanged<bool> onHeroGlowChanged;
   final ValueChanged<int> onCoreVisualizerStyleChanged;
+  final ValueChanged<bool> onFpsMeterChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -2239,6 +2266,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     selected: config.coreVisualizerStyle == 2,
                     onTap: () {
                       widget.onCoreVisualizerStyleChanged(2);
+                      DashHaptics.tap();
+                    },
+                  ),
+                ],
+              ),
+              const Divider(height: 20),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        const Text(
+                          'FPS meter',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Show this app\u2019s frame pace using system frame timing callbacks.',
+                          style: TextStyle(
+                            fontSize: 11.2,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch.adaptive(
+                    value: config.fpsMeter,
+                    onChanged: (bool enabled) {
+                      widget.onFpsMeterChanged(enabled);
                       DashHaptics.tap();
                     },
                   ),

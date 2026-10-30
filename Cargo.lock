@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "dash-essential-daemon"
-version = "1.18.19"
+version = "1.18.21"
 dependencies = [
  "libc",
  "serde",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "dash-essential-host"
-version = "1.18.19"
+version = "1.18.21"
 dependencies = [
  "jni",
  "serde_json",
