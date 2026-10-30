@@ -7147,10 +7147,19 @@ fn set_gpu_uncap(enable: bool) -> Result<(), String> {
     })?;
 
     if enable && !beast_locked {
-        Err("Beast OPP 0 is armed and will lock when the GPU becomes active".into())
-    } else {
-        Ok(())
+        // Armed, not locked: the GPU was idle, so the top operating point
+        // could not be confirmed. The state is written and the background
+        // guard locks it as soon as the GPU becomes active. The message is
+        // informational, so it is reported through the diagnostics history
+        // rather than as a failed command.
+        diagnostics::record(
+            diagnostics::AREA_GPU,
+            "warn",
+            "uncap.armed",
+            "Beast OPP 0 is armed and will lock when the GPU becomes active",
+        );
     }
+    Ok(())
 }
 
 fn gpu_get_power_policy() -> String {

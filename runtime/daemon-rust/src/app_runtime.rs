@@ -1121,8 +1121,16 @@ pub(super) fn check_global_command(cmd: &str) -> Result<(), String> {
 }
 pub(super) fn release() -> Result<(), String> {
     if !RECOVERY_READY.load(Ordering::Acquire) {
-        recover()?;
+        // A stale journal entry must not keep the controls locked. The
+        // controls are given back either way; what could not be restored is
+        // reported, not refused.
+        let recovered = recover();
         RECOVERY_READY.store(true, Ordering::Release);
+        if let Err(error) = recovered
+            && let Ok(mut r) = runtime().lock()
+        {
+            r.error = Some(error);
+        }
     }
     let mut r = runtime()
         .lock()
@@ -1166,6 +1174,24 @@ pub(super) fn wake(hint: Wake) {
         let _ = sender.try_send(hint);
     }
 }
+/// Restore one journal entry, reporting whether it was restored.
+///
+/// The restore itself is the platform's job; this only names the outcome so
+/// that one stale entry cannot stop the others.
+fn restore_journal_entry(name: &str, token: &Saved) -> Result<(), String> {
+    let Some(control) = control(name) else {
+        return Err("unknown recovery control".into());
+    };
+    Adapter::new().restore(&control, token)
+}
+
+/// Restore per-app originals from the recovery journal at startup.
+///
+/// Each entry is independent. A control that cannot be restored is skipped,
+/// pruned from the journal, and named in the returned error rather than
+/// aborting recovery: a half-written journal or a control the platform has
+/// already moved (the Beast OPP lock, a re-asserted touch rate) must not hold
+/// the whole per-app path in "waiting for recovery".
 fn recover() -> Result<(), String> {
     let path = state_dir().join("app-recovery.json");
     let raw = match fs::read(&path) {
@@ -1176,11 +1202,26 @@ fn recover() -> Result<(), String> {
     if raw.len() > 512 * 1024 {
         return Err("per-app recovery journal too large".into());
     }
-    let saved: BTreeMap<String, Saved> =
+    let entries_on_disk: BTreeMap<String, Saved> =
         serde_json::from_slice(&raw).map_err(|e| format!("per-app recovery journal: {e}"))?;
-    *originals().lock().map_err(|_| "originals lock poisoned")? = saved.clone();
-    for (name, token) in saved {
-        Adapter::new().restore(&control(&name).ok_or("unknown recovery control")?, &token)?;
+    // A successful restore removes its own entry from the originals map and
+    // rewrites the journal, so only failures remain to be pruned here.
+    let mut failures: Vec<String> = Vec::new();
+    for (name, token) in entries_on_disk {
+        if restore_journal_entry(&name, &token).is_err() {
+            failures.push(name);
+        }
+    }
+    if !failures.is_empty() {
+        let mut entries = originals().lock().map_err(|_| "originals lock poisoned")?;
+        for name in &failures {
+            entries.remove(name);
+        }
+        let _ = journal(&entries);
+        return Err(format!(
+            "per-app recovery skipped stale controls: {}",
+            failures.join(", ")
+        ));
     }
     Ok(())
 }
@@ -1204,11 +1245,13 @@ pub(super) fn start() {
             let _gate = service_control::GATE.write().expect("service gate");
             recover()
         };
-        if let Err(error) = recovered {
-            if let Ok(mut r) = runtime().lock() {
-                r.error = Some(error);
-            }
-            return;
+        // Recovery reports the controls it could not restore, but it is not a
+        // reason to leave the per-app path locked: the flag is set either way
+        // so the user can reset the profiles and take the controls back.
+        if let Err(error) = recovered
+            && let Ok(mut r) = runtime().lock()
+        {
+            r.error = Some(error);
         }
         RECOVERY_READY.store(true, Ordering::Release);
         #[cfg(target_os = "android")]
@@ -1550,5 +1593,20 @@ mod tests {
         publish_owned(0);
         assert!(global_may_write_gpu());
         assert!(!owns_gpu());
+    }
+
+    /// An unknown journal entry must not stop the others from being restored.
+    ///
+    /// The recovery used to abort on the first failure, which left the daemon
+    /// permanently "waiting for recovery" and refused every per-app command.
+    #[test]
+    fn an_unknown_journal_entry_fails_only_itself() {
+        let token = Saved {
+            state: PersistedState::default(),
+            live: Value::Null,
+        };
+        let error = restore_journal_entry("no-such-control", &token)
+            .expect_err("an unknown control cannot be restored");
+        assert_eq!(error, "unknown recovery control");
     }
 }
