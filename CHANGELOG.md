@@ -6,6 +6,15 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.27
+
+### Fixed
+
+- FPS overlay: the per-game position switch now reaches the Android service
+  and actually disables foreground-package position switching when off.
+- FPS overlay: `FLAG_NOT_TOUCH_MODAL` keeps all touches outside the chip
+  passing through to the game.
+
 ## 1.18.26
 
 ### Fixed
