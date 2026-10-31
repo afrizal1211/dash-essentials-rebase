@@ -1,11 +1,15 @@
 package io.github.neeschal.dashessential;
 
+import android.Manifest;
 import android.app.NativeActivity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.window.BackEvent;
 import android.window.OnBackAnimationCallback;
 import android.window.OnBackInvokedCallback;
@@ -37,6 +41,29 @@ public final class DashActivity extends NativeActivity {
     private void handleTileIntent(Intent intent) {
         if (intent != null && "android.service.quicksettings.action.QS_TILE_PREFERENCES".equals(intent.getAction()))
             nativeOpenBypassSettings();
+    }
+    // System overlay control. The service owns the window; the activity only
+    // forwards the intent, so it can keep running after Dash is backgrounded.
+    public int setFpsOverlay(boolean enabled) {
+        int result = FpsOverlayService.setEnabled(this, enabled);
+        if (result == 1 && enabled) requestOverlayNotificationPermission();
+        return result;
+    }
+    // Android 13 hides foreground-service notifications when the user has not
+    // allowed them. The overlay still runs, but the prompt keeps its stop path
+    // visible in the shade instead of only in Task Manager.
+    private void requestOverlayNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, 0);
+    }
+    public boolean hasFpsOverlayPermission() {
+        return FpsOverlayService.canDraw(this);
+    }
+    public void requestFpsOverlayPermission() {
+        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + getPackageName())));
     }
     /** Called only when native navigation ownership changes; no polling loop. */
     public static void refreshBackFromNative() {

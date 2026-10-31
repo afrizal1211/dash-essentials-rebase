@@ -492,6 +492,7 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
     if !(command == "GET app.controls"
         || command == "GET app.capabilities"
         || command == "GET app.list"
+        || command == "GET app.fps"
         || command.starts_with("SET app.profile ")
         || command.starts_with("SET app.enabled ")
         || command.starts_with("ACTION app.reset ")
@@ -548,6 +549,29 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         std::ptr::copy_nonoverlapping(reply.as_ptr(), output, reply.len());
     }
     reply.len() as i32
+}
+
+/// The foreground app FPS the daemon reads from the vendor frame nodes,
+/// scaled by 100 so the overlay can redraw an integer without allocating.
+/// `0` means the ROM exposes no frame node (or the daemon is not answering),
+/// never "zero FPS". Blocks for one daemon round-trip; call it off the main
+/// thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_backend_foreground_fps_x100() -> i64 {
+    let Ok(body) = request("GET app.fps") else {
+        return 0;
+    };
+    let Ok(reading) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return 0;
+    };
+    if reading.get("valid").and_then(|value| value.as_bool()) != Some(true) {
+        return 0;
+    }
+    reading
+        .get("fps")
+        .and_then(|value| value.as_f64())
+        .map(|fps| (fps * 100.0).round() as i64)
+        .unwrap_or(0)
 }
 
 fn parse_i32(value: Option<&String>) -> i32 {

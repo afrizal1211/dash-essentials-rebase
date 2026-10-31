@@ -5,8 +5,9 @@ import 'package:flutter/scheduler.dart';
 
 /// One rolling sample of this app's frame pace, derived from Flutter's own
 /// frame timing callbacks (the same source the platform Choreographer uses).
-/// This measures the app's rendering, not a system-wide game FPS; that needs
-/// privileges this APK deliberately does not request.
+/// This measures Dash's own rendering only. Foreground game FPS is read from
+/// the vendor frame nodes by the daemon and shown by the system overlay
+/// (see `FpsOverlayService`), not by this meter.
 class DashFpsSample {
   const DashFpsSample({
     required this.fps,

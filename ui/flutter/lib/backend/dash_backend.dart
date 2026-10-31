@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
+import 'dart:isolate';
 
 import 'backend_connection.dart';
 import 'system_colors_state.dart';
@@ -117,6 +118,23 @@ typedef _I32ToI32Dart = int Function(int);
 typedef _SetTwoI32Native = ffi.Int32 Function(ffi.Int32, ffi.Int32);
 typedef _SetTwoI32Dart = int Function(int, int);
 
+/// Reads the daemon's foreground FPS off the UI isolate: the call is one
+/// daemon round-trip with a multi-second ceiling, which must never stall a
+/// frame. `0` means the ROM exposed no frame node or the daemon is away.
+int _probeForegroundFpsX100() {
+  try {
+    final ffi.DynamicLibrary lib = ffi.DynamicLibrary.open(
+      'libdash_essential_host.so',
+    );
+    final _I64Dart read = lib.lookupFunction<_I64Native, _I64Dart>(
+      'dash_backend_foreground_fps_x100',
+    );
+    return read();
+  } catch (_) {
+    return 0;
+  }
+}
+
 final class DashBackend {
   DashBackend._();
   static final DashBackend instance = DashBackend._();
@@ -186,6 +204,9 @@ final class DashBackend {
   _I32Dart? _consumeBackGestureNative;
   _I32Dart? _consumeBypassSettingsNative;
   _BackListenerDart? _setBackListenerNative;
+  _SetI32Dart? _fpsOverlayNative;
+  _I32Dart? _fpsOverlayGrantedNative;
+  _I32Dart? _fpsOverlayRequestNative;
   ffi.NativeCallable<_BackEventNative>? _backListener;
 
   DashBackendSnapshot _latest = const DashBackendSnapshot(
@@ -444,6 +465,24 @@ final class DashBackend {
       _requestPhotoPermissionNative = lib.lookupFunction<_I32Native, _I32Dart>(
         'dash_host_request_photo_permission',
       );
+
+      // The overlay symbols are newer than the rest of the table, so a host
+      // library without them only loses the overlay, not the dashboard.
+      if (lib.providesSymbol('dash_host_fps_overlay')) {
+        _fpsOverlayNative = lib.lookupFunction<_SetI32Native, _SetI32Dart>(
+          'dash_host_fps_overlay',
+        );
+      }
+      if (lib.providesSymbol('dash_host_fps_overlay_granted')) {
+        _fpsOverlayGrantedNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_fps_overlay_granted',
+        );
+      }
+      if (lib.providesSymbol('dash_host_fps_overlay_request')) {
+        _fpsOverlayRequestNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_fps_overlay_request',
+        );
+      }
 
       _lib = lib;
       _started = _startNative() == 1;
@@ -835,6 +874,34 @@ final class DashBackend {
   bool requestPhotoPermission() {
     if (!_started) return false;
     return _requestPhotoPermissionNative() == 1;
+  }
+
+  /// The daemon's foreground FPS, or `null` when no frame node answered.
+  /// Runs on a worker isolate because the daemon round-trip is not cheap
+  /// enough for the frame that called it.
+  Future<double?> foregroundFps() async {
+    if (!_started) return null;
+    final int scaled = await Isolate.run(_probeForegroundFpsX100);
+    return scaled > 0 ? scaled / 100.0 : null;
+  }
+
+  /// Whether Android lets this app draw the system overlay.
+  bool fpsOverlayGranted() {
+    if (!_started) return false;
+    return _fpsOverlayGrantedNative?.call() == 1;
+  }
+
+  /// Opens the system screen that grants the overlay permission.
+  bool requestFpsOverlayPermission() {
+    if (!_started) return false;
+    return _fpsOverlayRequestNative?.call() == 1;
+  }
+
+  /// Starts or stops the persistent overlay. Returns false when the window
+  /// permission is missing, so the caller must not persist "enabled".
+  bool setFpsOverlay(bool enabled) {
+    if (!_started) return false;
+    return _fpsOverlayNative?.call(enabled ? 1 : 0) == 1;
   }
 
   void refresh() {

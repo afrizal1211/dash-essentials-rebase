@@ -2,8 +2,8 @@
 //! work on Android's main thread. NEESCHAL's rule: report state, don't invent it.
 use jni::{
     JNIEnv,
-    objects::JClass,
-    sys::{jboolean, jfloat, jint},
+    objects::{JClass, JObject, JValue},
+    sys::{jboolean, jfloat, jint, jlong},
 };
 use std::sync::{
     Mutex, OnceLock,
@@ -56,6 +56,73 @@ pub fn clear() {
         *activity.lock().unwrap() = None;
     }
     BACK_EVENT.store(0, Ordering::Release);
+}
+
+/// Runs one call against the captured activity. The lock is held only for the
+/// duration of the call, so the overlay toggle cannot race activity teardown.
+fn with_activity<R>(
+    call: impl FnOnce(&mut JNIEnv, &JObject<'_>) -> jni::errors::Result<R>,
+) -> Option<R> {
+    let guard = ACTIVITY.get()?.lock().ok()?;
+    let (vm, reference) = guard.as_ref()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let result = env
+        .with_local_frame(8, |env| call(env, reference.as_obj()))
+        .ok();
+    if env.exception_check().unwrap_or(false) {
+        let _ = env.exception_clear();
+    }
+    result
+}
+
+/// Starts or stops the foreground FPS overlay. `0` means the window
+/// permission is missing, so the caller must not persist "enabled".
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_fps_overlay(enabled: i32) -> i32 {
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "setFpsOverlay",
+            "(Z)I",
+            &[JValue::Bool(u8::from(enabled != 0))],
+        )?
+        .i()
+    })
+    .unwrap_or(0)
+}
+
+/// Whether Android will let this app draw over other apps.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_fps_overlay_granted() -> i32 {
+    i32::from(
+        with_activity(|env, activity| {
+            env.call_method(activity, "hasFpsOverlayPermission", "()Z", &[])?
+                .z()
+        })
+        .unwrap_or(false),
+    )
+}
+
+/// Opens the system screen where the overlay permission is granted.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_fps_overlay_request() -> i32 {
+    i32::from(
+        with_activity(|env, activity| {
+            env.call_method(activity, "requestFpsOverlayPermission", "()V", &[])?;
+            Ok(true)
+        })
+        .unwrap_or(false),
+    )
+}
+
+/// The overlay service polls this off the main thread; the wrapper keeps the
+/// JNI name next to the other framework adapters.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_FpsOverlayService_nativeFpsX100(
+    _: JNIEnv,
+    _: JClass,
+) -> jlong {
+    super::backend_bridge::dash_backend_foreground_fps_x100()
 }
 pub fn refresh_back() {
     let Some(activity) = ACTIVITY.get() else {

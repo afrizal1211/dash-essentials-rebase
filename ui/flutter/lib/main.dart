@@ -323,6 +323,9 @@ class _DashShellState extends State<DashShell>
   DashScreen? _rootNavTarget;
   int _rootNavRevision = 0;
   int _bypassFocusRevision = 0;
+  // Set while the overlay permission screen is open, so returning from it can
+  // finish the toggle the user actually asked for.
+  bool _fpsOverlayPending = false;
   late final VoidCallback _interactionRevisionListener;
   Timer? _nativeBackPoll;
   late final AnimationController _backSettle;
@@ -420,6 +423,19 @@ class _DashShellState extends State<DashShell>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _startBackPolling();
+      if (_fpsOverlayPending) {
+        _fpsOverlayPending = false;
+        if (DashBackend.instance.fpsOverlayGranted()) {
+          _setFpsOverlay(true);
+        }
+      } else if (_appearance.value.fpsOverlay &&
+          !DashBackend.instance.fpsOverlayGranted()) {
+        // The permission was revoked from system settings while Dash was
+        // away; stop the service and turn the switch back off.
+        DashBackend.instance.setFpsOverlay(false);
+        _appearance.value = _appearance.value.copyWith(fpsOverlay: false);
+        _persistAppearance();
+      }
     } else {
       _nativeBackPoll?.cancel();
       _nativeBackPoll = null;
@@ -449,9 +465,23 @@ class _DashShellState extends State<DashShell>
 
       _appearance.value = config;
       DashThemeController.setPreference(config.themePreference);
+      _restoreFpsOverlay(config.fpsOverlay);
     } catch (_) {
       // Appearance must never block app boot.
     }
+  }
+
+  /// A saved "on" is re-asserted after a cold start. If the permission was
+  /// revoked outside Dash, the switch is turned back off rather than lying.
+  void _restoreFpsOverlay(bool enabled) {
+    final DashBackend backend = DashBackend.instance;
+    if (!enabled) {
+      backend.setFpsOverlay(false);
+      return;
+    }
+    if (backend.fpsOverlayGranted() && backend.setFpsOverlay(true)) return;
+    _appearance.value = _appearance.value.copyWith(fpsOverlay: false);
+    _persistAppearance();
   }
 
   Future<void> _persistAppearance() async {
@@ -505,6 +535,43 @@ class _DashShellState extends State<DashShell>
     _persistAppearance();
   }
 
+  void _fpsOverlayNotice(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  /// The overlay outlives Dash, so Android has to own the window. A missing
+  /// grant opens the system screen and leaves the switch off until the user
+  /// returns with the permission actually granted.
+  void _setFpsOverlay(bool enabled) {
+    final DashBackend backend = DashBackend.instance;
+    if (enabled && !backend.fpsOverlayGranted()) {
+      if (backend.requestFpsOverlayPermission()) {
+        _fpsOverlayPending = true;
+        _fpsOverlayNotice(
+          'Allow \u201cDisplay over other apps\u201d for Dash Essential, '
+          'then come back.',
+        );
+      } else {
+        _fpsOverlayPending = false;
+        _fpsOverlayNotice('The overlay permission screen could not be opened.');
+      }
+      return;
+    }
+    if (!backend.setFpsOverlay(enabled)) {
+      _fpsOverlayPending = false;
+      _fpsOverlayNotice(
+        'The FPS overlay could not start. Check the permission and try again.',
+      );
+      return;
+    }
+    _fpsOverlayPending = false;
+    _appearance.value = _appearance.value.copyWith(fpsOverlay: enabled);
+    _persistAppearance();
+  }
+
   void _setCustomBackgroundPath(String path) {
     _appearance.value = _appearance.value.copyWith(
       backgroundStyle: DashBackgroundStyle.custom,
@@ -532,6 +599,11 @@ class _DashShellState extends State<DashShell>
 
   void _resetAppearance() {
     const DashAppearanceConfig defaults = DashAppearanceConfig.defaults();
+
+    if (_appearance.value.fpsOverlay) {
+      _fpsOverlayPending = false;
+      DashBackend.instance.setFpsOverlay(false);
+    }
 
     DashThemeController.setPreference(defaults.themePreference);
 
@@ -782,6 +854,7 @@ class _DashShellState extends State<DashShell>
                   onHeroGlowChanged: _setHeroGlow,
                   onCoreVisualizerStyleChanged: _setCoreVisualizerStyle,
                   onFpsMeterChanged: _setFpsMeter,
+                  onFpsOverlayChanged: _setFpsOverlay,
                 );
               },
         );
@@ -1028,6 +1101,7 @@ class DashAppearanceConfig {
     this.heroGlow = true,
     this.coreVisualizerStyle = 0,
     this.fpsMeter = false,
+    this.fpsOverlay = false,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1040,7 +1114,8 @@ class DashAppearanceConfig {
       cardStyle = 0,
       heroGlow = true,
       coreVisualizerStyle = 0,
-      fpsMeter = false;
+      fpsMeter = false,
+      fpsOverlay = false;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1052,6 +1127,7 @@ class DashAppearanceConfig {
   final bool heroGlow;
   final int coreVisualizerStyle;
   final bool fpsMeter;
+  final bool fpsOverlay;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1086,6 +1162,7 @@ class DashAppearanceConfig {
     bool? heroGlow,
     int? coreVisualizerStyle,
     bool? fpsMeter,
+    bool? fpsOverlay,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1098,6 +1175,7 @@ class DashAppearanceConfig {
       heroGlow: heroGlow ?? this.heroGlow,
       coreVisualizerStyle: coreVisualizerStyle ?? this.coreVisualizerStyle,
       fpsMeter: fpsMeter ?? this.fpsMeter,
+      fpsOverlay: fpsOverlay ?? this.fpsOverlay,
     );
   }
 
@@ -1113,6 +1191,7 @@ class DashAppearanceConfig {
       'heroGlow': heroGlow,
       'coreVisualizerStyle': coreVisualizerStyle,
       'fpsMeter': fpsMeter,
+      'fpsOverlay': fpsOverlay,
     };
   }
 
@@ -1141,6 +1220,7 @@ class DashAppearanceConfig {
     final int coreVisualizerStyle =
         (raw['coreVisualizerStyle'] as num?)?.toInt() ?? 0;
     final bool fpsMeter = raw['fpsMeter'] as bool? ?? false;
+    final bool fpsOverlay = raw['fpsOverlay'] as bool? ?? false;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1153,6 +1233,7 @@ class DashAppearanceConfig {
       heroGlow: heroGlow,
       coreVisualizerStyle: coreVisualizerStyle,
       fpsMeter: fpsMeter,
+      fpsOverlay: fpsOverlay,
     );
   }
 }
@@ -1676,6 +1757,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onHeroGlowChanged,
     required this.onCoreVisualizerStyleChanged,
     required this.onFpsMeterChanged,
+    required this.onFpsOverlayChanged,
     super.key,
   });
 
@@ -1693,6 +1775,7 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<bool> onHeroGlowChanged;
   final ValueChanged<int> onCoreVisualizerStyleChanged;
   final ValueChanged<bool> onFpsMeterChanged;
+  final ValueChanged<bool> onFpsOverlayChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -2283,7 +2366,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'Show this app\u2019s frame pace using system frame timing callbacks.',
+                          'Show this app\u2019s own render pace. It stops when '
+                          'Dash stops drawing, so it cannot see a game.',
                           style: TextStyle(
                             fontSize: 11.2,
                             color: colors.onSurfaceVariant,
@@ -2296,6 +2380,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     value: config.fpsMeter,
                     onChanged: (bool enabled) {
                       widget.onFpsMeterChanged(enabled);
+                      DashHaptics.tap();
+                    },
+                  ),
+                ],
+              ),
+              const Divider(height: 20),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        const Text(
+                          'FPS overlay',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Keep the foreground app\u2019s frame rate on screen '
+                          'over games. Needs the display-over-other-apps '
+                          'permission.',
+                          style: TextStyle(
+                            fontSize: 11.2,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch.adaptive(
+                    value: config.fpsOverlay,
+                    onChanged: (bool enabled) {
+                      widget.onFpsOverlayChanged(enabled);
                       DashHaptics.tap();
                     },
                   ),

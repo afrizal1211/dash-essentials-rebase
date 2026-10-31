@@ -982,12 +982,19 @@ pub(super) fn is_command(cmd: &str) -> bool {
     cmd == "GET app.controls"
         || cmd == "GET app.capabilities"
         || cmd == "GET app.list"
+        || cmd == "GET app.fps"
         || cmd.starts_with("SET app.profile ")
         || cmd.starts_with("SET app.enabled ")
         || cmd.starts_with("ACTION app.reset ")
         || cmd == "ACTION app.reset_all"
 }
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
+    if cmd == "GET app.fps" {
+        // Read outside the runtime guard: an FPS poll from the overlay must
+        // never wait behind a profile transition.
+        return serde_json::to_value(super::foreground_fps::read())
+            .map_err(|error| error.to_string());
+    }
     if cmd == "GET app.capabilities" {
         return capabilities_json();
     }
@@ -1593,6 +1600,17 @@ mod tests {
         publish_owned(0);
         assert!(global_may_write_gpu());
         assert!(!owns_gpu());
+    }
+
+    #[test]
+    fn foreground_fps_answers_with_a_typed_reading() {
+        assert!(is_command("GET app.fps"));
+        let value = command("GET app.fps").expect("reading");
+        assert!(value.get("fps").and_then(Value::as_f64).is_some());
+        assert!(value.get("node").and_then(Value::as_str).is_some());
+        // `valid` is present even when this host exposes no vendor node, so
+        // the overlay can tell "no reading" from "zero FPS".
+        assert!(value.get("valid").and_then(Value::as_bool).is_some());
     }
 
     /// An unknown journal entry must not stop the others from being restored.

@@ -18,6 +18,7 @@ mod app_runtime;
 mod bypass_policy;
 mod diagnostics;
 mod foreground_app;
+mod foreground_fps;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;
