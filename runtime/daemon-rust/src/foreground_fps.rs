@@ -26,6 +26,11 @@ const AGGREGATE_NODES: &[&str] = &[
     "/sys/class/display/fps",
 ];
 
+/// Per-thread FPS table with the app name in each row. The only node that
+/// gives both the rate and the attribution in one read, so it is tried
+/// before the render-thread scan when no aggregate node answers.
+const FPS_LIST_NODE: &str = "/sys/kernel/fpsgo/fstb/fstb_fps_list";
+
 /// Per-render-thread nodes, scanned only when no aggregate node exists.
 const RENDER_THREAD_ROOT: &str = "/sys/kernel/fpsgo/fstb";
 
@@ -227,6 +232,100 @@ fn same_app(process: &str, package: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(':'))
 }
 
+/// Whether a row name from the FPS list is the foreground package. The kernel
+/// keeps only the tail of a process name, so `android.systemui` arrives as
+/// `ndroid.systemui` and `com.inputmethod.latin` as `putmethod.latin`. A row
+/// is therefore a suffix of the package. The name must be long enough to be
+/// identifying (a tail like `ui` never attributes) and the package must lose
+/// at most a few leading characters, so the row stays a plausible truncation
+/// rather than a coincidental suffix.
+fn name_matches(name: &str, package: &str) -> bool {
+    let base = package.split(':').next().unwrap_or(package);
+    if name == base || same_app(name, package) {
+        return true;
+    }
+    let lost = base.len().saturating_sub(name.len());
+    name.len() >= 8 && lost <= 8 && base.ends_with(name)
+}
+
+/// Rows that belong to the system shell rather than to a game. Their rates
+/// are not the foreground app's rate.
+fn is_system_row(name: &str) -> bool {
+    [
+        "systemui",
+        "launcher",
+        "inputmethod",
+        "latin",
+        "surfaceflinger",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+}
+
+/// Whether `cols[2]` holds a process name rather than a buffer id. The node
+/// opens with a few rows of `<index>\t<tid>\t<bufID>\t<fps>\t<target>` that
+/// carry no process column at all; their `cols[2]` is a hex id and must not
+/// be treated as a name.
+fn is_named_row(cols: &[&str]) -> bool {
+    let name = cols[2].trim();
+    !name.is_empty() && !name.starts_with("0x")
+}
+
+/// Parse a per-thread FPS table given as text. Each named data row is
+/// `<tid>\t<bufID>\t<name>\t<fps>\t...` where `name` is the process. Returns
+/// the reading attributed to `foreground`, or the busiest non-system row when
+/// the tracker is off or the app is not listed.
+fn parse_fps_list(text: &str, foreground: Option<&str>) -> Option<(f64, String)> {
+    let node = "fpsgo/fstb/fstb_fps_list".to_string();
+    let mut attributed: Option<(f64, String)> = None;
+    let mut busiest: Option<(f64, String)> = None;
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        // Data rows have a numeric tid first and at least four columns; the
+        // header and the `dfps_ceiling` footer do not. Rows without a process
+        // name (the index-prefixed opening block) are not candidates.
+        if cols.len() < 4 || cols[0].parse::<u32>().is_err() || !is_named_row(&cols) {
+            continue;
+        }
+        let Ok(fps) = cols[3].trim().parse::<f64>() else {
+            continue;
+        };
+        if !plausible(fps) {
+            continue;
+        }
+        let name = cols[2].trim();
+        if let Some(package) = foreground {
+            if name_matches(name, package) && attributed.as_ref().is_none_or(|best| fps > best.0) {
+                attributed = Some((fps, node.clone()));
+            }
+        } else if !is_system_row(name) && busiest.as_ref().is_none_or(|best| fps > best.0) {
+            busiest = Some((fps, node.clone()));
+        }
+    }
+    if foreground.is_some() {
+        // With a known foreground app, a row that is not that app is not
+        // evidence about it. Falling back to the busiest row would attribute
+        // another app's frame rate to the foreground app.
+        return attributed;
+    }
+    attributed.or(busiest)
+}
+
+/// Read the per-thread FPS table from the node and resolve a reading.
+fn read_fps_list(foreground: Option<&str>) -> Option<FpsReading> {
+    let text = crate::read_node_text(FPS_LIST_NODE).ok()?;
+    let (fps, node) = parse_fps_list(&text, foreground)?;
+    Some(FpsReading {
+        fps: round2(fps),
+        // A per-thread rate; this node carries no frame distribution.
+        min: 0.0,
+        low1: 0.0,
+        dropped: 0,
+        node,
+        valid: true,
+    })
+}
+
 /// Attribute a render thread to the tracked foreground package when the node
 /// name is the thread id, and otherwise fall back to the busiest thread.
 fn read_render_threads(foreground: Option<&str>) -> Option<FpsReading> {
@@ -315,7 +414,9 @@ fn read_for(foreground: Option<&str>) -> FpsReading {
             return reading;
         }
     }
-    read_render_threads(foreground).unwrap_or_else(FpsReading::unavailable)
+    read_fps_list(foreground)
+        .or_else(|| read_render_threads(foreground))
+        .unwrap_or_else(FpsReading::unavailable)
 }
 
 /// One snapshot for the overlay and the diagnostics view: the frame reading
@@ -414,5 +515,93 @@ mod tests {
             assert_eq!(reading.node, "unavailable");
             assert_eq!(reading.fps, 0.0);
         }
+    }
+
+    // Exact mt6991 (Dimensity 9400) output from `/sys/kernel/fpsgo/fstb/fstb_fps_list`.
+    // The first 4 rows carry `<index>\t<tid>\t<bufID>\t<fps>\t<target>` with no
+    // name column; `is_named_row` must skip them because cols[2] is a hex id.
+    const MT6991_LIST: &str = "\
+1\t3345\t0xbc000000003\t120\t0
+2\t3345\t0xbc000000001\t120\t0
+3\t18516\t0x390f00000068\t3\t0
+4\t5713\t0x129d00000325\t17\t0
+tid\tbufID\tname\tcurrentFPS\ttargetFPS\tFPS_margin\tsbe_state\tHWUI\tt_gpu\tpolicy
+3345\t0xbc000000003\tndroid.systemui\t120\t120\t0\t0\t1\t-1\t(0,0,1)
+3345\t0xbc000000001\tndroid.systemui\t120\t120\t0\t0\t1\t-1\t(0,0,1)
+18516\t0x390f00000068\tcom.termux\t3\t3\t0\t0\t1\t-1\t(0,0,1)
+5713\t0x129d00000325\tputmethod.latin\t17\t17\t0\t0\t1\t-1\t(0,0,1)
+dfps_ceiling:120";
+
+    #[test]
+    fn fps_list_skips_the_hex_prefixed_block() {
+        // The first 4 rows have no name column; cols[2] is a hex bufID, not a
+        // process name. Skip them, leaving only com.termux at 3 fps.
+        let (fps, _) = parse_fps_list(MT6991_LIST, None).expect("a reading");
+        assert_eq!(fps, 3.0);
+    }
+
+    #[test]
+    fn is_named_row_rejects_hex_bufid() {
+        let hex: Vec<&str> = "3\t18516\t0x390f00000068\t3\t0".split('\t').collect();
+        assert!(!is_named_row(&hex));
+        let named: Vec<&str> = "18516\t0x39\tcom.termux\t3\t3".split('\t').collect();
+        assert!(is_named_row(&named));
+    }
+
+    #[test]
+    fn fps_list_attributes_the_foreground_row() {
+        let (fps, node) = parse_fps_list(MT6991_LIST, Some("com.termux")).expect("a reading");
+        assert_eq!(fps, 3.0);
+        assert_eq!(node, "fpsgo/fstb/fstb_fps_list");
+    }
+
+    #[test]
+    fn fps_list_matches_a_truncated_name() {
+        // The kernel keeps fifteen characters: `android.systemui` is truncated
+        // to `ndroid.systemui` and `com.inputmethod.latin` to
+        // `putmethod.latin`.
+        let (fps, _) = parse_fps_list(MT6991_LIST, Some("android.systemui")).expect("a reading");
+        assert_eq!(fps, 120.0);
+        let (fps, _) =
+            parse_fps_list(MT6991_LIST, Some("com.inputmethod.latin")).expect("a reading");
+        assert_eq!(fps, 17.0);
+    }
+
+    #[test]
+    fn fps_list_falls_back_to_the_busiest_game_row_only_without_a_foreground() {
+        // No foreground match: the system rows are ignored, so the game row is
+        // the only candidate.
+        let (fps, _) = parse_fps_list(MT6991_LIST, None).expect("a reading");
+        assert_eq!(fps, 3.0);
+    }
+
+    #[test]
+    fn fps_list_never_attributes_another_app_rate_to_the_foreground() {
+        // The foreground app is not in the list (it spawned no window). A row
+        // belonging to another app must not be reported as the foreground
+        // rate, so the answer is none, not 120.
+        assert!(parse_fps_list(MT6991_LIST, Some("com.some.game")).is_none());
+    }
+
+    #[test]
+    fn fps_list_ignores_a_generic_suffix_tail() {
+        // `ui` is a plausible row name but not a plausible truncation of the
+        // package `com.myapp`; nothing may match.
+        assert!(parse_fps_list("18516\t0x39\tui\t90\t90\t0\t0\t1\t-1\t(0,0,1)", None,).is_some());
+        assert!(
+            parse_fps_list(
+                "18516\t0x39\tui\t90\t90\t0\t0\t1\t-1\t(0,0,1)",
+                Some("com.myapp"),
+            )
+            .is_none()
+        );
+        // A long tail that is not the app's own name must not match either.
+        assert!(
+            parse_fps_list(
+                "5713\t0x12\tinputmethod.latin\t90\t90\t0\t0\t1\t-1\t(0,0,1)",
+                Some("com.other.app"),
+            )
+            .is_none()
+        );
     }
 }
