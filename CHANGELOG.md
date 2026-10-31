@@ -6,6 +6,19 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.23
+
+### Added
+
+- The FPS overlay now shows battery temperature, GPU load and clock, and the
+  CPU clock beside the frame reading, and labels the foreground package the
+  reading belongs to. All of it arrives in a single daemon round-trip per poll.
+- A Frame rate card in Diagnostics: the foreground app, the reading with its
+  low-1% and minimum, dropped frames, the source node, and the sensors.
+- The GPU card in Diagnostics reports its live load.
+- Frame metrics low-1%, minimum and dropped frames, parsed from the vendor
+  frame nodes but previously unused.
+
 ## 1.18.22
 
 ### Added
