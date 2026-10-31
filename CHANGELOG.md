@@ -6,6 +6,18 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.24
+
+### Fixed
+
+- FPS overlay: the overlay now reads the live per-surface frame rate from
+  `fstb_frs_info` on the Dimensity 9400 (mt6991) and newer MediaTek trees,
+  instead of falling through to `unavailable` when the status node is empty.
+  The pid is resolved to its package to keep attribution when the foreground
+  tracker is on, and the busiest non-system surface stands in when it is off.
+- FPS diagnostics: the card now reports `fpsgo/fstb/fstb_frs_info` as the
+  source node instead of `unavailable`.
+
 ## 1.18.23
 
 ### Added
