@@ -3,7 +3,7 @@
 use jni::{
     JNIEnv,
     objects::{JClass, JObject, JValue},
-    sys::{jboolean, jfloat, jint, jlong},
+    sys::{jboolean, jfloat, jint, jstring},
 };
 use std::sync::{
     Mutex, OnceLock,
@@ -115,14 +115,18 @@ pub extern "C" fn dash_host_fps_overlay_request() -> i32 {
     )
 }
 
-/// The overlay service polls this off the main thread; the wrapper keeps the
-/// JNI name next to the other framework adapters.
+/// The full foreground snapshot for the overlay chip. The service parses the
+/// JSON so one poll draws the frame reading, the sensors and the package,
+/// instead of one JNI call per value.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_FpsOverlayService_nativeFpsX100(
-    _: JNIEnv,
+pub extern "system" fn Java_io_github_neeschal_dashessential_FpsOverlayService_nativeSnapshot(
+    env: JNIEnv,
     _: JClass,
-) -> jlong {
-    super::backend_bridge::dash_backend_foreground_fps_x100()
+) -> jstring {
+    match env.new_string(super::backend_bridge::foreground_fps_json()) {
+        Ok(text) => text.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 pub fn refresh_back() {
     let Some(activity) = ACTIVITY.get() else {

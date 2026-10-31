@@ -991,9 +991,9 @@ pub(super) fn is_command(cmd: &str) -> bool {
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if cmd == "GET app.fps" {
         // Read outside the runtime guard: an FPS poll from the overlay must
-        // never wait behind a profile transition.
-        return serde_json::to_value(super::foreground_fps::read())
-            .map_err(|error| error.to_string());
+        // never wait behind a profile transition. The snapshot carries the
+        // frame reading plus the sensors the overlay prints beside it.
+        return Ok(super::foreground_fps::overlay_json());
     }
     if cmd == "GET app.capabilities" {
         return capabilities_json();
@@ -1611,6 +1611,16 @@ mod tests {
         // `valid` is present even when this host exposes no vendor node, so
         // the overlay can tell "no reading" from "zero FPS".
         assert!(value.get("valid").and_then(Value::as_bool).is_some());
+        // The snapshot also carries the foreground package and the sensors a
+        // player watches beside the reading. `package` is always present
+        // (possibly null); a sensor the ROM hides is omitted rather than
+        // reported as a fake zero.
+        assert!(value.get("package").is_some());
+        for key in ["gpuUtil", "gpuMHz", "cpuMHz", "tempDeciC"] {
+            if let Some(field) = value.get(key) {
+                assert!(field.as_i64().is_some(), "{key} must stay numeric");
+            }
+        }
     }
 
     /// An unknown journal entry must not stop the others from being restored.

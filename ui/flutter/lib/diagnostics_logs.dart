@@ -202,6 +202,8 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
         const SizedBox(height: 16),
         _buildGpuCard(),
         const SizedBox(height: 12),
+        _buildFpsCard(),
+        const SizedBox(height: 12),
         _buildConflictCard(),
         const SizedBox(height: 12),
         _buildPerAppCard(),
@@ -242,6 +244,12 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
                 '${gpu['liveMHz'] ?? '-'} MHz running',
           ),
           _DiagnosticsRow(
+            'Load',
+            gpu['utilization'] == null
+                ? 'not reported'
+                : '${gpu['utilization']}%',
+          ),
+          _DiagnosticsRow(
             'Range',
             '${gpu['minMHz'] ?? '-'} - ${gpu['maxMHz'] ?? '-'} MHz, '
                 'governor ${gpu['governor'] ?? '-'}',
@@ -272,6 +280,79 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
                   '$capped publishes a ceiling under the requested clock. The '
                   'profile is applied; the platform decides how fast the GPU '
                   'may run. This is not an error.',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFpsCard() {
+    final Map<String, dynamic> fps = _section('fps');
+    final bool valid = fps['valid'] == true;
+    final Object? package = fps['package'];
+    num number(String key) => fps[key] is num ? fps[key] as num : 0;
+    final num reading = number('fps');
+    final num min = number('min');
+    final num low1 = number('low1');
+    final num dropped = number('dropped');
+
+    final List<String> sensors = <String>[];
+    final num temp = number('tempDeciC');
+    if (temp > 0) sensors.add('${(temp / 10).toStringAsFixed(1)} °C');
+    final num cpu = number('cpuMHz');
+    if (cpu > 0) sensors.add('CPU ${cpu.round()} MHz');
+    final num gpuMHz = number('gpuMHz');
+    if (gpuMHz > 0) sensors.add('GPU ${gpuMHz.round()} MHz');
+    final num gpuUtil = number('gpuUtil');
+    if (gpuUtil > 0) sensors.add('GPU load ${gpuUtil.round()}%');
+
+    return SurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          _DiagnosticsTitle(
+            icon: Icons.monitor_heart_outlined,
+            title: 'Frame rate',
+            accent: const Color(0xFF59BCFF),
+            trailing: valid
+                ? '${reading.toStringAsFixed(1)} FPS'
+                : 'No reading',
+          ),
+          const SizedBox(height: 10),
+          _DiagnosticsRow(
+            'Foreground',
+            package is String && package.isNotEmpty ? package : 'none',
+          ),
+          _DiagnosticsRow(
+            'Reading',
+            valid
+                ? '${reading.toStringAsFixed(1)} fps'
+                : 'no frame node answered',
+          ),
+          _DiagnosticsRow(
+            'Low 1% / min',
+            low1 > 0 || min > 0
+                ? '${low1.toStringAsFixed(1)} / ${min.toStringAsFixed(1)} fps'
+                : 'not measured',
+          ),
+          _DiagnosticsRow(
+            'Dropped',
+            dropped > 0 ? '${dropped.round()} frames' : 'none reported',
+          ),
+          _DiagnosticsRow('Node', '${fps['node'] ?? 'unavailable'}'),
+          _DiagnosticsRow(
+            'Sensors',
+            sensors.isEmpty ? 'not reported' : sensors.join(' · '),
+          ),
+          if (!valid) ...<Widget>[
+            const SizedBox(height: 8),
+            const _DiagnosticsNote(
+              color: Color(0xFF59BCFF),
+              title: 'The ROM publishes no frame statistics',
+              detail:
+                  'The overlay stays visible and shows a dash instead of a '
+                  'number. This is normal on a platform without FPSGO nodes.',
             ),
           ],
         ],

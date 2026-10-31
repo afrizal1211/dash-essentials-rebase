@@ -17,11 +17,18 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
+import android.text.style.StyleSpan;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.TextView;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * One number in a system window, kept alive while the user plays.
@@ -71,8 +78,10 @@ public final class FpsOverlayService extends Service {
         return Settings.canDrawOverlays(context);
     }
 
-    /** The daemon's foreground FPS, scaled by 100. 0 means no reading. */
-    private static native long nativeFpsX100();
+    /** One daemon snapshot: the frame reading, the sensors, the package. */
+    private static native String nativeSnapshot();
+
+    private static final int SPAN = Spannable.SPAN_EXCLUSIVE_EXCLUSIVE;
 
     private final Runnable sample = new Runnable() {
         @Override public void run() {
@@ -83,9 +92,9 @@ public final class FpsOverlayService extends Service {
                 stopSelf();
                 return;
             }
-            final long scaled = nativeFpsX100();
+            final String payload = nativeSnapshot();
             main.post(() -> {
-                if (chip != null) chip.setText(label(scaled));
+                if (chip != null) render(chip, payload);
             });
             Handler handler = workerHandler;
             if (handler != null) handler.postDelayed(this, 500);
@@ -192,11 +201,13 @@ public final class FpsOverlayService extends Service {
 
     private TextView buildChip() {
         TextView view = new TextView(this);
-        view.setText(label(0));
+        view.setText("FPS \u2014");
         view.setTextColor(ACCENT);
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         view.setPadding(dp(10), dp(6), dp(10), dp(6));
+        view.setLineSpacing(0, 1.05f);
+        view.setMaxWidth(dp(260));
         view.setContentDescription("Foreground app frame rate");
         GradientDrawable background = new GradientDrawable();
         background.setColor(0xE6000000);
@@ -224,8 +235,76 @@ public final class FpsOverlayService extends Service {
         return params;
     }
 
-    private static String label(long scaled) {
-        return scaled > 0 ? Math.round(scaled / 100.0) + " FPS" : "FPS \u2014";
+    /**
+     * Draws one snapshot into the chip. The reading is the headline; the
+     * sensors and the package are smaller supporting lines. A field the ROM
+     * does not expose is omitted rather than printed as a fake zero.
+     */
+    private static void render(TextView view, String payload) {
+        long scaled = 0;
+        String pkg = "";
+        int gpu = 0;
+        int gpuMhz = 0;
+        int cpuMhz = 0;
+        int tempDeciC = 0;
+        boolean hasGpu = false;
+        boolean hasGpuMhz = false;
+        boolean hasCpuMhz = false;
+        boolean hasTemp = false;
+        try {
+            JSONObject snapshot = new JSONObject(payload == null ? "{}" : payload);
+            scaled = Math.round(snapshot.optDouble("fps", 0.0) * 100.0);
+            pkg = snapshot.optString("package", "");
+            hasGpu = snapshot.has("gpuUtil");
+            hasGpuMhz = snapshot.has("gpuMHz");
+            hasCpuMhz = snapshot.has("cpuMHz");
+            hasTemp = snapshot.has("tempDeciC");
+            gpu = snapshot.optInt("gpuUtil", 0);
+            gpuMhz = snapshot.optInt("gpuMHz", 0);
+            cpuMhz = snapshot.optInt("cpuMHz", 0);
+            tempDeciC = snapshot.optInt("tempDeciC", 0);
+        } catch (JSONException malformed) {
+            // A daemon that is away answers "{}"; the chip shows a dash.
+        }
+
+        SpannableStringBuilder text = new SpannableStringBuilder();
+        int start = text.length();
+        text.append(scaled > 0
+            ? Math.round(scaled / 100.0) + " FPS" : "FPS \u2014");
+        text.setSpan(new RelativeSizeSpan(1.35f), start, text.length(), SPAN);
+        text.setSpan(new StyleSpan(Typeface.BOLD), start, text.length(), SPAN);
+        if (hasTemp && tempDeciC > 0) {
+            text.append("  ");
+            int tempStart = text.length();
+            text.append(Math.round(tempDeciC / 10.0) + "\u00b0C");
+            text.setSpan(new RelativeSizeSpan(0.8f), tempStart, text.length(), SPAN);
+        }
+        if ((hasGpu && gpu > 0) || (hasGpuMhz && gpuMhz > 0)
+                || (hasCpuMhz && cpuMhz > 0)) {
+            text.append('\n');
+            int detailStart = text.length();
+            if (hasGpu) text.append("GPU ").append(Integer.toString(gpu)).append('%');
+            if (hasGpuMhz && gpuMhz > 0) {
+                if (text.length() > detailStart) text.append(' ');
+                text.append(Integer.toString(gpuMhz)).append(" MHz");
+            }
+            if (hasCpuMhz && cpuMhz > 0) {
+                if (text.length() > detailStart) text.append(" \u00b7");
+                text.append(" CPU ").append(Integer.toString(cpuMhz)).append(" MHz");
+            }
+            text.setSpan(new RelativeSizeSpan(0.68f), detailStart, text.length(), SPAN);
+            text.setSpan(
+                new ForegroundColorSpan(0xFFA8B8C4), detailStart, text.length(), SPAN);
+        }
+        if (!pkg.isEmpty()) {
+            text.append('\n');
+            int pkgStart = text.length();
+            text.append(pkg);
+            text.setSpan(new RelativeSizeSpan(0.62f), pkgStart, text.length(), SPAN);
+            text.setSpan(
+                new ForegroundColorSpan(0xFF7E8E9A), pkgStart, text.length(), SPAN);
+        }
+        view.setText(text);
     }
 
     private int dp(int value) {

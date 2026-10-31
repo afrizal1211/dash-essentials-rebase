@@ -275,14 +275,39 @@ fn read_render_threads(foreground: Option<&str>) -> Option<FpsReading> {
     })
 }
 
-/// Reads the foreground FPS once. Never blocks on a lock the app runtime
-/// holds and never invents a value when no node answers.
-pub(super) fn read() -> FpsReading {
-    let foreground = crate::foreground_app::ForegroundAppTracker::global()
+/// The package currently in front, when the accessibility tracker knows it.
+fn foreground_package() -> Option<String> {
+    crate::foreground_app::ForegroundAppTracker::global()
         .current_app()
         .filter(|info| info.is_valid())
-        .map(|info| info.package_name);
+        .map(|info| info.package_name)
+}
 
+/// The fastest online CPU in MHz. The overlay shows one clock, not eight; the
+/// prime core is the one that moves when a game starts or throttles.
+fn cpu_mhz() -> i32 {
+    (0..8)
+        .filter_map(|cpu| crate::cpu_freq(cpu).trim().parse::<i32>().ok())
+        .max()
+        .map(|khz| khz / 1000)
+        .unwrap_or(0)
+}
+
+/// Battery temperature in tenths of a degree, `0` when the ROM hides it.
+fn battery_temp_deci_c() -> i32 {
+    crate::battery("temp").trim().parse().unwrap_or(0)
+}
+
+/// Reads the foreground FPS once, together with the package it belongs to.
+/// Never blocks on the runtime lock and never invents a value when no node
+/// answers.
+fn read_with_package() -> (FpsReading, Option<String>) {
+    let foreground = foreground_package();
+    let reading = read_for(foreground.as_deref());
+    (reading, foreground)
+}
+
+fn read_for(foreground: Option<&str>) -> FpsReading {
     for node in AGGREGATE_NODES {
         if let Ok(text) = crate::read_node_text(node)
             && let Some(reading) = reading_from_node(node, &text)
@@ -290,7 +315,41 @@ pub(super) fn read() -> FpsReading {
             return reading;
         }
     }
-    read_render_threads(foreground.as_deref()).unwrap_or_else(FpsReading::unavailable)
+    read_render_threads(foreground).unwrap_or_else(FpsReading::unavailable)
+}
+
+/// One snapshot for the overlay and the diagnostics view: the frame reading
+/// plus the few sensors a player watches next to it. A single daemon request
+/// serves the whole chip, so a 500 ms poll is one round-trip, not six.
+///
+/// A sensor the ROM does not expose is omitted, not reported as a fake zero,
+/// so the consumer can tell "not measured" from "idle". The FPS keys keep
+/// their names and meanings, because the host FFI already reads `fps` and
+/// `valid`.
+pub(super) fn overlay_json() -> serde_json::Value {
+    let (reading, package) = read_with_package();
+    let mut object = match serde_json::to_value(&reading) {
+        Ok(serde_json::Value::Object(object)) => object,
+        _ => serde_json::Map::new(),
+    };
+    object.insert(
+        "package".into(),
+        package.map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    // Zero is "the node said zero" for the GPU load, but a missing node also
+    // reads as zero. The sensors are omitted in that case; the FPS reading
+    // itself is never hidden because `valid` already carries that signal.
+    for (key, value) in [
+        ("gpuUtil", crate::gpu_get_loading()),
+        ("gpuMHz", crate::gpu_get_cur_freq_mhz()),
+        ("cpuMHz", cpu_mhz()),
+        ("tempDeciC", battery_temp_deci_c()),
+    ] {
+        if value > 0 {
+            object.insert(key.into(), serde_json::json!(value));
+        }
+    }
+    serde_json::Value::Object(object)
 }
 
 #[cfg(test)]
@@ -347,7 +406,7 @@ mod tests {
     fn reports_unavailable_instead_of_guessing() {
         // On a host with no vendor nodes this must stay honest; on a device
         // with FPSGO it must stay inside a real refresh range.
-        let reading = read();
+        let reading = read_with_package().0;
         if reading.valid {
             assert!(reading.fps > 0.0 && reading.fps <= INSTANT_CEILING);
             assert_ne!(reading.node, "unavailable");

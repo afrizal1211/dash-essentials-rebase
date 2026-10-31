@@ -7952,6 +7952,7 @@ fn diagnostics_health_json() -> serde_json::Value {
         "cappedBy": capped,
         "targetMHz": gpu_hz_to_mhz(target),
         "liveMHz": gpu_get_cur_freq_mhz(),
+        "utilization": gpu_get_loading(),
         "minMHz": gpu_get_min_freq_mhz(),
         "maxMHz": gpu_get_max_freq_mhz(),
         "governor": gpu_get_governor(),
@@ -7994,6 +7995,7 @@ fn diagnostics_health_json() -> serde_json::Value {
 
     serde_json::json!({
         "gpu": gpu,
+        "fps": foreground_fps::overlay_json(),
         "gameServices": game,
         "perApp": per_app,
         "display": display,

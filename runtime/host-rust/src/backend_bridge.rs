@@ -574,6 +574,13 @@ pub extern "C" fn dash_backend_foreground_fps_x100() -> i64 {
         .unwrap_or(0)
 }
 
+/// The foreground snapshot as the daemon reports it, for the overlay that
+/// prints the frame metrics and the app the reading belongs to. Returns `{}`
+/// when the daemon is away, so the caller has one shape to parse.
+pub(crate) fn foreground_fps_json() -> String {
+    request("GET app.fps").unwrap_or_else(|_| "{}".into())
+}
+
 fn parse_i32(value: Option<&String>) -> i32 {
     value.and_then(|v| v.parse::<i32>().ok()).unwrap_or(-1)
 }
