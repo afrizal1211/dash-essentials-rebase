@@ -350,8 +350,7 @@ class _DashShellState extends State<DashShell>
     WidgetsBinding.instance.addObserver(this);
     _backSettle = AnimationController.unbounded(vsync: this, value: 0)
       ..addListener(
-        () =>
-            DashBackMotion.progress.value = _backSettle.value.clamp(0.0, 1.0),
+        () => DashBackMotion.progress.value = _backSettle.value.clamp(0.0, 1.0),
       );
 
     _interactionRevisionListener = () {
@@ -465,6 +464,7 @@ class _DashShellState extends State<DashShell>
 
       _appearance.value = config;
       DashThemeController.setPreference(config.themePreference);
+      _pushFpsOverlayStyle(config);
       _restoreFpsOverlay(config.fpsOverlay);
     } catch (_) {
       // Appearance must never block app boot.
@@ -507,6 +507,7 @@ class _DashShellState extends State<DashShell>
 
   void _setAccentIndex(int index) {
     _appearance.value = _appearance.value.copyWith(accentIndex: index);
+    _pushFpsOverlayStyle(_appearance.value);
     _persistAppearance();
   }
 
@@ -537,9 +538,7 @@ class _DashShellState extends State<DashShell>
 
   void _fpsOverlayNotice(String text) {
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(text)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
   /// The overlay outlives Dash, so Android has to own the window. A missing
@@ -569,6 +568,41 @@ class _DashShellState extends State<DashShell>
     }
     _fpsOverlayPending = false;
     _appearance.value = _appearance.value.copyWith(fpsOverlay: enabled);
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  void _pushFpsOverlayStyle(DashAppearanceConfig config) {
+    DashBackend.instance.setFpsOverlayConfig(
+      scale: config.fpsOverlayScale,
+      opacity: config.fpsOverlayOpacity,
+      radius: config.fpsOverlayRadius,
+      accent: config.activeAccent.toARGB32(),
+    );
+  }
+
+  void _setFpsOverlayScale(double value) {
+    _appearance.value = _appearance.value.copyWith(fpsOverlayScale: value);
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  void _setFpsOverlayOpacity(double value) {
+    _appearance.value = _appearance.value.copyWith(fpsOverlayOpacity: value);
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  void _setFpsOverlayRadius(double value) {
+    _appearance.value = _appearance.value.copyWith(fpsOverlayRadius: value);
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  void _setFpsOverlayPerGamePosition(bool value) {
+    _appearance.value = _appearance.value.copyWith(
+      fpsOverlayPerGamePosition: value,
+    );
     _persistAppearance();
   }
 
@@ -855,6 +889,11 @@ class _DashShellState extends State<DashShell>
                   onCoreVisualizerStyleChanged: _setCoreVisualizerStyle,
                   onFpsMeterChanged: _setFpsMeter,
                   onFpsOverlayChanged: _setFpsOverlay,
+                  onFpsOverlayScaleChanged: _setFpsOverlayScale,
+                  onFpsOverlayOpacityChanged: _setFpsOverlayOpacity,
+                  onFpsOverlayRadiusChanged: _setFpsOverlayRadius,
+                  onFpsOverlayPerGamePositionChanged:
+                      _setFpsOverlayPerGamePosition,
                 );
               },
         );
@@ -873,8 +912,7 @@ class _DashShellState extends State<DashShell>
             children: <Widget>[
               ValueListenableBuilder<DashAppearanceConfig>(
                 valueListenable: _appearance,
-                builder: (_, config, _) =>
-                    _DashBackgroundLayer(config: config),
+                builder: (_, config, _) => _DashBackgroundLayer(config: config),
               ),
               _rootPage(screen),
             ],
@@ -972,15 +1010,11 @@ class _DashShellState extends State<DashShell>
                             AnimatedSwitcher(
                               duration: MediaQuery.disableAnimationsOf(context)
                                   ? Duration.zero
-                                  : DashInteractionSettings.motionDuration(
-                                      320,
-                                    ),
+                                  : DashInteractionSettings.motionDuration(320),
                               reverseDuration:
                                   MediaQuery.disableAnimationsOf(context)
                                   ? Duration.zero
-                                  : DashInteractionSettings.motionDuration(
-                                      220,
-                                    ),
+                                  : DashInteractionSettings.motionDuration(220),
                               switchInCurve: Curves.linear,
                               switchOutCurve: Curves.linear,
                               transitionBuilder:
@@ -1102,6 +1136,10 @@ class DashAppearanceConfig {
     this.coreVisualizerStyle = 0,
     this.fpsMeter = false,
     this.fpsOverlay = false,
+    this.fpsOverlayScale = 1.0,
+    this.fpsOverlayOpacity = 0.85,
+    this.fpsOverlayRadius = 10.0,
+    this.fpsOverlayPerGamePosition = true,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1115,7 +1153,11 @@ class DashAppearanceConfig {
       heroGlow = true,
       coreVisualizerStyle = 0,
       fpsMeter = false,
-      fpsOverlay = false;
+      fpsOverlay = false,
+      fpsOverlayScale = 1.0,
+      fpsOverlayOpacity = 0.85,
+      fpsOverlayRadius = 10.0,
+      fpsOverlayPerGamePosition = true;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1128,6 +1170,10 @@ class DashAppearanceConfig {
   final int coreVisualizerStyle;
   final bool fpsMeter;
   final bool fpsOverlay;
+  final double fpsOverlayScale;
+  final double fpsOverlayOpacity;
+  final double fpsOverlayRadius;
+  final bool fpsOverlayPerGamePosition;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1163,6 +1209,10 @@ class DashAppearanceConfig {
     int? coreVisualizerStyle,
     bool? fpsMeter,
     bool? fpsOverlay,
+    double? fpsOverlayScale,
+    double? fpsOverlayOpacity,
+    double? fpsOverlayRadius,
+    bool? fpsOverlayPerGamePosition,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1176,6 +1226,11 @@ class DashAppearanceConfig {
       coreVisualizerStyle: coreVisualizerStyle ?? this.coreVisualizerStyle,
       fpsMeter: fpsMeter ?? this.fpsMeter,
       fpsOverlay: fpsOverlay ?? this.fpsOverlay,
+      fpsOverlayScale: fpsOverlayScale ?? this.fpsOverlayScale,
+      fpsOverlayOpacity: fpsOverlayOpacity ?? this.fpsOverlayOpacity,
+      fpsOverlayRadius: fpsOverlayRadius ?? this.fpsOverlayRadius,
+      fpsOverlayPerGamePosition:
+          fpsOverlayPerGamePosition ?? this.fpsOverlayPerGamePosition,
     );
   }
 
@@ -1192,6 +1247,10 @@ class DashAppearanceConfig {
       'coreVisualizerStyle': coreVisualizerStyle,
       'fpsMeter': fpsMeter,
       'fpsOverlay': fpsOverlay,
+      'fpsOverlayScale': fpsOverlayScale,
+      'fpsOverlayOpacity': fpsOverlayOpacity,
+      'fpsOverlayRadius': fpsOverlayRadius,
+      'fpsOverlayPerGamePosition': fpsOverlayPerGamePosition,
     };
   }
 
@@ -1221,6 +1280,20 @@ class DashAppearanceConfig {
         (raw['coreVisualizerStyle'] as num?)?.toInt() ?? 0;
     final bool fpsMeter = raw['fpsMeter'] as bool? ?? false;
     final bool fpsOverlay = raw['fpsOverlay'] as bool? ?? false;
+    final double fpsOverlayScale =
+        ((raw['fpsOverlayScale'] as num?)?.toDouble() ?? 1.0).clamp(0.5, 2.0);
+    final double fpsOverlayOpacity =
+        ((raw['fpsOverlayOpacity'] as num?)?.toDouble() ?? 0.85).clamp(
+          0.2,
+          1.0,
+        );
+    final double fpsOverlayRadius =
+        ((raw['fpsOverlayRadius'] as num?)?.toDouble() ?? 10.0).clamp(
+          0.0,
+          32.0,
+        );
+    final bool fpsOverlayPerGamePosition =
+        raw['fpsOverlayPerGamePosition'] as bool? ?? true;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1234,6 +1307,10 @@ class DashAppearanceConfig {
       coreVisualizerStyle: coreVisualizerStyle,
       fpsMeter: fpsMeter,
       fpsOverlay: fpsOverlay,
+      fpsOverlayScale: fpsOverlayScale,
+      fpsOverlayOpacity: fpsOverlayOpacity,
+      fpsOverlayRadius: fpsOverlayRadius,
+      fpsOverlayPerGamePosition: fpsOverlayPerGamePosition,
     );
   }
 }
@@ -1741,6 +1818,50 @@ class _ServiceSettingsCardState extends State<_ServiceSettingsCard> {
   }
 }
 
+class _OverlaySliderRow extends StatelessWidget {
+  const _OverlaySliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.divisions,
+    required this.valueText,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int divisions;
+  final String valueText;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: <Widget>[
+            Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(valueText, style: TextStyle(color: colors.onSurfaceVariant)),
+          ],
+        ),
+        Slider(
+          value: value,
+          min: min,
+          max: max,
+          divisions: divisions,
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     required this.config,
@@ -1758,6 +1879,10 @@ class SettingsScreen extends StatefulWidget {
     required this.onCoreVisualizerStyleChanged,
     required this.onFpsMeterChanged,
     required this.onFpsOverlayChanged,
+    required this.onFpsOverlayScaleChanged,
+    required this.onFpsOverlayOpacityChanged,
+    required this.onFpsOverlayRadiusChanged,
+    required this.onFpsOverlayPerGamePositionChanged,
     super.key,
   });
 
@@ -1776,6 +1901,10 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<int> onCoreVisualizerStyleChanged;
   final ValueChanged<bool> onFpsMeterChanged;
   final ValueChanged<bool> onFpsOverlayChanged;
+  final ValueChanged<double> onFpsOverlayScaleChanged;
+  final ValueChanged<double> onFpsOverlayOpacityChanged;
+  final ValueChanged<double> onFpsOverlayRadiusChanged;
+  final ValueChanged<bool> onFpsOverlayPerGamePositionChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -2106,8 +2235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 boxShadow: config.accentIndex == i
                                     ? <BoxShadow>[
                                         BoxShadow(
-                                          color: DashAppearanceConfig
-                                              .accents[i]
+                                          color: DashAppearanceConfig.accents[i]
                                               .withValues(alpha: 0.6),
                                           blurRadius: 6,
                                         ),
@@ -2420,6 +2548,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                 ],
+              ),
+              const Divider(height: 20),
+              _OverlaySliderRow(
+                label: 'Overlay size',
+                value: config.fpsOverlayScale,
+                min: 0.5,
+                max: 2.0,
+                divisions: 15,
+                valueText: '${(config.fpsOverlayScale * 100).round()}%',
+                onChanged: widget.onFpsOverlayScaleChanged,
+              ),
+              _OverlaySliderRow(
+                label: 'Overlay opacity',
+                value: config.fpsOverlayOpacity,
+                min: 0.2,
+                max: 1.0,
+                divisions: 16,
+                valueText: '${(config.fpsOverlayOpacity * 100).round()}%',
+                onChanged: widget.onFpsOverlayOpacityChanged,
+              ),
+              _OverlaySliderRow(
+                label: 'Corner radius',
+                value: config.fpsOverlayRadius,
+                min: 0.0,
+                max: 32.0,
+                divisions: 16,
+                valueText: '${config.fpsOverlayRadius.round()} dp',
+                onChanged: widget.onFpsOverlayRadiusChanged,
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Remember position per game'),
+                subtitle: const Text(
+                  'Use separate overlay positions for games.',
+                ),
+                value: config.fpsOverlayPerGamePosition,
+                onChanged: widget.onFpsOverlayPerGamePositionChanged,
               ),
             ],
           ),
@@ -3284,9 +3449,7 @@ class _HomePulseHero extends StatelessWidget {
         final ColorScheme colors = theme.colorScheme;
         final bool dark = theme.brightness == Brightness.dark;
         final DashBackend backend = DashBackend.instance;
-        final DashAppearanceConfig appearance = DashAppearanceScope.of(
-          context,
-        );
+        final DashAppearanceConfig appearance = DashAppearanceScope.of(context);
         final int activePerf = snapshot.performanceProfile >= 0
             ? snapshot.performanceProfile
             : 0;
@@ -4128,10 +4291,7 @@ class _CreditsCard extends StatelessWidget {
       'Saan',
       'The SaanOS line of the port that carried the daemon to the next device',
     ],
-    <String>[
-      'afrizal1211',
-      'This port to the MediaTek MT6991 dash platform',
-    ],
+    <String>['afrizal1211', 'This port to the MediaTek MT6991 dash platform'],
     <String>[
       '@PocoX8ProMaxID',
       'The Telegram community that tests every build on real hardware',
@@ -5938,8 +6098,7 @@ class _BypassChargingCardState extends State<_BypassChargingCard> {
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     final bool supported = DashBackend.instance.bypassChargingSupported;
-    final bool enabled =
-        _pending ?? DashBackend.instance.bypassChargingEnabled;
+    final bool enabled = _pending ?? DashBackend.instance.bypassChargingEnabled;
     final bool applying = _pending != null || snapshot.chargingWriteState == 1;
     final String state = _stateLabel(enabled);
 
@@ -15199,9 +15358,7 @@ class LiveDashboardHero extends StatelessWidget {
             ? '—'
             : '${snapshot.batteryTempC!.toStringAsFixed(1)}°C';
         final String touch = _dashTouchLabel(snapshot.touchState);
-        final DashAppearanceConfig appearance = DashAppearanceScope.of(
-          context,
-        );
+        final DashAppearanceConfig appearance = DashAppearanceScope.of(context);
 
         final Color profileAccent = switch (activePerf) {
           2 => const Color(0xFF35C997), // Battery Saver
@@ -15921,10 +16078,7 @@ class SurfaceCard extends StatelessWidget {
           stops: const <double>[0, 0.56, 1],
         ),
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(
-          color: DashSurfaceLines.border(colors),
-          width: 0.85,
-        ),
+        border: Border.all(color: DashSurfaceLines.border(colors), width: 0.85),
         boxShadow: <BoxShadow>[
           BoxShadow(
             color: dark
@@ -15965,9 +16119,7 @@ class SurfaceCard extends StatelessWidget {
         // Minimal Slate
         color: dark ? const Color(0xFF101419) : const Color(0xFFF0F4F8),
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(
-          color: DashSurfaceLines.border(colors),
-        ),
+        border: Border.all(color: DashSurfaceLines.border(colors)),
         boxShadow: dark
             ? const <BoxShadow>[]
             : const <BoxShadow>[
@@ -15989,9 +16141,7 @@ class SurfaceCard extends StatelessWidget {
                 colors: <Color>[Color(0xFFFFFFFF), Color(0xFFF7FAFE)],
               ),
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(
-          color: DashSurfaceLines.border(colors),
-        ),
+        border: Border.all(color: DashSurfaceLines.border(colors)),
         boxShadow: dark
             ? const <BoxShadow>[]
             : const <BoxShadow>[

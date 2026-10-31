@@ -115,6 +115,37 @@ pub extern "C" fn dash_host_fps_overlay_request() -> i32 {
     )
 }
 
+/// Pushes the overlay style (scale, opacity, corner radius, accent) into the
+/// service's SharedPreferences. Four packed ints instead of a JSON string so
+/// the caller needs no C-string allocation and no `package:ffi` dependency.
+/// Window position is not configurable here: the service owns and persists it,
+/// because only the service can observe a drag.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_fps_overlay_config(
+    scale_milli: i32,
+    opacity: i32,
+    radius_milli: i32,
+    accent: i32,
+) -> i32 {
+    i32::from(
+        with_activity(|env, activity| {
+            env.call_method(
+                activity,
+                "configFpsOverlay",
+                "(IIII)Z",
+                &[
+                    JValue::Int(scale_milli),
+                    JValue::Int(opacity),
+                    JValue::Int(radius_milli),
+                    JValue::Int(accent),
+                ],
+            )?
+            .z()
+        })
+        .unwrap_or(false),
+    )
+}
+
 /// The full foreground snapshot for the overlay chip. The service parses the
 /// JSON so one poll draws the frame reading, the sensors and the package,
 /// instead of one JNI call per value.

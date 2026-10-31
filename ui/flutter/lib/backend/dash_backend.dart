@@ -117,6 +117,9 @@ typedef _I32ToI32Native = ffi.Int32 Function(ffi.Int32);
 typedef _I32ToI32Dart = int Function(int);
 typedef _SetTwoI32Native = ffi.Int32 Function(ffi.Int32, ffi.Int32);
 typedef _SetTwoI32Dart = int Function(int, int);
+typedef _OverlayConfigNative =
+    ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32);
+typedef _OverlayConfigDart = int Function(int, int, int, int);
 
 /// Reads the daemon's foreground FPS off the UI isolate: the call is one
 /// daemon round-trip with a multi-second ceiling, which must never stall a
@@ -207,6 +210,7 @@ final class DashBackend {
   _SetI32Dart? _fpsOverlayNative;
   _I32Dart? _fpsOverlayGrantedNative;
   _I32Dart? _fpsOverlayRequestNative;
+  _OverlayConfigDart? _fpsOverlayConfigNative;
   ffi.NativeCallable<_BackEventNative>? _backListener;
 
   DashBackendSnapshot _latest = const DashBackendSnapshot(
@@ -482,6 +486,13 @@ final class DashBackend {
         _fpsOverlayRequestNative = lib.lookupFunction<_I32Native, _I32Dart>(
           'dash_host_fps_overlay_request',
         );
+      }
+
+      if (lib.providesSymbol('dash_host_fps_overlay_config')) {
+        _fpsOverlayConfigNative = lib
+            .lookupFunction<_OverlayConfigNative, _OverlayConfigDart>(
+              'dash_host_fps_overlay_config',
+            );
       }
 
       _lib = lib;
@@ -902,6 +913,23 @@ final class DashBackend {
   bool setFpsOverlay(bool enabled) {
     if (!_started) return false;
     return _fpsOverlayNative?.call(enabled ? 1 : 0) == 1;
+  }
+
+  /// Applies overlay style. Values use UI units; native receives bounded ints.
+  bool setFpsOverlayConfig({
+    required double scale,
+    required double opacity,
+    required double radius,
+    required int accent,
+  }) {
+    if (!_started) return false;
+    return _fpsOverlayConfigNative?.call(
+          (scale.clamp(0.5, 2.0) * 1000).round(),
+          (opacity.clamp(0.2, 1.0) * 255).round(),
+          (radius.clamp(0.0, 32.0) * 1000).round(),
+          accent,
+        ) ==
+        1;
   }
 
   void refresh() {
