@@ -118,8 +118,8 @@ typedef _I32ToI32Dart = int Function(int);
 typedef _SetTwoI32Native = ffi.Int32 Function(ffi.Int32, ffi.Int32);
 typedef _SetTwoI32Dart = int Function(int, int);
 typedef _OverlayConfigNative =
-    ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32);
-typedef _OverlayConfigDart = int Function(int, int, int, int);
+    ffi.Int32 Function(ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32, ffi.Int32);
+typedef _OverlayConfigDart = int Function(int, int, int, int, int);
 
 /// Reads the daemon's foreground FPS off the UI isolate: the call is one
 /// daemon round-trip with a multi-second ceiling, which must never stall a
@@ -921,6 +921,7 @@ final class DashBackend {
     required double opacity,
     required double radius,
     required int accent,
+    required bool perGame,
   }) {
     if (!_started) return false;
     return _fpsOverlayConfigNative?.call(
@@ -928,6 +929,7 @@ final class DashBackend {
           (opacity.clamp(0.2, 1.0) * 255).round(),
           (radius.clamp(0.0, 32.0) * 1000).round(),
           accent,
+          perGame ? 1 : 0,
         ) ==
         1;
   }

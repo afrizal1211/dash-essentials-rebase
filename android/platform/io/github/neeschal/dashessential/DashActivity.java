@@ -59,8 +59,9 @@ public final class DashActivity extends NativeActivity {
         requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, 0);
     }
     /** Pushes overlay style config from native FFI. */
-    public boolean configFpsOverlay(int scaleMilli, int opacity, int radiusMilli, int accent) {
-        FpsOverlayService.applyConfig(this, scaleMilli, opacity, radiusMilli, accent);
+    public boolean configFpsOverlay(int scaleMilli, int opacity, int radiusMilli, int accent,
+            int perGame) {
+        FpsOverlayService.applyConfig(this, scaleMilli, opacity, radiusMilli, accent, perGame != 0);
         return true;
     }
     public boolean hasFpsOverlayPermission() {

@@ -63,6 +63,7 @@ public final class FpsOverlayService extends Service {
     private static final String KEY_ACCENT = "accent";
     private static final String KEY_POSITIONS = "positions";
     private static final String KEY_POS_PACKAGE = "position_package";
+    private static final String KEY_PER_GAME = "per_game";
     private static final String CHANNEL = "fps_overlay";
     private static final int NOTIFICATION_ID = 42;
 
@@ -94,6 +95,8 @@ public final class FpsOverlayService extends Service {
     private long lastTapTime;
     /** The package whose remembered position the chip currently sits at. */
     private String positionedPackage = "";
+    /** Whether each game gets its own remembered position. */
+    private boolean perGame = true;
 
     private final Map<String, int[]> perGamePositions = new HashMap<>();
 
@@ -208,13 +211,15 @@ public final class FpsOverlayService extends Service {
      * activity is foregrounded and the service may or may not be running.
      * Values are packed ints: scale and radius in thousandths, opacity 0..255.
      */
-    static void applyConfig(Context context, int scaleMilli, int opacity, int radiusMilli, int accent) {
+    static void applyConfig(Context context, int scaleMilli, int opacity, int radiusMilli, int accent,
+            boolean perGame) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putFloat(KEY_SCALE, scaleMilli / 1000.0f)
             .putFloat(KEY_OPACITY, opacity / 255.0f)
             .putFloat(KEY_RADIUS, radiusMilli / 1000.0f)
             .putInt(KEY_ACCENT, accent)
+            .putBoolean(KEY_PER_GAME, perGame)
             .apply();
         FpsOverlayService live = current;
         if (live != null) live.main.post(live::reloadStyle);
@@ -232,6 +237,7 @@ public final class FpsOverlayService extends Service {
         opacity = p.getFloat(KEY_OPACITY, DEFAULT_OPACITY);
         radius = p.getFloat(KEY_RADIUS, DEFAULT_RADIUS);
         accentColor = p.getInt(KEY_ACCENT, DEFAULT_ACCENT);
+        perGame = p.getBoolean(KEY_PER_GAME, true);
         perGamePositions.clear();
         try {
             JSONObject positions = new JSONObject(p.getString(KEY_POSITIONS, "{}"));
@@ -292,21 +298,23 @@ public final class FpsOverlayService extends Service {
 
     private WindowManager.LayoutParams buildParams() {
         // Touchable window with a pass-through backdrop: the chip itself is
-        // touchable so it can be dragged, and the transparent backdrop view
-        // is what keeps the rest of the screen touchable by the game. The
-        // chip view reports touches only when they land inside its bounds.
+        // touchable so it can be dragged, and every pixel outside the chip
+        // passes through to the game below. FLAG_NOT_TOUCH_MODAL is required
+        // so touches outside the window never reach this window at all.
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         positionedPackage = prefs().getString(KEY_POS_PACKAGE, "");
-        int[] saved = positionedPackage.isEmpty() ? null : perGamePositions.get(positionedPackage);
+        int[] saved = (!perGame || positionedPackage.isEmpty())
+            ? null : perGamePositions.get(positionedPackage);
         if (saved != null) {
             lp.x = saved[0];
             lp.y = saved[1];
@@ -333,7 +341,7 @@ public final class FpsOverlayService extends Service {
         if (pkg == null || pkg.equals(positionedPackage) || isDragging) return;
         positionedPackage = pkg;
         prefs().edit().putString(KEY_POS_PACKAGE, pkg).apply();
-        if (params == null) return;
+        if (params == null || !perGame) return;
         int[] saved = perGamePositions.get(pkg);
         if (saved != null) {
             params.x = saved[0];
@@ -393,7 +401,7 @@ public final class FpsOverlayService extends Service {
             .putInt(KEY_X, params.x)
             .putInt(KEY_Y, params.y);
         String pkg = positionedPackage;
-        if (pkg != null && !pkg.isEmpty() && !pkg.equals("null")) {
+        if (perGame && pkg != null && !pkg.isEmpty() && !pkg.equals("null")) {
             perGamePositions.put(pkg, new int[]{params.x, params.y});
             try {
                 JSONObject positions = new JSONObject();

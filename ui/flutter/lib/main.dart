@@ -578,6 +578,7 @@ class _DashShellState extends State<DashShell>
       opacity: config.fpsOverlayOpacity,
       radius: config.fpsOverlayRadius,
       accent: config.activeAccent.toARGB32(),
+      perGame: config.fpsOverlayPerGamePosition,
     );
   }
 
@@ -603,6 +604,7 @@ class _DashShellState extends State<DashShell>
     _appearance.value = _appearance.value.copyWith(
       fpsOverlayPerGamePosition: value,
     );
+    _pushFpsOverlayStyle(_appearance.value);
     _persistAppearance();
   }
 

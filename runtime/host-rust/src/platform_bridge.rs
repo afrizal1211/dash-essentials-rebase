@@ -126,18 +126,20 @@ pub extern "C" fn dash_host_fps_overlay_config(
     opacity: i32,
     radius_milli: i32,
     accent: i32,
+    per_game: i32,
 ) -> i32 {
     i32::from(
         with_activity(|env, activity| {
             env.call_method(
                 activity,
                 "configFpsOverlay",
-                "(IIII)Z",
+                "(IIIII)Z",
                 &[
                     JValue::Int(scale_milli),
                     JValue::Int(opacity),
                     JValue::Int(radius_milli),
                     JValue::Int(accent),
+                    JValue::Int(per_game),
                 ],
             )?
             .z()
