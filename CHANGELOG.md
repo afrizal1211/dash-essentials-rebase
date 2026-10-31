@@ -6,6 +6,15 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.26
+
+### Fixed
+
+- FPS overlay: the service no longer crashes at startup when the per-game
+  position store is empty. `JSONObject.names()` returns null on an empty
+  object, so iteration threw a NullPointerException before the first chip
+  was ever attached.
+
 ## 1.18.25
 
 ### Added
