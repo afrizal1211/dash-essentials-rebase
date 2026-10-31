@@ -235,8 +235,10 @@ public final class FpsOverlayService extends Service {
         perGamePositions.clear();
         try {
             JSONObject positions = new JSONObject(p.getString(KEY_POSITIONS, "{}"));
-            for (int i = 0; i < positions.names().length(); i++) {
-                String pkg = positions.names().getString(i);
+            // names() is null on an empty object, so iterate the keys instead.
+            java.util.Iterator<String> keys = positions.keys();
+            while (keys.hasNext()) {
+                String pkg = keys.next();
                 JSONObject entry = positions.getJSONObject(pkg);
                 perGamePositions.put(pkg, new int[]{entry.getInt("x"), entry.getInt("y")});
             }
