@@ -6,6 +6,21 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.25
+
+### Added
+
+- FPS overlay customization: the chip can be dragged anywhere on screen
+  (double-tap cycles S/M/L size), and the settings screen gains sliders for
+  overlay size, opacity and corner radius plus an accent-color picker and a
+  per-game position memory switch. Positions are remembered per foreground
+  package when the tracker is on.
+
+### Fixed
+
+- FPS overlay: a package readout of `null` (the tracker being off) is no
+  longer printed as a package name on the chip.
+
 ## 1.18.24
 
 ### Fixed
