@@ -26,9 +26,16 @@ const AGGREGATE_NODES: &[&str] = &[
     "/sys/class/display/fps",
 ];
 
-/// Per-thread FPS table with the app name in each row. The only node that
-/// gives both the rate and the attribution in one read, so it is tried
-/// before the render-thread scan when no aggregate node answers.
+/// Per-surface frame-rate statistics. Newer MediaTek FPSGO trees
+/// (mt6991-class) publish the live rate here as
+/// `<index>\t<pid>\t<bufID>\t<fps>\t<fluff>`, one row per rendering surface.
+/// There is no process-name column, so the pid is resolved to a package.
+/// Tried first because it is the only node on these trees that carries a
+/// per-surface rate at all.
+const FRS_INFO_NODE: &str = "/sys/kernel/fpsgo/fstb/fstb_frs_info";
+
+/// Fallback table for older trees: the same layout with a truncated process
+/// name in the third column instead of a bare pid.
 const FPS_LIST_NODE: &str = "/sys/kernel/fpsgo/fstb/fstb_fps_list";
 
 /// Per-render-thread nodes, scanned only when no aggregate node exists.
@@ -326,6 +333,87 @@ fn read_fps_list(foreground: Option<&str>) -> Option<FpsReading> {
     })
 }
 
+/// Parse `fstb_frs_info`-style text. Each data row is
+/// `<index>\t<pid>\t<bufID>\t<fps>\t...` — no process-name column, only a pid.
+/// The pid is resolved to its package so a row can be attributed to the
+/// foreground app. Without a foreground, the busiest non-system pid stands in.
+fn parse_frs_info(text: &str, foreground: Option<&str>) -> Option<(f64, String)> {
+    let node = "fpsgo/fstb/fstb_frs_info".to_string();
+    let mut attributed: Option<(f64, String)> = None;
+    let mut busiest: Option<(f64, String)> = None;
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        // A data row is `<index>\t<pid>\t<bufID>\t<fps>`: a leading integer
+        // index, a numeric pid, a hex bufid and a parseable rate. Anything
+        // else (a header, a blank) is skipped.
+        if cols.len() < 4 {
+            continue;
+        }
+        let Ok(_index) = cols[0].trim().parse::<u32>() else {
+            continue;
+        };
+        let Ok(pid) = cols[1].trim().parse::<u32>() else {
+            continue;
+        };
+        let Ok(fps) = cols[3].trim().parse::<f64>() else {
+            continue;
+        };
+        if !plausible(fps) {
+            continue;
+        }
+        let process = process_package(pid);
+        let is_system = process.as_deref().is_some_and(is_system_process);
+        if let Some(package) = foreground {
+            // Attribute only a row whose pid is the foreground package.
+            if process.as_deref().is_some_and(|p| same_app(p, package))
+                && attributed.as_ref().is_none_or(|best| fps > best.0)
+            {
+                attributed = Some((fps, node.clone()));
+            }
+        } else if !is_system && busiest.as_ref().is_none_or(|best| fps > best.0) {
+            busiest = Some((fps, node.clone()));
+        }
+    }
+    if foreground.is_some() {
+        // With a known foreground app a row that is not that app is not
+        // evidence about it; report only the attributed row, never a stand-in.
+        return attributed;
+    }
+    attributed.or(busiest)
+}
+
+/// Resolve the `fstb_frs_info` node into a reading.
+fn read_frs_info(foreground: Option<&str>) -> Option<FpsReading> {
+    let text = crate::read_node_text(FRS_INFO_NODE).ok()?;
+    let (fps, node) = parse_frs_info(&text, foreground)?;
+    Some(FpsReading {
+        fps: round2(fps),
+        // A per-surface rate; this node carries no frame distribution.
+        min: 0.0,
+        low1: 0.0,
+        dropped: 0,
+        node,
+        valid: true,
+    })
+}
+
+/// Whether a resolved package belongs to the system shell rather than to an
+/// app. Used only when no foreground is known, to pick the busiest app.
+fn is_system_process(package: &str) -> bool {
+    let base = package.split(':').next().unwrap_or(package);
+    [
+        "systemui",
+        "launcher",
+        "inputmethod",
+        "latin",
+        "surfaceflinger",
+        "system_server",
+        "com.android.systemui",
+    ]
+    .iter()
+    .any(|marker| base.contains(marker))
+}
+
 /// Attribute a render thread to the tracked foreground package when the node
 /// name is the thread id, and otherwise fall back to the busiest thread.
 fn read_render_threads(foreground: Option<&str>) -> Option<FpsReading> {
@@ -414,7 +502,8 @@ fn read_for(foreground: Option<&str>) -> FpsReading {
             return reading;
         }
     }
-    read_fps_list(foreground)
+    read_frs_info(foreground)
+        .or_else(|| read_fps_list(foreground))
         .or_else(|| read_render_threads(foreground))
         .unwrap_or_else(FpsReading::unavailable)
 }
@@ -603,5 +692,35 @@ dfps_ceiling:120";
             )
             .is_none()
         );
+    }
+
+    // Exact mt6991 `fstb_frs_info` rows: `<index>\t<pid>\t<bufID>\t<fps>\t<fluff>`.
+    // No process-name column, so attribution is by pid. On a host the pids
+    // are unknown, so `process_package` answers nothing: the busiest row wins
+    // when no foreground is known, and nothing is reported when one is.
+    const MT6991_FRS: &str = "\
+1\t5993\t0x171400000026\t80\t0
+2\t18206\t0x15be\t120\t0
+3\t18206\t0x40ae000000a5\t98\t0";
+
+    #[test]
+    fn frs_info_picks_the_busiest_surface_without_a_foreground() {
+        let (fps, node) = parse_frs_info(MT6991_FRS, None).expect("a reading");
+        assert_eq!(fps, 120.0);
+        assert_eq!(node, "fpsgo/fstb/fstb_frs_info");
+    }
+
+    #[test]
+    fn frs_info_never_invents_a_foreground_match() {
+        // None of these pids resolves to `com.some.game` on a host, so the
+        // answer is none rather than a stand-in surface's 120.
+        assert!(parse_frs_info(MT6991_FRS, Some("com.some.game")).is_none());
+    }
+
+    #[test]
+    fn frs_info_skips_rows_without_a_pid_or_with_an_implausible_rate() {
+        assert!(parse_frs_info("x\t5993\t0x1\t60\t0", None).is_none());
+        assert!(parse_frs_info("1\t5993\t0x1\t9999\t0", None).is_none());
+        assert!(parse_frs_info("1\t5993\t0x1\t60\t0", None).is_some());
     }
 }
