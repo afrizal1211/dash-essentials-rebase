@@ -6,6 +6,27 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.29
+
+### Fixed
+
+- FPS recording: a session is stamped and named from the game it is filed
+  under, not from the moment the switch was flipped, so a recording armed in
+  Settings starts when the game appeared and the history list shows the right
+  time.
+- FPS recording: the live status (elapsed time, sample count, average) now
+  describes only that game instead of blending samples taken in Settings and
+  in the game that followed.
+- FPS history: trimming the stored sessions back to the newest 200 keeps the
+  file private instead of rewriting it with the default mode.
+- FPS history: the session detail header no longer overflows on narrow
+  screens, and opening the history no longer calls `setState` during
+  `initState`.
+- FPS history: a session with a non-numeric series or rate is read as zero
+  instead of crashing the screen.
+- The daemon logs a failure to start the FPS sampler instead of dropping it
+  silently.
+
 ## 1.18.28
 
 ### Added
