@@ -68,10 +68,14 @@ class _FpsHistoryScreenState extends State<FpsHistoryScreen> {
   }
 
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    // initState already starts the first load with a spinner; only later
+    // reloads need to raise it again.
+    if (!_loading && mounted) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
     try {
       final List<FpsSession> sessions = await FpsRecordBackend.instance
           .sessions();
@@ -524,22 +528,29 @@ class _FpsSessionDetailScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 5),
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 3),
-                      child: Text(
-                        'fps average',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colors.onSurfaceVariant,
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(bottom: 3),
+                        child: Text(
+                          'fps average',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colors.onSurfaceVariant,
+                          ),
                         ),
                       ),
                     ),
-                    const Spacer(),
-                    Text(
-                      _fpsSessionDate(session.startedAt),
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: colors.onSurfaceVariant,
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        _fpsSessionDate(session.startedAt),
+                        textAlign: TextAlign.right,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: colors.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   ],

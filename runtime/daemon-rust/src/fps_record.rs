@@ -41,6 +41,8 @@ const FILE_NAME: &str = "fps_sessions.jsonl";
 #[derive(Clone, Debug)]
 struct Sample {
     fps_x10: i32,
+    /// Epoch milliseconds when the sample was taken.
+    at_ms: u64,
     package: Option<String>,
 }
 
@@ -156,18 +158,22 @@ fn dominant_package(samples: &[Sample]) -> String {
     best.to_string()
 }
 
-fn build_session(started_at: u64, samples: &[Sample]) -> Option<Session> {
+fn build_session(samples: &[Sample]) -> Option<Session> {
     let package = dominant_package(samples);
-    let values: Vec<i32> = samples
+    let kept: Vec<&Sample> = samples
         .iter()
         .filter(|sample| package.is_empty() || sample.package.as_deref() == Some(package.as_str()))
-        .map(|sample| sample.fps_x10)
         .collect();
-    if values.len() < 2 {
+    if kept.len() < 2 {
         return None;
     }
+    let values: Vec<i32> = kept.iter().map(|sample| sample.fps_x10).collect();
     let stats = stats(&values)?;
     let duration_ms = values.len() as u64 * u64::from(SAMPLE_INTERVAL_MS);
+    // The session starts at its first kept sample, not when recording was
+    // armed: a switch flipped in Settings and carried into a game must be
+    // stamped when the game appeared.
+    let started_at = kept[0].at_ms;
     let series = downsample(&values, SERIES_POINTS);
     let series_step_ms = (duration_ms / series.len().max(1) as u64).max(1) as u32;
     Some(Session {
@@ -196,7 +202,6 @@ fn now_ms() -> u64 {
 #[derive(Default)]
 struct Recorder {
     active: bool,
-    started_at: u64,
     samples: VecDeque<Sample>,
 }
 
@@ -262,7 +267,19 @@ fn trim_sessions(path: &Path) -> io::Result<()> {
         kept.push('\n');
     }
     let temporary = path.with_extension("jsonl.tmp");
-    fs::write(&temporary, kept)?;
+    // A leftover temporary file may predate the mode below; recreate it so
+    // the rewritten history stays private.
+    let _ = fs::remove_file(&temporary);
+    {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(kept.as_bytes())?;
+        file.sync_all()?;
+    }
     fs::rename(&temporary, path)
 }
 
@@ -277,14 +294,12 @@ pub(super) fn set_active(active: bool) {
         }
         if active {
             recorder.active = true;
-            recorder.started_at = now_ms();
             recorder.samples.clear();
             None
         } else {
             recorder.active = false;
-            let started_at = recorder.started_at;
             let samples: Vec<Sample> = recorder.samples.drain(..).collect();
-            build_session(started_at, &samples)
+            build_session(&samples)
         }
     };
     if let Some(session) = finished
@@ -298,18 +313,22 @@ pub(super) fn set_active(active: bool) {
 /// run, and the averages so far.
 pub(super) fn live_json() -> Value {
     let mut recorder = lock_recorder();
-    let values: Vec<i32> = recorder
+    // Report the session that would be saved, not a blend of the app the
+    // switch was flipped in and the game that followed it.
+    let package = dominant_package(recorder.samples.make_contiguous());
+    let kept: Vec<&Sample> = recorder
         .samples
         .iter()
-        .map(|sample| sample.fps_x10)
+        .filter(|sample| package.is_empty() || sample.package.as_deref() == Some(package.as_str()))
         .collect();
+    let values: Vec<i32> = kept.iter().map(|sample| sample.fps_x10).collect();
     let stats = stats(&values);
-    let package = dominant_package(recorder.samples.make_contiguous());
+    let started_at = kept.first().map_or(0, |sample| sample.at_ms);
     json!({
         "active": recorder.active,
-        "startedAt": recorder.started_at,
-        "elapsedMs": if recorder.active {
-            now_ms().saturating_sub(recorder.started_at)
+        "startedAt": started_at,
+        "elapsedMs": if recorder.active && started_at > 0 {
+            now_ms().saturating_sub(started_at)
         } else {
             0
         },
@@ -360,29 +379,37 @@ fn sample_once() {
     if recorder.samples.len() >= MAX_SAMPLES {
         recorder.samples.pop_front();
     }
-    recorder.samples.push_back(Sample { fps_x10, package });
+    recorder.samples.push_back(Sample {
+        fps_x10,
+        at_ms: now_ms(),
+        package,
+    });
 }
 
 /// Starts the sampler. It sleeps when recording is off, so an idle daemon
 /// costs one flag check per half second.
 pub(super) fn start() {
-    let _ = std::thread::Builder::new()
+    if let Err(error) = std::thread::Builder::new()
         .name("fps-record".into())
         .spawn(|| {
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
                 sample_once();
             }
-        });
+        })
+    {
+        eprintln!("DASH_FPS_RECORD_START_FAIL {error}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample(fps_x10: i32, package: Option<&str>) -> Sample {
+    fn sample(at_ms: u64, fps_x10: i32, package: Option<&str>) -> Sample {
         Sample {
             fps_x10,
+            at_ms,
             package: package.map(str::to_owned),
         }
     }
@@ -434,17 +461,21 @@ mod tests {
     #[test]
     fn session_is_labelled_by_the_dominant_package() {
         let samples = [
-            sample(300, Some("com.other")),
-            sample(600, Some("com.game")),
-            sample(610, Some("com.game")),
-            sample(590, Some("com.game")),
-            sample(600, None),
+            sample(1_000, 300, Some("com.other")),
+            sample(2_000, 600, Some("com.game")),
+            sample(2_500, 610, Some("com.game")),
+            sample(3_000, 590, Some("com.game")),
+            sample(3_500, 600, None),
         ];
-        let session = build_session(1_700_000_000_000, &samples).expect("session");
+        let session = build_session(&samples).expect("session");
         assert_eq!(session.package, "com.game");
         // Only the game's three samples describe the game.
         assert_eq!(session.samples, 3);
         assert_eq!(session.duration_ms, 1_500);
+        // The session starts with the first sample of the game it is filed
+        // under, not with the app the recording was armed in.
+        assert_eq!(session.started_at, 2_000);
+        assert_eq!(session.id, 2_000);
         assert_eq!(session.avg_x10, 600);
         assert!(!session.series.is_empty());
         assert!(session.series_step_ms >= 1);
@@ -452,8 +483,8 @@ mod tests {
 
     #[test]
     fn a_session_too_short_to_describe_is_discarded() {
-        assert_eq!(build_session(1, &[sample(600, Some("com.game"))]), None);
-        assert_eq!(build_session(1, &[]), None);
+        assert_eq!(build_session(&[sample(1_000, 600, Some("com.game"))]), None);
+        assert_eq!(build_session(&[]), None);
     }
 
     #[test]
@@ -476,9 +507,14 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let path = directory.join(FILE_NAME);
 
-        let samples = [sample(600, Some("com.game")), sample(600, Some("com.game"))];
+        let mut samples = [
+            sample(0, 600, Some("com.game")),
+            sample(500, 600, Some("com.game")),
+        ];
         for id in 0..(MAX_SESSIONS as u64 + 5) {
-            let session = build_session(id, &samples).expect("session");
+            samples[0].at_ms = id;
+            samples[1].at_ms = id + 500;
+            let session = build_session(&samples).expect("session");
             append_session(&path, &session).expect("append");
         }
         let stored = read_sessions(&path);
@@ -487,6 +523,10 @@ mod tests {
         assert_eq!(stored[0].id, 5);
         assert_eq!(stored[stored.len() - 1].id, (MAX_SESSIONS + 4) as u64);
         assert_eq!(stored[0].package, "com.game");
+        // Trimming rewrites the file; it must not relax the 0600 mode.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&path).expect("metadata").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
 
         let _ = fs::remove_dir_all(&directory);
     }

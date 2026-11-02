@@ -59,7 +59,7 @@ class FpsSession {
       slowPercent: ((json['slowPctX10'] as num?)?.toDouble() ?? 0) / 10,
       series: <double>[
         for (final dynamic value in rawSeries)
-          ((value as num?)?.toDouble() ?? 0) / 10,
+          value is num ? value.toDouble() / 10 : 0,
       ],
       seriesStep: Duration(
         milliseconds: (json['seriesStepMs'] as num?)?.toInt() ?? 0,
@@ -67,7 +67,7 @@ class FpsSession {
     );
   }
 
-  static double _tenths(Object? raw) => ((raw as num?)?.toDouble() ?? 0) / 10;
+  static double _tenths(Object? raw) => raw is num ? raw.toDouble() / 10 : 0;
 
   /// A daemon that only knows the string form must not produce a game called
   /// "null" in the history list.
