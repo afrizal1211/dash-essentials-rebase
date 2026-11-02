@@ -6,6 +6,23 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.18.28
+
+### Added
+
+- FPS recording: "Record FPS sessions" in Settings arms a sampler in the
+  daemon that reads the foreground frame rate twice a second until it is
+  turned off. Recording is independent of the overlay.
+- FPS history: sessions are grouped by game and kept across restarts, with
+  average, minimum, maximum, 1% low and slow-sample share, plus a hand-painted
+  frame-rate graph. A running session can be stopped and saved from here, and
+  any session exports to the clipboard as CSV.
+- A session labelled by the package that contributed the most samples, so a
+  recording started in Settings is filed under the game that followed rather
+  than under Dash.
+- The daemon keeps the newest 200 sessions in `fps_sessions.jsonl` beside its
+  other state, capped at an hour of samples per session.
+
 ## 1.18.27
 
 ### Fixed
