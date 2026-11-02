@@ -493,6 +493,10 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         || command == "GET app.capabilities"
         || command == "GET app.list"
         || command == "GET app.fps"
+        || command == "GET app.fps.record"
+        || command == "GET app.fps.sessions"
+        || command.starts_with("SET app.fps.record ")
+        || command == "ACTION app.fps.clear"
         || command.starts_with("SET app.profile ")
         || command.starts_with("SET app.enabled ")
         || command.starts_with("ACTION app.reset ")

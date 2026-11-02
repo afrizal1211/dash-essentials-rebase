@@ -21,6 +21,7 @@ import 'fps_meter.dart';
 
 import 'backend/dash_backend.dart';
 import 'backend/per_app_backend.dart';
+import 'backend/fps_record_backend.dart';
 import 'backend/bypass_telemetry.dart';
 import 'bypass_threshold_selector.dart';
 import 'backend/system_colors_library.dart';
@@ -33,6 +34,7 @@ import 'surface_lines.dart';
 part 'system_colors.dart';
 part 'per_app_controls.dart';
 part 'diagnostics_logs.dart';
+part 'fps_history.dart';
 part 'easter_eggs.dart';
 part 'aurora_drift.dart';
 part 'subsystem_clocks.dart';
@@ -466,6 +468,7 @@ class _DashShellState extends State<DashShell>
       DashThemeController.setPreference(config.themePreference);
       _pushFpsOverlayStyle(config);
       _restoreFpsOverlay(config.fpsOverlay);
+      unawaited(_pushFpsRecording(config.fpsRecord));
     } catch (_) {
       // Appearance must never block app boot.
     }
@@ -608,6 +611,50 @@ class _DashShellState extends State<DashShell>
     _persistAppearance();
   }
 
+  void _setFpsRecord(bool value) {
+    _appearance.value = _appearance.value.copyWith(fpsRecord: value);
+    _persistAppearance();
+    unawaited(_pushFpsRecording(value, report: true));
+  }
+
+  /// The daemon owns the recording, so the saved switch is only a request. A
+  /// failed user toggle is rolled back instead of claiming a session that is
+  /// not running; the boot-time re-assert stays quiet.
+  Future<void> _pushFpsRecording(bool value, {bool report = false}) async {
+    try {
+      await FpsRecordBackend.instance.setRecording(value);
+    } catch (_) {
+      if (!report || !mounted) return;
+      _appearance.value = _appearance.value.copyWith(fpsRecord: !value);
+      _persistAppearance();
+      _fpsOverlayNotice(
+        value
+            ? 'FPS recording could not start. Is the daemon running?'
+            : 'FPS recording is still running; it could not be stopped.',
+      );
+    }
+  }
+
+  void _openFpsHistory() {
+    unawaited(
+      Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (BuildContext context) =>
+              ValueListenableBuilder<DashAppearanceConfig>(
+                valueListenable: _appearance,
+                builder:
+                    (
+                      BuildContext context,
+                      DashAppearanceConfig config,
+                      Widget? child,
+                    ) => DashAppearanceScope(config: config, child: child!),
+                child: FpsHistoryScreen(onStopped: () => _setFpsRecord(false)),
+              ),
+        ),
+      ),
+    );
+  }
+
   void _setCustomBackgroundPath(String path) {
     _appearance.value = _appearance.value.copyWith(
       backgroundStyle: DashBackgroundStyle.custom,
@@ -639,6 +686,10 @@ class _DashShellState extends State<DashShell>
     if (_appearance.value.fpsOverlay) {
       _fpsOverlayPending = false;
       DashBackend.instance.setFpsOverlay(false);
+    }
+
+    if (_appearance.value.fpsRecord) {
+      unawaited(_pushFpsRecording(false));
     }
 
     DashThemeController.setPreference(defaults.themePreference);
@@ -896,6 +947,8 @@ class _DashShellState extends State<DashShell>
                   onFpsOverlayRadiusChanged: _setFpsOverlayRadius,
                   onFpsOverlayPerGamePositionChanged:
                       _setFpsOverlayPerGamePosition,
+                  onFpsRecordChanged: _setFpsRecord,
+                  onOpenFpsHistory: _openFpsHistory,
                 );
               },
         );
@@ -1142,6 +1195,7 @@ class DashAppearanceConfig {
     this.fpsOverlayOpacity = 0.85,
     this.fpsOverlayRadius = 10.0,
     this.fpsOverlayPerGamePosition = true,
+    this.fpsRecord = false,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1159,7 +1213,8 @@ class DashAppearanceConfig {
       fpsOverlayScale = 1.0,
       fpsOverlayOpacity = 0.85,
       fpsOverlayRadius = 10.0,
-      fpsOverlayPerGamePosition = true;
+      fpsOverlayPerGamePosition = true,
+      fpsRecord = false;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1176,6 +1231,7 @@ class DashAppearanceConfig {
   final double fpsOverlayOpacity;
   final double fpsOverlayRadius;
   final bool fpsOverlayPerGamePosition;
+  final bool fpsRecord;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1215,6 +1271,7 @@ class DashAppearanceConfig {
     double? fpsOverlayOpacity,
     double? fpsOverlayRadius,
     bool? fpsOverlayPerGamePosition,
+    bool? fpsRecord,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1233,6 +1290,7 @@ class DashAppearanceConfig {
       fpsOverlayRadius: fpsOverlayRadius ?? this.fpsOverlayRadius,
       fpsOverlayPerGamePosition:
           fpsOverlayPerGamePosition ?? this.fpsOverlayPerGamePosition,
+      fpsRecord: fpsRecord ?? this.fpsRecord,
     );
   }
 
@@ -1253,6 +1311,7 @@ class DashAppearanceConfig {
       'fpsOverlayOpacity': fpsOverlayOpacity,
       'fpsOverlayRadius': fpsOverlayRadius,
       'fpsOverlayPerGamePosition': fpsOverlayPerGamePosition,
+      'fpsRecord': fpsRecord,
     };
   }
 
@@ -1296,6 +1355,7 @@ class DashAppearanceConfig {
         );
     final bool fpsOverlayPerGamePosition =
         raw['fpsOverlayPerGamePosition'] as bool? ?? true;
+    final bool fpsRecord = raw['fpsRecord'] as bool? ?? false;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1313,6 +1373,7 @@ class DashAppearanceConfig {
       fpsOverlayOpacity: fpsOverlayOpacity,
       fpsOverlayRadius: fpsOverlayRadius,
       fpsOverlayPerGamePosition: fpsOverlayPerGamePosition,
+      fpsRecord: fpsRecord,
     );
   }
 }
@@ -1885,6 +1946,8 @@ class SettingsScreen extends StatefulWidget {
     required this.onFpsOverlayOpacityChanged,
     required this.onFpsOverlayRadiusChanged,
     required this.onFpsOverlayPerGamePositionChanged,
+    required this.onFpsRecordChanged,
+    required this.onOpenFpsHistory,
     super.key,
   });
 
@@ -1907,6 +1970,8 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<double> onFpsOverlayOpacityChanged;
   final ValueChanged<double> onFpsOverlayRadiusChanged;
   final ValueChanged<bool> onFpsOverlayPerGamePositionChanged;
+  final ValueChanged<bool> onFpsRecordChanged;
+  final VoidCallback onOpenFpsHistory;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -2587,6 +2652,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 value: config.fpsOverlayPerGamePosition,
                 onChanged: widget.onFpsOverlayPerGamePositionChanged,
+              ),
+              const Divider(height: 20),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Record FPS sessions'),
+                subtitle: const Text(
+                  'Sample the foreground frame rate until you turn this off, '
+                  'then keep the session in FPS history.',
+                ),
+                value: config.fpsRecord,
+                onChanged: (bool enabled) {
+                  widget.onFpsRecordChanged(enabled);
+                  DashHaptics.tap();
+                },
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('FPS history'),
+                subtitle: const Text(
+                  'Per-game sessions with averages, 1% lows and a graph.',
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
+                onTap: widget.onOpenFpsHistory,
               ),
             ],
           ),

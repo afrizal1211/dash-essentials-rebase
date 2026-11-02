@@ -19,6 +19,7 @@ mod bypass_policy;
 mod diagnostics;
 mod foreground_app;
 mod foreground_fps;
+mod fps_record;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;
@@ -6080,6 +6081,7 @@ pub fn start_background_services() {
     let _ = persisted_state();
     subsystem_clocks::start();
     app_runtime::start();
+    fps_record::start();
     // The v1.18.0 1000 Hz profile waits for this worker to attach to the
     // TouchFeature event stream, so it must be ready before state restoration.
     touch_resampler::start_background();

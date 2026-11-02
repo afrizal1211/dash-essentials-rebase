@@ -488,7 +488,7 @@ fn battery_temp_deci_c() -> i32 {
 /// Reads the foreground FPS once, together with the package it belongs to.
 /// Never blocks on the runtime lock and never invents a value when no node
 /// answers.
-fn read_with_package() -> (FpsReading, Option<String>) {
+pub(super) fn read_with_package() -> (FpsReading, Option<String>) {
     let foreground = foreground_package();
     let reading = read_for(foreground.as_deref());
     (reading, foreground)

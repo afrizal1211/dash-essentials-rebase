@@ -983,6 +983,10 @@ pub(super) fn is_command(cmd: &str) -> bool {
         || cmd == "GET app.capabilities"
         || cmd == "GET app.list"
         || cmd == "GET app.fps"
+        || cmd == "GET app.fps.record"
+        || cmd == "GET app.fps.sessions"
+        || cmd.starts_with("SET app.fps.record ")
+        || cmd == "ACTION app.fps.clear"
         || cmd.starts_with("SET app.profile ")
         || cmd.starts_with("SET app.enabled ")
         || cmd.starts_with("ACTION app.reset ")
@@ -994,6 +998,28 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
         // never wait behind a profile transition. The snapshot carries the
         // frame reading plus the sensors the overlay prints beside it.
         return Ok(super::foreground_fps::overlay_json());
+    }
+    // Recording never touches the per-app runtime, so it is served before the
+    // runtime lock: a settings poll or a toggle must not wait for a profile
+    // transition.
+    if cmd == "GET app.fps.record" {
+        return Ok(super::fps_record::live_json());
+    }
+    if cmd == "GET app.fps.sessions" {
+        return Ok(super::fps_record::sessions_json());
+    }
+    if let Some(raw) = cmd.strip_prefix("SET app.fps.record ") {
+        let active = match raw {
+            "1" => true,
+            "0" => false,
+            _ => return Err("invalid FPS recording switch".into()),
+        };
+        super::fps_record::set_active(active);
+        return Ok(super::fps_record::live_json());
+    }
+    if cmd == "ACTION app.fps.clear" {
+        let cleared = super::fps_record::clear()?;
+        return Ok(json!({"cleared": cleared}));
     }
     if cmd == "GET app.capabilities" {
         return capabilities_json();
@@ -1621,6 +1647,20 @@ mod tests {
                 assert!(field.as_i64().is_some(), "{key} must stay numeric");
             }
         }
+    }
+
+    #[test]
+    fn fps_recording_commands_are_routed() {
+        assert!(is_command("GET app.fps.record"));
+        assert!(is_command("GET app.fps.sessions"));
+        assert!(is_command("SET app.fps.record 1"));
+        assert!(is_command("SET app.fps.record 0"));
+        assert!(is_command("ACTION app.fps.clear"));
+        let live = command("GET app.fps.record").expect("recording status");
+        assert!(live.get("active").and_then(Value::as_bool).is_some());
+        assert!(live.get("samples").and_then(Value::as_u64).is_some());
+        let sessions = command("GET app.fps.sessions").expect("session list");
+        assert!(sessions.as_array().is_some());
     }
 
     /// An unknown journal entry must not stop the others from being restored.
