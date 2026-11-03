@@ -157,13 +157,13 @@ The port's own changes are at the top.
 
 - Module and application build in GitHub Actions on every release tag, signed
   with the recorded release certificate and published with its checksum.
-- Release codename kept at **Iapetus**.
+- Release codename kept at **Cerberus**.
 
 ## 1.18.21
 
 ### Changed
 
-- Release codename updated to **Iapetus** (moon of Saturn).
+- Release codename updated to **Cerberus** (mythological guardian).
 - Touch HAL rework: removed dead `apply_dash_touch_hal_profile` path; Dash branch
   now calls the real Xiaomi TouchFeature HAL sequence (game mode, active mode,
   response calibration, super-report) so vendor modes reach
