@@ -2,6 +2,8 @@ package io.github.neeschal.dashessential;
 
 import android.Manifest;
 import android.app.NativeActivity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -9,11 +11,16 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.MediaStore;
 import android.provider.Settings;
+import android.widget.Toast;
 import android.window.BackEvent;
 import android.window.OnBackAnimationCallback;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
+
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 
 /** NEESCHAL: a platform adapter, not a second UI toolkit. */
 public final class DashActivity extends NativeActivity {
@@ -71,6 +78,63 @@ public final class DashActivity extends NativeActivity {
         startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
             Uri.parse("package:" + getPackageName())));
     }
+    /** Native export bridge: writes one FPS session's CSV and graph PNG to
+        public storage via MediaStore, then shows a Prism-style toast. */
+    public void saveFpsExport(String csv, byte[] png) {
+        ContentResolver resolver = getContentResolver();
+        String csvPath = null;
+        String pngPath = null;
+        try {
+            csvPath = writeMedia(resolver,
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                "fps_export.csv", "text/csv", "RedFox/FpsRecord/",
+                csv.getBytes(StandardCharsets.UTF_8));
+        } catch (Exception ignored) {
+            // The PNG may still save even if the CSV does not.
+        }
+        try {
+            if (png != null && png.length > 0) {
+                long now = System.currentTimeMillis();
+                pngPath = writeMedia(resolver,
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    "fps_graph_" + now + ".png", "image/png", "RedFox/FPSRecord/",
+                    png);
+            }
+        } catch (Exception ignored) {
+        }
+        String message;
+        if (csvPath != null && pngPath != null) {
+            message = "FPS record saved at " + pngPath + " and CSV at " + csvPath;
+        } else if (csvPath != null) {
+            message = "FPS data exported to CSV";
+        } else if (pngPath != null) {
+            message = "FPS record saved at " + pngPath;
+        } else {
+            message = "The export could not be saved.";
+        }
+        main.post(() -> Toast.makeText(this, message, Toast.LENGTH_LONG).show());
+    }
+
+    private String writeMedia(ContentResolver resolver, Uri collection,
+            String displayName, String mimeType, String relativePath,
+            byte[] data) throws Exception {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.MediaColumns.DISPLAY_NAME, displayName);
+        values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        Uri uri = resolver.insert(collection, values);
+        if (uri == null) return null;
+        try (OutputStream out = resolver.openOutputStream(uri)) {
+            if (out == null) return null;
+            out.write(data);
+        }
+        ContentValues release = new ContentValues();
+        release.put(MediaStore.MediaColumns.IS_PENDING, 0);
+        resolver.update(uri, release, null, null);
+        return uri.toString();
+    }
+
     /** Called only when native navigation ownership changes; no polling loop. */
     public static void refreshBackFromNative() {
         DashActivity activity = current;

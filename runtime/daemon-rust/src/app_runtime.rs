@@ -986,6 +986,9 @@ pub(super) fn is_command(cmd: &str) -> bool {
         || cmd == "GET app.fps.record"
         || cmd == "GET app.fps.sessions"
         || cmd.starts_with("SET app.fps.record ")
+        || cmd.starts_with("SET app.fps.auto ")
+        || cmd.starts_with("SET app.fps.note ")
+        || cmd.starts_with("ACTION app.fps.delete ")
         || cmd == "ACTION app.fps.clear"
         || cmd.starts_with("SET app.profile ")
         || cmd.starts_with("SET app.enabled ")
@@ -1016,6 +1019,33 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
         };
         super::fps_record::set_active(active);
         return Ok(super::fps_record::live_json());
+    }
+    if let Some(raw) = cmd.strip_prefix("SET app.fps.auto ") {
+        let active = match raw {
+            "1" => true,
+            "0" => false,
+            _ => return Err("invalid FPS auto-recording switch".into()),
+        };
+        return super::fps_record::set_auto(active);
+    }
+    if let Some(raw) = cmd.strip_prefix("SET app.fps.note ") {
+        let (id, note) = raw
+            .split_once(' ')
+            .ok_or_else(|| "FPS note needs a session and a JSON string".to_string())?;
+        let id = id
+            .parse::<u64>()
+            .map_err(|_| "invalid FPS session id".to_string())?;
+        let note: String =
+            serde_json::from_str(note).map_err(|_| "invalid FPS note text".to_string())?;
+        let updated = super::fps_record::set_note(id, &note)?;
+        return Ok(json!({"updated": updated}));
+    }
+    if let Some(raw) = cmd.strip_prefix("ACTION app.fps.delete ") {
+        let id = raw
+            .parse::<u64>()
+            .map_err(|_| "invalid FPS session id".to_string())?;
+        let deleted = super::fps_record::delete(id)?;
+        return Ok(json!({"deleted": deleted}));
     }
     if cmd == "ACTION app.fps.clear" {
         let cleared = super::fps_record::clear()?;
@@ -1655,6 +1685,9 @@ mod tests {
         assert!(is_command("GET app.fps.sessions"));
         assert!(is_command("SET app.fps.record 1"));
         assert!(is_command("SET app.fps.record 0"));
+        assert!(is_command("SET app.fps.auto 1"));
+        assert!(is_command("SET app.fps.note 1 \"boss\""));
+        assert!(is_command("ACTION app.fps.delete 1"));
         assert!(is_command("ACTION app.fps.clear"));
         let live = command("GET app.fps.record").expect("recording status");
         assert!(live.get("active").and_then(Value::as_bool).is_some());

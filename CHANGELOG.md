@@ -6,6 +6,36 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.19.0
+
+### Added
+
+- FPS recording: RedFox Prism parity. The session detail now shows 5% low,
+  variance, relative smoothness (samples within ten percent of the average),
+  jitter %, 99% frame time and jank count (frames slower than 1.5× the mean
+  frame time), alongside max/min/average and 1% low.
+- FPS recording: per-session description/notes, edit, delete one session, and
+  clear-all-history.
+- FPS recording: save the graph as a PNG and export the session CSV to public
+  storage (MediaStore) from the detail screen, in addition to clipboard copy.
+- A Quick Settings tile ("Record FPS") that starts and stops manual recording
+  and reflects the daemon state.
+- Hardware telemetry recorded with every sample: CPU load/MHz, GPU load/MHz,
+  battery temperature/level/power, CPU/GPU thermal-zone temperature, system
+  and package RAM, and resolution. Each session stores downsampled series for
+  graphing plus averages and maximums.
+- Auto-record: automatically starts a session when a foreground game appears
+  and saves it when the app leaves, requiring two consecutive samples; launchers,
+  system UI/settings/permission/installer and Dash itself are excluded.
+- New commands `SET app.fps.auto`, `SET app.fps.note` and `ACTION app.fps.delete`.
+
+### Changed
+
+- FPS sessions store Prism-style stats and telemetry series; old JSONL rows
+  without the new fields still load (`#[serde(default)]`).
+- The FPS history graph can switch between FPS, frame time, CPU/GPU load, GPU
+  MHz, battery temperature, power and RAM series.
+
 ## 1.18.29
 
 ### Fixed

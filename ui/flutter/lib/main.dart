@@ -469,6 +469,7 @@ class _DashShellState extends State<DashShell>
       _pushFpsOverlayStyle(config);
       _restoreFpsOverlay(config.fpsOverlay);
       unawaited(_pushFpsRecording(config.fpsRecord));
+      unawaited(_pushFpsAuto(config.fpsAuto));
     } catch (_) {
       // Appearance must never block app boot.
     }
@@ -633,6 +634,23 @@ class _DashShellState extends State<DashShell>
             : 'FPS recording is still running; it could not be stopped.',
       );
     }
+  }
+
+  /// The daemon owns auto-record, so the saved switch is only a request. The
+  /// daemon persists its own `fps_auto` file and reads it on start, so this is
+  /// mainly a boot-time re-assert that keeps the Quick Settings tile in sync.
+  Future<void> _pushFpsAuto(bool value) async {
+    try {
+      await FpsRecordBackend.instance.setAuto(value);
+    } catch (_) {
+      // Auto-record is best effort; the tile still reflects daemon state.
+    }
+  }
+
+  void _setFpsAuto(bool value) {
+    _appearance.value = _appearance.value.copyWith(fpsAuto: value);
+    _persistAppearance();
+    unawaited(_pushFpsAuto(value));
   }
 
   void _openFpsHistory() {
@@ -948,6 +966,7 @@ class _DashShellState extends State<DashShell>
                   onFpsOverlayPerGamePositionChanged:
                       _setFpsOverlayPerGamePosition,
                   onFpsRecordChanged: _setFpsRecord,
+                  onFpsAutoChanged: _setFpsAuto,
                   onOpenFpsHistory: _openFpsHistory,
                 );
               },
@@ -1196,6 +1215,7 @@ class DashAppearanceConfig {
     this.fpsOverlayRadius = 10.0,
     this.fpsOverlayPerGamePosition = true,
     this.fpsRecord = false,
+    this.fpsAuto = false,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1214,7 +1234,8 @@ class DashAppearanceConfig {
       fpsOverlayOpacity = 0.85,
       fpsOverlayRadius = 10.0,
       fpsOverlayPerGamePosition = true,
-      fpsRecord = false;
+      fpsRecord = false,
+      fpsAuto = false;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1232,6 +1253,9 @@ class DashAppearanceConfig {
   final double fpsOverlayRadius;
   final bool fpsOverlayPerGamePosition;
   final bool fpsRecord;
+
+  /// Automatic recording follows the foreground app instead of the switch.
+  final bool fpsAuto;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1272,6 +1296,7 @@ class DashAppearanceConfig {
     double? fpsOverlayRadius,
     bool? fpsOverlayPerGamePosition,
     bool? fpsRecord,
+    bool? fpsAuto,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1291,6 +1316,7 @@ class DashAppearanceConfig {
       fpsOverlayPerGamePosition:
           fpsOverlayPerGamePosition ?? this.fpsOverlayPerGamePosition,
       fpsRecord: fpsRecord ?? this.fpsRecord,
+      fpsAuto: fpsAuto ?? this.fpsAuto,
     );
   }
 
@@ -1312,6 +1338,7 @@ class DashAppearanceConfig {
       'fpsOverlayRadius': fpsOverlayRadius,
       'fpsOverlayPerGamePosition': fpsOverlayPerGamePosition,
       'fpsRecord': fpsRecord,
+      'fpsAuto': fpsAuto,
     };
   }
 
@@ -1356,6 +1383,7 @@ class DashAppearanceConfig {
     final bool fpsOverlayPerGamePosition =
         raw['fpsOverlayPerGamePosition'] as bool? ?? true;
     final bool fpsRecord = raw['fpsRecord'] as bool? ?? false;
+    final bool fpsAuto = raw['fpsAuto'] as bool? ?? false;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1374,6 +1402,7 @@ class DashAppearanceConfig {
       fpsOverlayRadius: fpsOverlayRadius,
       fpsOverlayPerGamePosition: fpsOverlayPerGamePosition,
       fpsRecord: fpsRecord,
+      fpsAuto: fpsAuto,
     );
   }
 }
@@ -1947,6 +1976,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onFpsOverlayRadiusChanged,
     required this.onFpsOverlayPerGamePositionChanged,
     required this.onFpsRecordChanged,
+    required this.onFpsAutoChanged,
     required this.onOpenFpsHistory,
     super.key,
   });
@@ -1971,6 +2001,7 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<double> onFpsOverlayRadiusChanged;
   final ValueChanged<bool> onFpsOverlayPerGamePositionChanged;
   final ValueChanged<bool> onFpsRecordChanged;
+  final ValueChanged<bool> onFpsAutoChanged;
   final VoidCallback onOpenFpsHistory;
 
   @override
@@ -2664,6 +2695,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: config.fpsRecord,
                 onChanged: (bool enabled) {
                   widget.onFpsRecordChanged(enabled);
+                  DashHaptics.tap();
+                },
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Auto-record games'),
+                subtitle: const Text(
+                  'Start a session when a game comes to the foreground and '
+                  'save it when the app leaves.',
+                ),
+                value: config.fpsAuto,
+                onChanged: (bool enabled) {
+                  widget.onFpsAutoChanged(enabled);
                   DashHaptics.tap();
                 },
               ),

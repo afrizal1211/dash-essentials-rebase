@@ -273,3 +273,67 @@ pub extern "system" fn Java_io_github_neeschal_dashessential_BypassTileService_n
     }
     dash_backend_set_bypass_charging(1 - saved) as jboolean
 }
+
+/// Snapshot of FPS recording state for the Quick Settings tile.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_FpsRecordTileService_nativeState(
+    _: JNIEnv,
+    _: JClass,
+) -> jint {
+    super::backend_bridge::fps_record_state() as jint
+}
+
+/// Toggle manual FPS recording from the Quick Settings tile.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_FpsRecordTileService_nativeToggle(
+    _: JNIEnv,
+    _: JClass,
+) -> jboolean {
+    super::backend_bridge::fps_record_toggle() as jboolean
+}
+
+/// Writes one FPS export (CSV plus an optional graph PNG) to public storage
+/// through `DashActivity.saveFpsExport`. Returns 1 when the activity saved
+/// both files and showed the toast, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_export_save(
+    csv_ptr: *const u8,
+    csv_len: i32,
+    png_ptr: *const u8,
+    png_len: i32,
+) -> i32 {
+    let Some(activity) = ACTIVITY.get() else {
+        return 0;
+    };
+    let guard = activity.lock().unwrap();
+    let Some((vm, reference)) = guard.as_ref() else {
+        return 0;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return 0;
+    };
+    let csv = unsafe { std::slice::from_raw_parts(csv_ptr, csv_len.max(0) as usize) };
+    let png = unsafe { std::slice::from_raw_parts(png_ptr, png_len.max(0) as usize) };
+    let result = env.with_local_frame(16, |env| -> jni::errors::Result<i32> {
+        let csv_jstring = env.new_string(String::from_utf8_lossy(csv))?;
+        let png_array = env.byte_array_from_slice(png)?;
+        env.call_method(
+            reference.as_obj(),
+            "saveFpsExport",
+            "(Ljava/lang/String;[B)V",
+            &[
+                jni::objects::JValue::Object(&csv_jstring),
+                jni::objects::JValue::Object(&png_array),
+            ],
+        )?;
+        Ok(1)
+    });
+    match result {
+        Ok(code) => code,
+        Err(error) => {
+            super::log_str(&format!("DASH_HOST_EXPORT_SAVE {error}"));
+            let _ = env.exception_clear();
+            0
+        }
+    }
+}

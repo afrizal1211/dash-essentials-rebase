@@ -496,6 +496,9 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         || command == "GET app.fps.record"
         || command == "GET app.fps.sessions"
         || command.starts_with("SET app.fps.record ")
+        || command.starts_with("SET app.fps.auto ")
+        || command.starts_with("SET app.fps.note ")
+        || command.starts_with("ACTION app.fps.delete ")
         || command == "ACTION app.fps.clear"
         || command.starts_with("SET app.profile ")
         || command.starts_with("SET app.enabled ")
@@ -1920,6 +1923,39 @@ pub extern "C" fn dash_backend_extended_set(op: i32, a: i32, b: i32) -> i32 {
         return accepted;
     }
     send(Command::Extended(op, a, b))
+}
+
+/// Bit-packed FPS recording state for the Quick Settings tile:
+/// bit 0 = manual recording active, bit 1 = auto-record armed.
+pub fn fps_record_state() -> i32 {
+    let Ok(body) = request("GET app.fps.record") else {
+        return 0;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return 0;
+    };
+    let mut state = 0i32;
+    if value.get("active").and_then(|v| v.as_bool()) == Some(true) {
+        state |= 1;
+    }
+    if value.get("auto").and_then(|v| v.as_bool()) == Some(true) {
+        state |= 2;
+    }
+    state
+}
+
+/// Toggles manual FPS recording from the Quick Settings tile. Starting a
+/// manual session disables auto-record; the daemon enforces the same rule.
+pub fn fps_record_toggle() -> i32 {
+    let state = fps_record_state();
+    let active = state & 1;
+    let auto = state & 2;
+    let new_active = 1 - active;
+    if new_active == 1 && auto != 0 {
+        let _ = request("SET app.fps.auto 0");
+    }
+    let _ = request(&format!("SET app.fps.record {new_active}"));
+    new_active
 }
 
 #[cfg(test)]

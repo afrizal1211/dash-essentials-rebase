@@ -23,6 +23,7 @@ mod fps_record;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;
+mod telemetry;
 mod touch_resampler;
 
 pub const SOCKET_NAME: &str = "dash_essentiald_v15";
