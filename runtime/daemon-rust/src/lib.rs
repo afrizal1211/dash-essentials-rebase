@@ -20,6 +20,7 @@ mod diagnostics;
 mod foreground_app;
 mod foreground_fps;
 mod fps_record;
+mod profile_manager;
 mod service_control;
 mod subsystem_clocks;
 mod system_colors;
@@ -2177,6 +2178,18 @@ pub fn enforce_performance_profile(profile: i32) -> bool {
             let _ = service_control::write("/sys/module/ged/parameters/boost_gpu_enable", "0");
             let _ = service_control::write("/sys/module/ged/parameters/ged_smart_boost", "0");
         }
+    }
+
+    // Adaptive CPU scaling for performance profiles that carry a thermal
+    // bias (Extreme Beast and Gaming Dynamic). GPU stays uncapped – the
+    // profile logic above already pins the GPU to its top operating point for
+    // those profiles.
+    if matches!(profile, 1 | 3) {
+        let bias = if profile == 3 { 1.0 } else { 0.85 };
+        let telemetry = telemetry::sample(None);
+        let config = crate::profile_manager::compute_profile(&telemetry, bias);
+        let max_mhz = (config.cpu_target_khz / 1000) as i32;
+        let _ = set_cpu_cluster_max_freq(0, max_mhz);
     }
 
     gpu_profile_verified(profile)

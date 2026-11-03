@@ -29,6 +29,14 @@ pub(super) struct Telemetry {
     pub ram_used_mb: i32,
     pub swap_used_mb: i32,
     pub package_ram_mb: i32,
+    pub cpu_core_count: u32,
+    pub cpu_max_freq_khz: u32,
+    pub cpu_cur_freq_khz: u32,
+    pub gpu_core_count: u32,
+    pub gpu_max_freq_khz: u32,
+    pub gpu_cur_freq_khz: u32,
+    pub max_safe_temp_c: Option<u32>,
+    pub min_operating_temp_c: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -48,6 +56,56 @@ fn read_number(path: &Path) -> Option<i64> {
         .trim()
         .parse::<i64>()
         .ok()
+}
+
+fn read_dt_max_temp() -> Option<u32> {
+    const DT_PATH: &str = "/sys/firmware/devicetree/base/thermal-zones/cpu/max-temp";
+    std::fs::read_to_string(DT_PATH)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+}
+
+fn cpu_core_count() -> u32 {
+    let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") else {
+        return 0;
+    };
+    text.lines().filter(|l| l.starts_with("processor")).count() as u32
+}
+
+fn cpu_max_freq_khz() -> u32 {
+    let mut max_khz = 0u32;
+    for cpu in 0..16 {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/scaling_max_freq");
+        if let Some(value) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            && value > max_khz
+        {
+            max_khz = value;
+        }
+    }
+    max_khz
+}
+
+fn cpu_cur_freq_khz() -> u32 {
+    std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+fn gpu_core_count() -> u32 {
+    1
+}
+
+fn gpu_max_freq_khz() -> u32 {
+    (crate::gpu_get_max_freq_mhz() as u32) * 1000
+}
+
+fn gpu_cur_freq_khz() -> u32 {
+    (crate::gpu_get_cur_freq_mhz() as u32) * 1000
 }
 
 fn read_trimmed(path: &Path) -> Option<String> {
@@ -327,6 +385,14 @@ pub(super) fn sample(package: Option<&str>) -> Telemetry {
         ram_used_mb: (memory.total_mb - memory.available_mb).max(0),
         swap_used_mb: (memory.swap_total_mb - memory.swap_free_mb).max(0),
         package_ram_mb: package_ram_mb(package.unwrap_or("")),
+        cpu_core_count: cpu_core_count(),
+        cpu_max_freq_khz: cpu_max_freq_khz(),
+        cpu_cur_freq_khz: cpu_cur_freq_khz(),
+        gpu_core_count: gpu_core_count(),
+        gpu_max_freq_khz: gpu_max_freq_khz(),
+        gpu_cur_freq_khz: gpu_cur_freq_khz(),
+        max_safe_temp_c: read_dt_max_temp().or(Some(85)),
+        min_operating_temp_c: 30,
     }
 }
 
