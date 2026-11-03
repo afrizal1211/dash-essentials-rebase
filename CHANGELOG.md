@@ -6,6 +6,14 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.20.0
+
+### Added
+
+- Adaptive CPU scaling for the Extreme Beats and Dynamic Gaming profiles,
+  driven by thermal headroom, CPU core count and a profile bias. GPU remains
+  uncapped at the hardware maximum for these profiles.
+
 ## 1.19.0
 
 ### Added
