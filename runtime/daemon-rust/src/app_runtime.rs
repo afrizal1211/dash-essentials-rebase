@@ -695,6 +695,13 @@ fn capabilities_json() -> Result<Value, String> {
         json!({"touch":caps.touch,"gpu":caps.gpu,"refresh":caps.refresh,"cpu":cpu,"cores":caps.manual_cores}),
     )
 }
+/// The package currently in the foreground, resolved the same way the per-app
+/// runtime resolves it. FPS recording uses this so a session is labelled with
+/// the game even when the accessibility tracker is stale or not installed.
+pub(super) fn foreground_package() -> Option<String> {
+    foreground().ok().flatten().map(|app| app.package)
+}
+
 fn foreground() -> Result<Option<App>, String> {
     // First try the AccessibilityService-based tracker (more efficient)
     if let Some(info) = crate::foreground_app::ForegroundAppTracker::global().current_app()

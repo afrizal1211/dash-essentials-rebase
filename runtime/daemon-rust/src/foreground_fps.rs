@@ -462,12 +462,15 @@ fn read_render_threads(foreground: Option<&str>) -> Option<FpsReading> {
     })
 }
 
-/// The package currently in front, when the accessibility tracker knows it.
+/// The package currently in front. The accessibility tracker answers first;
+/// the per-app runtime's dumpsys resolution covers a tracker that is stale or
+/// not installed, so sessions keep the game's package instead of "Unknown app".
 fn foreground_package() -> Option<String> {
     crate::foreground_app::ForegroundAppTracker::global()
         .current_app()
         .filter(|info| info.is_valid())
         .map(|info| info.package_name)
+        .or_else(crate::app_runtime::foreground_package)
 }
 
 /// The fastest online CPU in MHz. The overlay shows one clock, not eight; the
