@@ -206,6 +206,8 @@ final class DashBackend {
   late _I32Dart _consumeBackRequestNative;
   _I32Dart? _consumeBackGestureNative;
   _I32Dart? _consumeBypassSettingsNative;
+  _I32Dart? _consumeFpsRecordOpenNative;
+  _SetI32Dart? _statusNotificationNative;
   _BackListenerDart? _setBackListenerNative;
   _SetI32Dart? _fpsOverlayNative;
   _I32Dart? _fpsOverlayGrantedNative;
@@ -451,6 +453,16 @@ final class DashBackend {
           'dash_host_consume_bypass_settings_request',
         );
       }
+      if (lib.providesSymbol('dash_host_consume_fps_record_open_request')) {
+        _consumeFpsRecordOpenNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_consume_fps_record_open_request',
+        );
+      }
+      if (lib.providesSymbol('dash_host_status_notification')) {
+        _statusNotificationNative = lib.lookupFunction<_SetI32Native, _SetI32Dart>(
+          'dash_host_status_notification',
+        );
+      }
       if (lib.providesSymbol('dash_host_consume_back_gesture')) {
         _consumeBackGestureNative = lib.lookupFunction<_I32Native, _I32Dart>(
           'dash_host_consume_back_gesture',
@@ -674,6 +686,15 @@ final class DashBackend {
   int consumeBackGesture() => _consumeBackGestureNative?.call() ?? 0;
   bool consumeBypassSettingsRequest() =>
       _consumeBypassSettingsNative?.call() == 1;
+  bool consumeFpsRecordOpenRequest() =>
+      _consumeFpsRecordOpenNative?.call() == 1;
+
+  /// Starts or stops the status notification (screen time, deep sleep,
+  /// battery drain). Returns false when the activity bridge is not live.
+  bool setStatusNotification(bool enabled) {
+    if (!_started) return false;
+    return _statusNotificationNative?.call(enabled ? 1 : 0) == 1;
+  }
 
   bool listenBackGesture(void Function(int) onEvent) {
     stopBackGesture();

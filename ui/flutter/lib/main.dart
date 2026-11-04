@@ -385,6 +385,10 @@ class _DashShellState extends State<DashShell>
         setState(() => _bypassFocusRevision++);
         return;
       }
+      if (backend.consumeFpsRecordOpenRequest()) {
+        _openFpsHistory();
+        return;
+      }
       final packet = backend.consumeBackGesture();
       final requested = backend.consumeBackRequest();
       if (packet != 0) {
@@ -470,6 +474,9 @@ class _DashShellState extends State<DashShell>
       _restoreFpsOverlay(config.fpsOverlay);
       unawaited(_pushFpsRecording(config.fpsRecord));
       unawaited(_pushFpsAuto(config.fpsAuto));
+      if (config.statusNotification) {
+        DashBackend.instance.setStatusNotification(true);
+      }
     } catch (_) {
       // Appearance must never block app boot.
     }
@@ -651,6 +658,17 @@ class _DashShellState extends State<DashShell>
     _appearance.value = _appearance.value.copyWith(fpsAuto: value);
     _persistAppearance();
     unawaited(_pushFpsAuto(value));
+  }
+
+  void _setStatusNotification(bool value) {
+    final backend = DashBackend.instance;
+    final applied = backend.setStatusNotification(value);
+    if (!applied && value) {
+      _fpsOverlayNotice('The status notification could not start. Is the app running?');
+      return;
+    }
+    _appearance.value = _appearance.value.copyWith(statusNotification: value);
+    _persistAppearance();
   }
 
   void _openFpsHistory() {
@@ -968,6 +986,7 @@ class _DashShellState extends State<DashShell>
                   onFpsRecordChanged: _setFpsRecord,
                   onFpsAutoChanged: _setFpsAuto,
                   onOpenFpsHistory: _openFpsHistory,
+                  onStatusNotificationChanged: _setStatusNotification,
                 );
               },
         );
@@ -1216,6 +1235,7 @@ class DashAppearanceConfig {
     this.fpsOverlayPerGamePosition = true,
     this.fpsRecord = false,
     this.fpsAuto = false,
+    this.statusNotification = false,
   });
 
   const DashAppearanceConfig.defaults()
@@ -1235,7 +1255,8 @@ class DashAppearanceConfig {
       fpsOverlayRadius = 10.0,
       fpsOverlayPerGamePosition = true,
       fpsRecord = false,
-      fpsAuto = false;
+      fpsAuto = false,
+      statusNotification = false;
 
   final DashThemePreference themePreference;
   final DashBackgroundStyle backgroundStyle;
@@ -1256,6 +1277,9 @@ class DashAppearanceConfig {
 
   /// Automatic recording follows the foreground app instead of the switch.
   final bool fpsAuto;
+
+  /// Prism-style status notification: screen time, deep sleep, battery drain.
+  final bool statusNotification;
 
   static const List<Color> accents = <Color>[
     Color(0xFF59BCFF), // Electric Azure (Default)
@@ -1297,6 +1321,7 @@ class DashAppearanceConfig {
     bool? fpsOverlayPerGamePosition,
     bool? fpsRecord,
     bool? fpsAuto,
+    bool? statusNotification,
   }) {
     return DashAppearanceConfig(
       themePreference: themePreference ?? this.themePreference,
@@ -1317,6 +1342,7 @@ class DashAppearanceConfig {
           fpsOverlayPerGamePosition ?? this.fpsOverlayPerGamePosition,
       fpsRecord: fpsRecord ?? this.fpsRecord,
       fpsAuto: fpsAuto ?? this.fpsAuto,
+      statusNotification: statusNotification ?? this.statusNotification,
     );
   }
 
@@ -1339,6 +1365,7 @@ class DashAppearanceConfig {
       'fpsOverlayPerGamePosition': fpsOverlayPerGamePosition,
       'fpsRecord': fpsRecord,
       'fpsAuto': fpsAuto,
+      'statusNotification': statusNotification,
     };
   }
 
@@ -1384,6 +1411,7 @@ class DashAppearanceConfig {
         raw['fpsOverlayPerGamePosition'] as bool? ?? true;
     final bool fpsRecord = raw['fpsRecord'] as bool? ?? false;
     final bool fpsAuto = raw['fpsAuto'] as bool? ?? false;
+    final bool statusNotification = raw['statusNotification'] as bool? ?? false;
 
     return DashAppearanceConfig(
       themePreference: themePreference,
@@ -1403,6 +1431,7 @@ class DashAppearanceConfig {
       fpsOverlayPerGamePosition: fpsOverlayPerGamePosition,
       fpsRecord: fpsRecord,
       fpsAuto: fpsAuto,
+      statusNotification: statusNotification,
     );
   }
 }
@@ -1978,6 +2007,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onFpsRecordChanged,
     required this.onFpsAutoChanged,
     required this.onOpenFpsHistory,
+    required this.onStatusNotificationChanged,
     super.key,
   });
 
@@ -2003,6 +2033,7 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<bool> onFpsRecordChanged;
   final ValueChanged<bool> onFpsAutoChanged;
   final VoidCallback onOpenFpsHistory;
+  final ValueChanged<bool> onStatusNotificationChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -2708,6 +2739,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: config.fpsAuto,
                 onChanged: (bool enabled) {
                   widget.onFpsAutoChanged(enabled);
+                  DashHaptics.tap();
+                },
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Status notification'),
+                subtitle: const Text(
+                  'Screen on and off time, deep sleep share and battery '
+                  'drain in a persistent notification. Tap it to open FPS '
+                  'recording.',
+                ),
+                value: config.statusNotification,
+                onChanged: (bool enabled) {
+                  widget.onStatusNotificationChanged(enabled);
                   DashHaptics.tap();
                 },
               ),

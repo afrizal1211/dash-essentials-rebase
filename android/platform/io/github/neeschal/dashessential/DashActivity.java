@@ -48,13 +48,29 @@ public final class DashActivity extends NativeActivity {
     private void handleTileIntent(Intent intent) {
         if (intent != null && "android.service.quicksettings.action.QS_TILE_PREFERENCES".equals(intent.getAction()))
             nativeOpenBypassSettings();
+        if (intent != null && intent.getBooleanExtra("dash_open_fps_record", false)) {
+            // Consumed by the Dart side through the host bridge, which routes
+            // to the FPS recording screen.
+            consumeFpsRecordOpenRequest();
+        }
     }
+    /** Signals the Flutter UI to open the FPS recording screen. */
+    public void consumeFpsRecordOpenRequest() {
+        openFpsRecordFromNotification();
+    }
+    private static native void openFpsRecordFromNotification();
     // System overlay control. The service owns the window; the activity only
     // forwards the intent, so it can keep running after Dash is backgrounded.
     public int setFpsOverlay(boolean enabled) {
         int result = FpsOverlayService.setEnabled(this, enabled);
         if (result == 1 && enabled) requestOverlayNotificationPermission();
         return result;
+    }
+    /** Starts or stops the Prism-style status notification service. */
+    public int setStatusNotification(boolean enabled) {
+        DashStatusNotificationService.setEnabled(this, enabled);
+        if (enabled) requestOverlayNotificationPermission();
+        return 1;
     }
     // Android 13 hides foreground-service notifications when the user has not
     // allowed them. The overlay still runs, but the prompt keeps its stop path

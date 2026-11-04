@@ -81,6 +81,14 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="fps_overlay" />
         </service>
+        <service
+            android:name=".DashStatusNotificationService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="dash_status" />
+        </service>
         <!-- ForegroundDetectorService for app detection (RedFox Prism style) -->
         <service
             android:name="com.redfox.daemon.accessibility.ForegroundDetectorService"

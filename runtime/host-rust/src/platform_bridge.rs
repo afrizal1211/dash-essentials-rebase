@@ -13,6 +13,7 @@ use std::sync::{
 static ACTIVITY: OnceLock<Mutex<Option<(jni::JavaVM, jni::objects::GlobalRef)>>> = OnceLock::new();
 static BACK_EVENT: AtomicI32 = AtomicI32::new(0);
 static OPEN_BYPASS: AtomicI32 = AtomicI32::new(0);
+static OPEN_FPS_RECORD: AtomicI32 = AtomicI32::new(0);
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_nativeOpenBypassSettings(
@@ -24,6 +25,32 @@ pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_native
 #[unsafe(no_mangle)]
 pub extern "C" fn dash_host_consume_bypass_settings_request() -> i32 {
     OPEN_BYPASS.swap(0, Ordering::AcqRel)
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_openFpsRecordFromNotification(
+    _: JNIEnv,
+    _: JClass,
+) {
+    OPEN_FPS_RECORD.store(1, Ordering::Release);
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_consume_fps_record_open_request() -> i32 {
+    OPEN_FPS_RECORD.swap(0, Ordering::AcqRel)
+}
+
+/// Starts or stops the Prism-style status notification service.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_status_notification(enabled: i32) -> i32 {
+    with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            "setStatusNotification",
+            "(Z)I",
+            &[JValue::Bool(u8::from(enabled != 0))],
+        )?
+        .i()
+    })
+    .unwrap_or(0)
 }
 // Registration and invocation share the lock: Dart can safely unregister before
 // closing its callback, including when Android delivers a final lifecycle event.

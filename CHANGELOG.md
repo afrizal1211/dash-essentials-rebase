@@ -10,6 +10,13 @@ The port's own changes are at the top.
 
 ### Added
 
+- Status notification (RedFox Prism style): a persistent low-priority
+  notification showing screen on and off time, deep sleep share and battery
+  drain per hour, measured in the app process from screen broadcasts,
+  `/proc/uptime` versus `elapsedRealtime`, and BatteryManager properties.
+  Tapping it opens the FPS recording screen. Enabled from Settings →
+  "Status notification".
+
 - Adaptive CPU scaling diagnostics: `GET profile.scaling` reports the live
   profile, CPU target, thermal headroom, hysteresis mode and band, bias, and
   the sampled CPU telemetry. `SET perf.hysteresis <low> <high>` tunes the
