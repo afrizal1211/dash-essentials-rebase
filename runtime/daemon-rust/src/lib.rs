@@ -2104,6 +2104,23 @@ fn settle_beast_gpu_lock(attempts: usize, delay: Duration) -> bool {
     false
 }
 
+/// Last computed hysteresis mode for the current profile, so the next
+/// enforcement step can close the hysteresis loop without re-deriving state.
+fn cached_profile_mode(profile: i32) -> Option<crate::profile_manager::ProfileMode> {
+    static LAST: Mutex<Option<(i32, crate::profile_manager::ProfileMode)>> = Mutex::new(None);
+    let guard = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match guard.as_ref() {
+        Some((p, mode)) if *p == profile => Some(*mode),
+        _ => None,
+    }
+}
+
+fn store_profile_mode(profile: i32, mode: crate::profile_manager::ProfileMode) {
+    static LAST: Mutex<Option<(i32, crate::profile_manager::ProfileMode)>> = Mutex::new(None);
+    let mut guard = LAST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *guard = Some((profile, mode));
+}
+
 pub fn enforce_performance_profile(profile: i32) -> bool {
     if matches!(profile, 1 | 3) {
         clear_gpu_cooling_cap();
@@ -2185,11 +2202,22 @@ pub fn enforce_performance_profile(profile: i32) -> bool {
     // profile logic above already pins the GPU to its top operating point for
     // those profiles.
     if matches!(profile, 1 | 3) {
-        let bias = if profile == 3 { 1.0 } else { 0.85 };
+        let bias = if profile == 3 {
+            crate::profile_manager::BIAS_EXTREME_BEAST
+        } else {
+            crate::profile_manager::BIAS_DYNAMIC_GAMING
+        };
         let telemetry = telemetry::sample(None);
-        let config = crate::profile_manager::compute_profile(&telemetry, bias);
+        let prev = cached_profile_mode(profile);
+        let config = crate::profile_manager::compute_profile(&telemetry, bias, prev);
+        let headroom = config.headroom;
+        let mode = config.mode;
+        store_profile_mode(profile, mode);
         let max_mhz = (config.cpu_target_khz / 1000) as i32;
         let _ = set_cpu_cluster_max_freq(0, max_mhz);
+        eprintln!(
+            "DASH_PROFILE_ADAPTIVE profile={profile} cpu={max_mhz}MHz headroom={headroom:.2} mode={mode:?} bias={bias}"
+        );
     }
 
     gpu_profile_verified(profile)

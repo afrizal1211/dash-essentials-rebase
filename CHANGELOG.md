@@ -10,7 +10,7 @@ The port's own changes are at the top.
 
 ### Added
 
-- Adaptive CPU scaling for the Extreme Beats and Dynamic Gaming profiles,
+- Adaptive CPU scaling for the Extreme Beast and Gaming Dynamic profiles,
   driven by thermal headroom, CPU core count and a profile bias. GPU remains
   uncapped at the hardware maximum for these profiles.
 
