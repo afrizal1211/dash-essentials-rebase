@@ -46,3 +46,4 @@ perf-captures/
 # Locally built pinned Flutter runtime binaries
 runtime/flutter-engine/prebuilt/
 .opencode/
+runtime/flutter-engine/.cache/

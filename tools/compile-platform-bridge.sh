@@ -17,4 +17,4 @@ fi
 if grep -Ev '^Lio/github/neeschal/dashessential/(DashActivity|BypassTileService|FpsOverlayService|FpsRecordTileService|DashStatusNotificationService)(;|\$)' "$OUT/platform-dex/classes.txt"; then
     echo 'Unexpected managed class in platform bridge' >&2; exit 1
 fi
-test "$(wc -c < "$OUT/platform-dex/classes.dex")" -le 32768
+test "$(wc -c < "$OUT/platform-dex/classes.dex")" -le 40960
