@@ -13109,6 +13109,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 colors: colors,
                 title: 'Extreme Beast',
                 range: '1612 MHz fixed · No downclock',
+                subtitle: 'Adaptive CPU · GPU uncapped',
                 icon: Icons.bolt_rounded,
                 accent: const Color(0xFFFF5252),
                 isActive: isBeast,
@@ -13132,6 +13133,7 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                 colors: colors,
                 title: 'Gaming Dynamic',
                 range: '338–1612 MHz · Full-range scaling',
+                subtitle: 'Adaptive CPU · GPU uncapped',
                 icon: Icons.sports_esports_rounded,
                 accent: const Color(0xFFFFB84D),
                 isActive: isGaming,
@@ -13212,13 +13214,18 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
     required IconData icon,
     required Color accent,
     required bool isActive,
+    String? subtitle,
     required VoidCallback onTap,
   }) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
+    return Semantics(
+      label: '$title, $range${subtitle == null ? '' : ', $subtitle'}',
+      selected: isActive,
+      button: true,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
         child: Container(
           padding: const EdgeInsets.all(14),
           constraints: const BoxConstraints(minHeight: 108),
@@ -13273,9 +13280,23 @@ class _MaliGpuScreenState extends State<MaliGpuScreen> {
                   color: colors.onSurfaceVariant,
                 ),
               ),
+              if (subtitle != null) ...<Widget>[
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w600,
+                    color: accent,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
+      ),
       ),
     );
   }

@@ -8302,6 +8302,51 @@ fn handle_enabled_command(line: &str) -> String {
     if cmd == "GET snapshot" {
         return format!("OK {}", snapshot());
     }
+    if cmd == "GET profile.scaling" {
+        let telemetry = telemetry::sample(None);
+        let profile = PERFORMANCE_STATE.load(Ordering::Acquire);
+        let (low_c, high_c) = crate::profile_manager::hysteresis_band();
+        let (bias, adaptive) = if profile == 3 {
+            (crate::profile_manager::BIAS_EXTREME_BEAST, true)
+        } else if profile == 1 {
+            (crate::profile_manager::BIAS_DYNAMIC_GAMING, true)
+        } else {
+            (1.0, false)
+        };
+        let config = crate::profile_manager::compute_profile(&telemetry, bias, None);
+        let value = serde_json::json!({
+            "profile": profile,
+            "adaptive": adaptive,
+            "cpu_target_khz": config.cpu_target_khz,
+            "mode": format!("{:?}", config.mode),
+            "headroom": config.headroom,
+            "bias": bias,
+            "hysteresis_low_c": low_c,
+            "hysteresis_high_c": high_c,
+            "cpu_temp_dc": telemetry.cpu_temp_dc,
+            "cpu_max_freq_khz": telemetry.cpu_max_freq_khz,
+            "cpu_core_count": telemetry.cpu_core_count,
+        });
+        return format!("OK {value}");
+    }
+    if let Some(args) = cmd.strip_prefix("SET perf.hysteresis ") {
+        let mut parts = args.split_whitespace();
+        let parsed = (|| {
+            let low = parts.next()?.parse::<i32>().ok()?;
+            let high = parts.next()?.parse::<i32>().ok()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            Some((low, high))
+        })();
+        return match parsed {
+            Some((low, high)) => match crate::profile_manager::set_hysteresis(low, high) {
+                Ok(()) => "OK applied".into(),
+                Err(error) => format!("ERR {error}"),
+            },
+            None => "ERR bad hysteresis arguments".into(),
+        };
+    }
     // SettingsProvider owns palette persistence. These commands deliberately
     // bypass hardware state recording and all background reassertion guards.
     if cmd == "GET system.colors" {

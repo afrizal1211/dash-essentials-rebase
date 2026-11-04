@@ -6,6 +6,24 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.21.0
+
+### Added
+
+- Adaptive CPU scaling diagnostics: `GET profile.scaling` reports the live
+  profile, CPU target, thermal headroom, hysteresis mode and band, bias, and
+  the sampled CPU telemetry. `SET perf.hysteresis <low> <high>` tunes the
+  hysteresis band at runtime (validated).
+- GPU preset cards show an "Adaptive CPU · GPU uncapped" subtitle on Extreme
+  Beast and Gaming Dynamic, with TalkBack semantics on the whole card.
+- README documents the adaptive scaling model and its tuning commands.
+- Release codename updated to **Hydra** (many-headed adaptive scaling).
+
+### Changed
+
+- Profile adaptive events are logged to the daemon diagnostics log
+  (`DASH_PROFILE_ADAPTIVE`) for on-device monitoring.
+
 ## 1.20.0
 
 ### Added

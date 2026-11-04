@@ -7,11 +7,37 @@
 
 use crate::telemetry::Telemetry;
 
-/// Hysteresis band (°C). Above [`PROFILE_MODE_HIGH`] the profile falls back to
-/// "Steady"; at or below [`PROFILE_MODE_LOW`] it returns to "Max". The band
+/// Hysteresis band (°C). At or above the high threshold the profile moves to
+/// "Steady"; at or below the low threshold it returns to "Max". The band
 /// prevents rapid oscillation when the temperature hovers around a threshold.
+/// Defaults can be overridden at runtime via `SET perf.hysteresis <low> <high>`.
 pub const PROFILE_MODE_LOW_C: i32 = 72;
 pub const PROFILE_MODE_HIGH_C: i32 = 78;
+
+static HYSTERESIS_LOW_C: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(PROFILE_MODE_LOW_C);
+static HYSTERESIS_HIGH_C: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(PROFILE_MODE_HIGH_C);
+
+/// Overrides the hysteresis band. Rejects an inverted or unphysical band:
+/// low must be below high, and both must stay within 0..=150 °C.
+pub fn set_hysteresis(low_c: i32, high_c: i32) -> Result<(), &'static str> {
+    use std::sync::atomic::Ordering;
+    if !(0..=150).contains(&low_c) || !(0..=150).contains(&high_c) || low_c >= high_c {
+        return Err("invalid hysteresis band");
+    }
+    HYSTERESIS_LOW_C.store(low_c, Ordering::Release);
+    HYSTERESIS_HIGH_C.store(high_c, Ordering::Release);
+    Ok(())
+}
+
+pub fn hysteresis_band() -> (i32, i32) {
+    use std::sync::atomic::Ordering;
+    (
+        HYSTERESIS_LOW_C.load(Ordering::Acquire),
+        HYSTERESIS_HIGH_C.load(Ordering::Acquire),
+    )
+}
 
 /// Bias multipliers for the two adaptive profiles.
 pub const BIAS_EXTREME_BEAST: f32 = 1.0;
@@ -80,13 +106,14 @@ pub fn compute_profile(
     // 4. Hysteresis mode (item 2/4). Recover to Max once below the low
     //    threshold; climb to Steady at or above the high threshold. The
     //    previous mode suppresses chatter around the band edges.
+    let (low_c, high_c) = hysteresis_band();
     let mode = if let Some(ProfileMode::Steady) = prev {
-        if cur_temp <= PROFILE_MODE_LOW_C {
+        if cur_temp <= low_c {
             ProfileMode::Max
         } else {
             ProfileMode::Steady
         }
-    } else if cur_temp >= PROFILE_MODE_HIGH_C {
+    } else if cur_temp >= high_c {
         ProfileMode::Steady
     } else {
         ProfileMode::Max

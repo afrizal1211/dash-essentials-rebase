@@ -103,6 +103,24 @@ focused panels for each subsystem.
 | Battery Saver | 338–598 MHz, `powersave` | GED off, `coarse_demand` | Unchanged; controlled separately |
 | Extreme Beast | Fixed 1612 MHz, `performance`, DVFS off | GED on, `always_on` | Unchanged; controlled separately |
 
+### Adaptive CPU scaling (Gaming Dynamic and Extreme Beast)
+
+The daemon additionally drives the CPU cluster on the two performance
+profiles. GPU stays uncapped. The target is computed per enforcement from
+three inputs:
+
+- **Thermal headroom** — `(max_safe − current) / (max_safe − min)`, clamped
+  to 0..1. The safe ceiling comes from the devicetree (`thermal-zones/cpu`)
+  when present, else 85 °C.
+- **Core weight** — `core_count / 8`, clamped to 0.5..1.
+- **Profile bias** — 1.0 for Extreme Beast, 0.85 for Gaming Dynamic.
+
+A hysteresis band (default 72–78 °C) prevents oscillation: the profile
+drops to "Steady" scaling at or above the high edge and recovers to "Max"
+only at or below the low edge. Read live state with `GET profile.scaling`
+and tune the band with `SET perf.hysteresis <low> <high>` (validated; an
+inverted or unphysical band is rejected).
+
 GPU profiles never modify CPU governors, CPU clock ranges, or CPU core state.
 Vendor CPU and platform thermal services remain running in every mode. Gaming
 Dynamic and Extreme Beast override the Mali cooling constraint and can still
