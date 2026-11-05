@@ -6,6 +6,17 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.0
+
+### Changed
+
+- Status notification text now mirrors the decompiled RedFox Prism battery
+  notification layout: multi-line "Screen On / Screen Off / Deep sleep /
+  Awake" body with a battery drain line, collapsed to a single dot-separated
+  line in the shade and expanded fully via BigTextStyle. Labels and
+  line structure match Prism; measurement stays Dash's in-process method.
+- Release codename updated to **Sphinx**.
+
 ## 1.22.0
 
 ### Changed

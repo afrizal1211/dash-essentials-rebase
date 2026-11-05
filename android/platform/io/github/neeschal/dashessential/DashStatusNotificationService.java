@@ -145,13 +145,17 @@ public final class DashStatusNotificationService extends Service implements Runn
         if (level != levelMark || span > 3_600_000) {
             p.edit().putInt("lmark", level).putLong("lmark_ms", SystemClock.elapsedRealtime()).apply();
         }
+        int deep = deepSleepPercent();
+        String body = String.format(
+            "Screen On: %s\nScreen Off: %s\nDeep sleep: %d%%\nAwake: %d%%",
+            duration(onMs), duration(offMs), deep, 100 - deep);
+        if (!drain.isEmpty()) body += String.format("\nBattery: %d%%%s", level, drain);
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(getResources().getIdentifier(
                 "ic_fps_overlay", "drawable", getPackageName()))
             .setContentTitle("Dash Essential")
-            .setContentText(String.format("Screen on %s · off %s · deep sleep %d%%",
-                duration(onMs), duration(offMs), deepSleepPercent()))
-            .setSubText("Battery " + level + "%" + drain)
+            .setContentText(body.replace("\n", " · "))
+            .setStyle(new Notification.BigTextStyle().bigText(body))
             .setContentIntent(PendingIntent.getActivity(this, 1,
                 new Intent(this, DashActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
