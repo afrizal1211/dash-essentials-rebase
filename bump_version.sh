@@ -41,16 +41,19 @@ fi
 echo "New version: $NEW_VERSION"
 echo "Codename: $CODENAME"
 
-# Update all version files
+# Update all version files. The versionCode is derived from the semantic
+# version (%d%02d%02d), which is the format tools/test-release-sync.sh and
+# tools/test-root-module-contract.sh enforce — a date-based code fails both.
+DASH_CODE="$(printf '%d%02d%02d' "$MAJOR" "$MINOR" "$PATCH")"
 sed -i "s/version = \"[0-9.]*\"/version = \"$NEW_VERSION\"/" Cargo.toml
-sed -i "s/version: [0-9.]*+[0-9]*/version: ${NEW_VERSION}+${NEW_VERSION//./}/" ui/flutter/pubspec.yaml
+sed -i "s/version: [0-9.]*+[0-9]*/version: ${NEW_VERSION}+${DASH_CODE}/" ui/flutter/pubspec.yaml
 sed -i "s/version=v[0-9.]*/version=v${NEW_VERSION}/" android/kernelsu-next/module.prop
-sed -i "s/versionCode=[0-9]*/versionCode=$(date +%y%m%d)/" android/kernelsu-next/module.prop
-sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"$(date +%y%m%d)\"/" android/package/AndroidManifest.xml
+sed -i "s/versionCode=[0-9]*/versionCode=${DASH_CODE}/" android/kernelsu-next/module.prop
+sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"${DASH_CODE}\"/" android/package/AndroidManifest.xml
 sed -i "s/android:versionName=\"[0-9.]*\"/android:versionName=\"${NEW_VERSION}\"/" android/package/AndroidManifest.xml
-sed -i "s/const String dashVersionName = '[0-9.]*'/const String dashVersionName = '${NEW_VERSION}';/" ui/flutter/lib/release_identity.dart
-sed -i "s/const int dashVersionCode = [0-9]*/const int dashVersionCode = $(date +%y%m%d)/" ui/flutter/lib/release_identity.dart
-sed -i "s/const String dashReleaseCodename = '.*'/const String dashReleaseCodename = '${CODENAME}';/" ui/flutter/lib/release_identity.dart
+sed -i "s/const String dashVersionName = '[0-9.]*'\(;*\)/const String dashVersionName = '${NEW_VERSION}';/" ui/flutter/lib/release_identity.dart
+sed -i "s/const int dashVersionCode = [0-9]*\(;*\)/const int dashVersionCode = ${DASH_CODE};/" ui/flutter/lib/release_identity.dart
+sed -i "s/const String dashReleaseCodename = '.*'\(;*\)/const String dashReleaseCodename = '${CODENAME}';/" ui/flutter/lib/release_identity.dart
 
 # Update Cargo.lock
 cargo update -p dash-essential-daemon -p dash-essential-host --offline
