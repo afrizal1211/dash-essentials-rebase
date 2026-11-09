@@ -3,7 +3,7 @@
 use jni::{
     JNIEnv,
     objects::{JClass, JObject, JValue},
-    sys::{jboolean, jfloat, jint, jstring},
+    sys::{jboolean, jfloat, jint, jlong, jstring},
 };
 use std::sync::{
     Mutex, OnceLock,
@@ -58,7 +58,7 @@ static BACK_LISTENER: Mutex<Option<extern "C" fn(i32)>> = Mutex::new(None);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn dash_host_set_back_listener(listener: Option<extern "C" fn(i32)>) {
-    *BACK_LISTENER.lock().unwrap() = listener;
+    *BACK_LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = listener;
     BACK_EVENT.store(0, Ordering::Release);
     super::DASH_BACK_PENDING.store(false, Ordering::Release);
 }
@@ -75,12 +75,12 @@ pub fn init(activity: *mut super::ANativeActivity) {
         env.new_global_ref(&object).ok()
     };
     if let Some(reference) = reference {
-        *ACTIVITY.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some((vm, reference));
+        *ACTIVITY.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = Some((vm, reference));
     }
 }
 pub fn clear() {
     if let Some(activity) = ACTIVITY.get() {
-        *activity.lock().unwrap() = None;
+        *activity.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     BACK_EVENT.store(0, Ordering::Release);
 }
@@ -192,7 +192,7 @@ pub fn refresh_back() {
     let Some(activity) = ACTIVITY.get() else {
         return;
     };
-    let guard = activity.lock().unwrap();
+    let guard = activity.lock().unwrap_or_else(|e| e.into_inner());
     let Some((vm, reference)) = guard.as_ref() else {
         return;
     };
@@ -238,8 +238,11 @@ pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_native
     let value = (progress.clamp(0.0, 1.0) * 10000.0).round() as i32;
     // Single atomic packet: phase, edge and progress cannot come from different frames.
     let packet = (phase << 16) | ((edge & 1) << 15) | value;
-    let listener = BACK_LISTENER.lock().unwrap();
-    if let Some(callback) = *listener {
+    // Copy the callback out and drop the lock before invoking: the callback is
+    // Dart-facing and may re-register itself, which would deadlock a held lock.
+    let listener = BACK_LISTENER.lock().unwrap_or_else(|e| e.into_inner());
+    let callback = *listener;
+    if let Some(callback) = callback {
         callback(packet);
         return;
     }
@@ -332,15 +335,22 @@ pub extern "C" fn dash_host_export_save(
     let Some(activity) = ACTIVITY.get() else {
         return 0;
     };
-    let guard = activity.lock().unwrap();
+    let guard = activity.lock().unwrap_or_else(|e| e.into_inner());
     let Some((vm, reference)) = guard.as_ref() else {
         return 0;
     };
     let Ok(mut env) = vm.attach_current_thread() else {
         return 0;
     };
-    let csv = unsafe { std::slice::from_raw_parts(csv_ptr, csv_len.max(0) as usize) };
-    let png = unsafe { std::slice::from_raw_parts(png_ptr, png_len.max(0) as usize) };
+    // Hard cap the FFI-provided lengths to what a real export can be: an
+    // oversized/negative length from a buggy caller must not turn into an
+    // out-of-bounds slice read.
+    const MAX_EXPORT_LEN: usize = 16 * 1024 * 1024;
+    if csv_len < 0 || png_len < 0 || csv_len as usize > MAX_EXPORT_LEN || png_len as usize > MAX_EXPORT_LEN {
+        return 0;
+    }
+    let csv = unsafe { std::slice::from_raw_parts(csv_ptr, csv_len as usize) };
+    let png = unsafe { std::slice::from_raw_parts(png_ptr, png_len as usize) };
     let result = env.with_local_frame(16, |env| -> jni::errors::Result<i32> {
         let csv_jstring = env.new_string(String::from_utf8_lossy(csv))?;
         let png_array = env.byte_array_from_slice(png)?;
@@ -363,4 +373,29 @@ pub extern "C" fn dash_host_export_save(
             0
         }
     }
+}
+
+// DashStatusNotificationService bridge. The daemon computes deep sleep and
+// battery drain (it owns the privileged reads); these entry points only read
+// the cached snapshot, so they are safe from any thread and never touch the
+// activity. Values are -1 while the daemon has not answered yet.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepMs() -> jlong {
+    super::backend_bridge::dash_backend_get_deep_sleep_ms()
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepPct() -> jint {
+    super::backend_bridge::dash_backend_get_deep_sleep_pct()
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDrainPctPerHour() -> jint {
+    super::backend_bridge::dash_backend_get_drain_pct_per_h()
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeBatteryPowerMw() -> jlong {
+    super::backend_bridge::dash_backend_get_battery_power_mw()
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeRequestRefresh() {
+    let _ = super::backend_bridge::dash_backend_refresh();
 }

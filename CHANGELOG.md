@@ -6,6 +6,41 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## Unreleased
+
+### Fixed
+
+- The accessibility foreground detector compared the incoming package name
+  against itself instead of the app's own package, so per-app profile
+  switching never saw foreground changes.
+- `dash_host_export_save` trusted FFI-provided buffer lengths; oversized or
+  negative lengths are now rejected instead of read out of bounds.
+- The predictive-back callback was invoked while its registration lock was
+  held; a callback that re-registered itself could deadlock the frame.
+- Mutex locks in the platform bridge used `.unwrap()`, which would abort the
+  process on a poisoned lock; they now recover the inner guard.
+- The three path CStrings handed to `FlutterEngineRun` were dropped when
+  startup returned while the engine retained the pointers; they are now
+  leaked deliberately (once, at startup) to stay valid for the engine's life.
+- A failed FPS export left an `IS_PENDING` MediaStore row behind; the pending
+  flag is now cleared in a `finally` block so no orphaned entry survives.
+- The 500 ms backend telemetry poll no longer runs while the app is
+  backgrounded; visibility is tracked from the activity lifecycle and
+  on-demand refreshes still go through.
+
+### Added
+
+- Kernel-manager-style status notification statistics. The daemon now
+  computes deep sleep as the `CLOCK_BOOTTIME` minus `CLOCK_MONOTONIC` gap
+  (exact suspended time, no `/proc/uptime` dependency) and keeps a debounced
+  battery capacity ring buffer from which it derives the discharge rate
+  across the latest non-rising run only (charging splits the window). The snapshot
+  carries `power_mw` (live |V·I|), `deep_sleep_ms`, `deep_sleep_pct` and
+  `drain_pct_per_h`; the notification shows deep sleep with its total,
+  awake share, drain rate, live power labelled charging/using, and the last
+  measured screen-off drain. The app-side `/proc/uptime` read, which always
+  returned 0 at app UID, is gone.
+
 ## 1.23.0
 
 ### Changed

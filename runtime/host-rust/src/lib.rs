@@ -27,6 +27,19 @@ static DASH_PHOTO_REQUEST_PENDING: std::sync::atomic::AtomicBool =
 static DASH_PHOTO_REQUEST_SCHEDULED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+// Tracks whether the activity is in the resumed (visible+interactive) state so
+// background telemetry polling can back off. Set from the NativeActivity
+// lifecycle callbacks; read by the backend worker.
+static DASH_APP_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+pub fn app_visible() -> bool {
+    DASH_APP_VISIBLE.load(Ordering::Acquire)
+}
+
+fn dash_set_app_visible(visible: bool) {
+    DASH_APP_VISIBLE.store(visible, Ordering::Release);
+}
+
 fn dash_photo_vm_and_object(
     activity: *mut ANativeActivity,
 ) -> Option<(jni::JavaVM, jni::sys::jobject, i32)> {
@@ -2402,6 +2415,15 @@ unsafe fn start_flutter(
 
     let (assets_path, icu_path, cache_path) = prepare_runtime_files(activity)?;
 
+    // FlutterProjectArgs retains these pointers for the life of the engine, so
+    // the CStrings must outlive this call. start_flutter runs at most once per
+    // process and the engine lives until the app exits, so leaking them is the
+    // only correct (and leak-once) option; a dropped CString would leave the
+    // engine dangling into freed memory.
+    let assets_path: &'static std::ffi::CStr = Box::leak(assets_path.into_boxed_c_str());
+    let icu_path: &'static std::ffi::CStr = Box::leak(icu_path.into_boxed_c_str());
+    let cache_path: &'static std::ffi::CStr = Box::leak(cache_path.into_boxed_c_str());
+
     static LIBAPP: &[u8] = b"libapp.so\0";
 
     let app_handle = unsafe { dlopen(LIBAPP.as_ptr().cast(), RTLD_NOW) };
@@ -2873,6 +2895,7 @@ unsafe extern "C" fn on_start(_: *mut ANativeActivity) {
 unsafe extern "C" fn on_resume(activity: *mut ANativeActivity) {
     dash_photo_refresh_permission(activity);
     log_str("onResume");
+    dash_set_app_visible(true);
 
     if activity.is_null() {
         return;
@@ -2891,6 +2914,7 @@ unsafe extern "C" fn on_resume(activity: *mut ANativeActivity) {
 
 unsafe extern "C" fn on_pause(activity: *mut ANativeActivity) {
     log_str("onPause");
+    dash_set_app_visible(false);
 
     if activity.is_null() {
         return;
@@ -2901,6 +2925,7 @@ unsafe extern "C" fn on_pause(activity: *mut ANativeActivity) {
 
 unsafe extern "C" fn on_stop(activity: *mut ANativeActivity) {
     log_str("onStop");
+    dash_set_app_visible(false);
 
     if activity.is_null() {
         return;

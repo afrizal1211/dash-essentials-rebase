@@ -74,6 +74,10 @@ struct Cache {
     battery_current_ua: AtomicI64,
     battery_status: AtomicI32,
     battery_health: AtomicI32,
+    battery_power_mw: AtomicI64,
+    deep_sleep_ms: AtomicI64,
+    deep_sleep_pct: AtomicI32,
+    drain_pct_per_h: AtomicI32,
     usb_online: AtomicI32,
     usb_type: AtomicI32,
     cpu_online_mask: AtomicU32,
@@ -112,6 +116,10 @@ impl Cache {
             battery_current_ua: AtomicI64::new(i64::MIN),
             battery_status: AtomicI32::new(-1),
             battery_health: AtomicI32::new(-1),
+            battery_power_mw: AtomicI64::new(-1),
+            deep_sleep_ms: AtomicI64::new(-1),
+            deep_sleep_pct: AtomicI32::new(-1),
+            drain_pct_per_h: AtomicI32::new(-1),
             usb_online: AtomicI32::new(-1),
             usb_type: AtomicI32::new(-1),
             cpu_online_mask: AtomicU32::new(0),
@@ -731,6 +739,18 @@ fn refresh(cache: &Cache) -> Result<(), String> {
         map.get("health").map(|v| code_health(v)).unwrap_or(0),
         Ordering::Release,
     );
+    cache
+        .battery_power_mw
+        .store(parse_i64(map.get("power_mw")), Ordering::Release);
+    cache
+        .deep_sleep_ms
+        .store(parse_i64(map.get("deep_sleep_ms")), Ordering::Release);
+    cache
+        .deep_sleep_pct
+        .store(parse_i32(map.get("deep_sleep_pct")), Ordering::Release);
+    cache
+        .drain_pct_per_h
+        .store(parse_i32(map.get("drain_pct_per_h")), Ordering::Release);
     cache
         .usb_online
         .store(parse_i32(map.get("usb_online")), Ordering::Release);
@@ -1492,7 +1512,9 @@ fn worker(cache: Arc<Cache>, rx: mpsc::Receiver<Command>) {
             }
         }
 
-        if last_idle_refresh.elapsed() >= Duration::from_millis(500) {
+        if last_idle_refresh.elapsed() >= Duration::from_millis(500)
+            && crate::app_visible()
+        {
             match refresh(&cache) {
                 Ok(()) => {
                     if !logged_pass {
@@ -1640,6 +1662,30 @@ pub extern "C" fn dash_backend_get_battery_status() -> i32 {
 pub extern "C" fn dash_backend_get_battery_health() -> i32 {
     runtime()
         .map(|r| r.cache.battery_health.load(Ordering::Acquire))
+        .unwrap_or(-1)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_backend_get_battery_power_mw() -> i64 {
+    runtime()
+        .map(|r| r.cache.battery_power_mw.load(Ordering::Acquire))
+        .unwrap_or(-1)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_backend_get_deep_sleep_ms() -> i64 {
+    runtime()
+        .map(|r| r.cache.deep_sleep_ms.load(Ordering::Acquire))
+        .unwrap_or(-1)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_backend_get_deep_sleep_pct() -> i32 {
+    runtime()
+        .map(|r| r.cache.deep_sleep_pct.load(Ordering::Acquire))
+        .unwrap_or(-1)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_backend_get_drain_pct_per_h() -> i32 {
+    runtime()
+        .map(|r| r.cache.drain_pct_per_h.load(Ordering::Acquire))
         .unwrap_or(-1)
 }
 #[unsafe(no_mangle)]

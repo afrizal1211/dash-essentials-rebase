@@ -141,13 +141,20 @@ public final class DashActivity extends NativeActivity {
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
         Uri uri = resolver.insert(collection, values);
         if (uri == null) return null;
-        try (OutputStream out = resolver.openOutputStream(uri)) {
-            if (out == null) return null;
-            out.write(data);
+        try {
+            try (OutputStream out = resolver.openOutputStream(uri)) {
+                if (out == null) return null;
+                out.write(data);
+            }
+        } finally {
+            // Always clear IS_PENDING so a failed write never leaves an
+            // orphaned pending media entry visible in Downloads/Images.
+            try {
+                ContentValues release = new ContentValues();
+                release.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                resolver.update(uri, release, null, null);
+            } catch (Exception ignored) {}
         }
-        ContentValues release = new ContentValues();
-        release.put(MediaStore.MediaColumns.IS_PENDING, 0);
-        resolver.update(uri, release, null, null);
         return uri.toString();
     }
 

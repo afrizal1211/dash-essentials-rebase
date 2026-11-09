@@ -85,7 +85,7 @@ class ForegroundDetectorService : AccessibilityService() {
 
         // Filter out null/empty and our own package
         if (packageName.isNullOrBlank()) return
-        if (packageName == packageName) return // our own package
+        if (packageName == "io.github.neeschal.dashessential") return // our own package
 
         // Skip system UI and launcher packages
         if (isSystemUiPackage(packageName)) return

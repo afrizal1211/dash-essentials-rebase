@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -7465,6 +7466,131 @@ fn snapshot_persistence_fields() -> Vec<String> {
     ]
 }
 
+// ---------------------------------------------------------------------------
+// Power statistics for the status notification: deep sleep and battery drain.
+//
+// Deep sleep is the boottime-minus-monotonic gap. CLOCK_BOOTTIME advances
+// through suspend, CLOCK_MONOTONIC does not, so their difference is exactly
+// the time the kernel spent suspended — the same number Android reports as
+// elapsedRealtime() minus uptimeMillis(), without needing the framework.
+//
+// Drain is derived from a ring of battery capacity samples that snapshot()
+// folds in. The slope only spans a run where the level never rises, so a
+// charging session splits the history and the reported rate stays a
+// discharge rate.
+// ---------------------------------------------------------------------------
+
+static DRAIN_SAMPLES: Mutex<VecDeque<(u64, i32)>> = Mutex::new(VecDeque::new());
+
+const DRAIN_MIN_SPAN_MS: u64 = 600_000;
+const DRAIN_MAX_WINDOW_MS: u64 = 7_200_000;
+
+fn boottime_ms() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Only a bad clock id fails, and both ids are compile-time constants.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } != 0 {
+        return 0;
+    }
+    (ts.tv_sec as u64)
+        .saturating_mul(1_000)
+        .saturating_add((ts.tv_nsec as u64) / 1_000_000)
+}
+
+fn deep_sleep_totals() -> (u64, i32) {
+    let mut boot = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let mut mono = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let ok = unsafe {
+        libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut boot) == 0
+            && libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut mono) == 0
+    };
+    if !ok {
+        return (0, -1);
+    }
+    let boottime_ms = (boot.tv_sec as u64).saturating_mul(1_000) + (boot.tv_nsec as u64) / 1_000_000;
+    let monotonic_ms =
+        (mono.tv_sec as u64).saturating_mul(1_000) + (mono.tv_nsec as u64) / 1_000_000;
+    let deep_sleep_ms = boottime_ms.saturating_sub(monotonic_ms);
+    let percent = if boottime_ms > 0 {
+        (deep_sleep_ms as f64 * 100.0 / boottime_ms as f64).round() as i32
+    } else {
+        0
+    };
+    (deep_sleep_ms, percent.clamp(0, 100))
+}
+
+/// Records one capacity sample, debounced to at most one per minute so an
+/// aggressively polled snapshot cannot grow the ring without bound.
+fn fold_drain_sample(level: i32) {
+    if !(0..=100).contains(&level) {
+        return;
+    }
+    let now = boottime_ms();
+    if now == 0 {
+        return;
+    }
+    let mut samples = DRAIN_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&(last_ms, last_level)) = samples.back() {
+        if now <= last_ms || now - last_ms < 60_000 {
+            return;
+        }
+        // Equal levels only extend time; push them so a long flat period
+        // still counts toward the span of the current run.
+        if level != last_level || now - last_ms >= DRAIN_MIN_SPAN_MS {
+            samples.push_back((now, level));
+        }
+    } else {
+        samples.push_back((now, level));
+    }
+    while samples
+        .front()
+        .is_some_and(|&(ms, _)| now.saturating_sub(ms) > DRAIN_MAX_WINDOW_MS)
+    {
+        samples.pop_front();
+    }
+    if samples.len() > 128 {
+        samples.pop_front();
+    }
+}
+
+/// Pure slope over one non-rising (discharge) run, newest sample last.
+/// Returns percent per hour, or -1 when the history is too short or flat.
+fn drain_from_samples(samples: &[(u64, i32)]) -> i32 {
+    let Some(&(newest_ms, newest_level)) = samples.last() else {
+        return -1;
+    };
+    let mut oldest = (newest_ms, newest_level);
+    for &(ms, level) in samples.iter().rev().skip(1) {
+        // Going back in time through a discharge, levels only rise. A sample
+        // below the newest level means a charge happened in between.
+        if level < newest_level {
+            break;
+        }
+        oldest = (ms, level);
+    }
+    let span = newest_ms.saturating_sub(oldest.0);
+    let drop = oldest.1.saturating_sub(newest_level);
+    if span < DRAIN_MIN_SPAN_MS || drop == 0 {
+        return -1;
+    }
+    ((drop as f64) * 3_600_000.0 / span as f64)
+        .round()
+        .clamp(0.0, 999.0) as i32
+}
+
+fn drain_pct_per_hour() -> i32 {
+    let samples = DRAIN_SAMPLES.lock().unwrap_or_else(|e| e.into_inner());
+    drain_from_samples(samples.as_slices().0)
+}
+
 fn snapshot() -> String {
     let (charging, bypass_saved, bypass_threshold) = persisted_state()
         .lock()
@@ -7512,6 +7638,13 @@ fn snapshot() -> String {
             ((voltage as i128 * (current as i128).abs()) / 1_000_000_000) as i64
         })
         .unwrap_or(-1);
+    // Battery statistics for the status notification. The drain ring is fed
+    // here so the rate advances as long as anything polls the snapshot,
+    // including the app's background worker.
+    let capacity_level: i32 = battery("capacity").parse().unwrap_or(-1);
+    fold_drain_sample(capacity_level);
+    let (deep_sleep_ms, deep_sleep_pct) = deep_sleep_totals();
+    let drain_pct_per_h = drain_pct_per_hour();
     let touch_hal = if vendor_binder::touch_available() || touch_report_rate_path().is_some() {
         1
     } else {
@@ -7563,6 +7696,10 @@ fn snapshot() -> String {
         format!("temp={}", sanitize(battery("temp"))),
         format!("voltage={}", sanitize(battery_voltage_uv)),
         format!("current={}", sanitize(battery_current_ua)),
+        format!("power_mw={charging_live_mw}"),
+        format!("deep_sleep_ms={deep_sleep_ms}"),
+        format!("deep_sleep_pct={deep_sleep_pct}"),
+        format!("drain_pct_per_h={drain_pct_per_h}"),
         format!("status={}", sanitize(battery("status"))),
         format!("health={}", sanitize(battery("health"))),
         format!(
@@ -8733,6 +8870,24 @@ mod tests {
             assert_eq!(state.video, -1);
             assert_eq!(state.dolby, -1);
         }
+    }
+
+    #[test]
+    fn drain_slope_spans_only_the_discharge_run() {
+        // 40% -> 30% across one hour is a 10%/h discharge.
+        assert_eq!(
+            super::drain_from_samples(&[(0, 40), (1_800_000, 35), (3_600_000, 30)]),
+            10
+        );
+        // A charge in the middle splits the runs: only the last one counts.
+        assert_eq!(
+            super::drain_from_samples(&[(0, 40), (600_000, 80), (4_200_000, 75)]),
+            5
+        );
+        // Flat or too-short history reports unknown.
+        assert_eq!(super::drain_from_samples(&[(0, 40), (1_800_000, 40)]), -1);
+        assert_eq!(super::drain_from_samples(&[(0, 40), (60_000, 39)]), -1);
+        assert_eq!(super::drain_from_samples(&[]), -1);
     }
 
     #[test]

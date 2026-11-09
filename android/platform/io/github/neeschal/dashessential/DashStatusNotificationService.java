@@ -17,16 +17,23 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 
-import java.io.BufferedReader;
-import java.io.FileReader;
-
-/** Prism-style status notification: screen on/off, deep sleep, battery drain.
-    Tapping opens the FPS recording screen. Measured in-process, no privileges. */
+/** Prism-style status notification: screen on/off, deep sleep, battery drain,
+    live power. Deep sleep and the drain rate are computed by the privileged
+    daemon and read through the native bridge; screen buckets and the
+    screen-off drain are measured in-process. No privileges required. */
 public final class DashStatusNotificationService extends Service implements Runnable {
+    static { System.loadLibrary("dash_essential_host"); }
     private static final String PREFS = "dash_status_notification";
     private static final String KEY_ENABLED = "enabled";
     private static final String CHANNEL = "dash_status";
     private static final int ID = 43;
+
+    /** Lifetime deep-sleep total, -1 while the daemon has not answered. */
+    private static native long nativeDeepSleepMs();
+    private static native int nativeDeepSleepPct();
+    private static native int nativeDrainPctPerHour();
+    private static native long nativeBatteryPowerMw();
+    private static native void nativeRequestRefresh();
 
     private static SharedPreferences prefs(Context c) {
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -49,6 +56,7 @@ public final class DashStatusNotificationService extends Service implements Runn
         @Override public void onReceive(Context context, Intent intent) {
             screenOn = Intent.ACTION_SCREEN_ON.equals(intent.getAction());
             accumulate();
+            foldScreenOffDrain();
         }
     };
 
@@ -80,14 +88,16 @@ public final class DashStatusNotificationService extends Service implements Runn
         super.onDestroy();
     }
 
-    /** 30 s tick: fold the elapsed interval into the on/off bucket, repaint. */
+    /** 30 s tick: nudge the backend cache, fold the elapsed interval into the
+        on/off bucket, repaint. The refresh lands within one tick, which is
+        fine for a 30 s cadence. */
     @Override public void run() {
+        try { nativeRequestRefresh(); } catch (UnsatisfiedLinkError unloaded) {}
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.notify(ID, notification());
         handler.postDelayed(this, 30_000);
     }
 
-    /** Adds the time since the last mark to the bucket that matches. */
     private void accumulate() {
         SharedPreferences p = prefs(this);
         long now = SystemClock.elapsedRealtime();
@@ -95,6 +105,26 @@ public final class DashStatusNotificationService extends Service implements Runn
         SharedPreferences.Editor e = p.edit().putLong("mark", Math.max(mark, now));
         if (now > mark) e.putLong(screenOn ? "on" : "off", p.getLong(screenOn ? "on" : "off", 0) + now - mark);
         e.apply();
+    }
+
+    /** Kernel-manager screen-off drain: a level drop measured between
+        ACTION_SCREEN_OFF and the next ACTION_SCREEN_ON, kept as the latest
+        value so the notification can show what idle really costs. */
+    private void foldScreenOffDrain() {
+        SharedPreferences p = prefs(this);
+        long now = SystemClock.elapsedRealtime();
+        if (!screenOn) {
+            p.edit().putInt("off_level", batteryLevel()).putLong("off_ms", now).apply();
+            return;
+        }
+        int offLevel = p.getInt("off_level", -1);
+        long span = now - p.getLong("off_ms", 0);
+        int level = batteryLevel();
+        if (offLevel > 0 && level > 0 && span >= 600_000 && offLevel > level) {
+            p.edit().putFloat("off_drain", (offLevel - level) * 3_600_000f / span)
+                .putLong("off_drain_ms", now).apply();
+        }
+        p.edit().remove("off_level").apply();
     }
 
     private boolean isInteractive() {
@@ -107,19 +137,15 @@ public final class DashStatusNotificationService extends Service implements Runn
         return battery == null ? 0 : battery.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
     }
 
-    private static int deepSleepPercent() {
-        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/uptime"))) {
-            String line = reader.readLine();
-            long elapsed = SystemClock.elapsedRealtime();
-            if (line == null || elapsed <= 0) return 0;
-            int space = line.indexOf(' ');
-            long uptime = (long) (Double.parseDouble(
-                space > 0 ? line.substring(0, space) : line) * 1000);
-            if (uptime <= 0 || uptime >= elapsed) return 0;
-            return (int) Math.round((elapsed - uptime) * 100.0 / elapsed);
-        } catch (Exception unreadable) {
-            return 0;
-        }
+    /** Charging state from the sticky battery intent; no root, no daemon. */
+    private boolean chargingNow() {
+        Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (battery == null) return false;
+        int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+        return status == BatteryManager.BATTERY_STATUS_CHARGING
+            || status == BatteryManager.BATTERY_STATUS_FULL
+            || plugged != 0;
     }
 
     private static String duration(long ms) {
@@ -134,28 +160,46 @@ public final class DashStatusNotificationService extends Service implements Runn
         SharedPreferences p = prefs(this);
         long onMs = p.getLong("on", 0);
         long offMs = p.getLong("off", 0);
-        int level = batteryLevel();
-        int levelMark = p.getInt("lmark", level);
-        long levelMarkMs = p.getLong("lmark_ms", 0);
-        long span = SystemClock.elapsedRealtime() - levelMarkMs;
-        String drain = "";
-        if (levelMark != level && levelMark > 0 && span > 600_000) {
-            drain = String.format(" · %.1f%%/h", (levelMark - level) * 3_600_000f / span);
+
+        StringBuilder body = new StringBuilder()
+            .append("Screen On: ").append(duration(onMs))
+            .append("\nScreen Off: ").append(duration(offMs));
+
+        // Deep sleep comes from the daemon: boottime minus monotonic, the
+        // exact suspended time, even for a process that cannot read
+        // /proc/uptime. Fall back to nothing rather than a fake zero.
+        int deep = nativeDeepSleepPct();
+        long deepMs = nativeDeepSleepMs();
+        if (deep >= 0) {
+            body.append("\nDeep sleep: ").append(deep).append('%');
+            if (deepMs > 0) body.append(" · ").append(duration(deepMs)).append(" total");
+            body.append("\nAwake: ").append(100 - deep).append('%');
         }
-        if (level != levelMark || span > 3_600_000) {
-            p.edit().putInt("lmark", level).putLong("lmark_ms", SystemClock.elapsedRealtime()).apply();
+
+        // Battery line: level, discharge rate over the daemon's sample window,
+        // and live |V·I| power, labelled by the framework charging state.
+        StringBuilder battery = new StringBuilder("Battery: ").append(batteryLevel()).append('%');
+        int drain = nativeDrainPctPerHour();
+        if (drain >= 0) battery.append(" · ").append(drain).append("%/h");
+        long powerMw = nativeBatteryPowerMw();
+        if (powerMw > 0) {
+            battery.append(" · ").append(chargingNow() ? "Charging " : "Using ")
+                .append(String.format("%.1fW", powerMw / 1_000.0));
         }
-        int deep = deepSleepPercent();
-        String body = String.format(
-            "Screen On: %s\nScreen Off: %s\nDeep sleep: %d%%\nAwake: %d%%",
-            duration(onMs), duration(offMs), deep, 100 - deep);
-        if (!drain.isEmpty()) body += String.format("\nBattery: %d%%%s", level, drain);
+        body.append('\n').append(battery);
+
+        // Last measured screen-off drain, when one exists.
+        float offDrain = p.getFloat("off_drain", -1f);
+        if (offDrain >= 0f) {
+            body.append("\nScreen-off drain: ").append(String.format("%.1f", offDrain)).append("%/h");
+        }
+
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(getResources().getIdentifier(
                 "ic_fps_overlay", "drawable", getPackageName()))
             .setContentTitle("Dash Essential")
-            .setContentText(body.replace("\n", " · "))
-            .setStyle(new Notification.BigTextStyle().bigText(body))
+            .setContentText(body.toString().replace("\n", " · "))
+            .setStyle(new Notification.BigTextStyle().bigText(body.toString()))
             .setContentIntent(PendingIntent.getActivity(this, 1,
                 new Intent(this, DashActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP)
