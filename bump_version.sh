@@ -48,6 +48,7 @@ DASH_CODE="$(printf '%d%02d%02d' "$MAJOR" "$MINOR" "$PATCH")"
 sed -i "s/version = \"[0-9.]*\"/version = \"$NEW_VERSION\"/" Cargo.toml
 sed -i "s/version: [0-9.]*+[0-9]*/version: ${NEW_VERSION}+${DASH_CODE}/" ui/flutter/pubspec.yaml
 sed -i "s/version=v[0-9.]*/version=v${NEW_VERSION}/" android/kernelsu-next/module.prop
+sed -i "s/^codename=.*/codename=${CODENAME}/" android/kernelsu-next/module.prop
 sed -i "s/versionCode=[0-9]*/versionCode=${DASH_CODE}/" android/kernelsu-next/module.prop
 sed -i "s/android:versionCode=\"[0-9]*\"/android:versionCode=\"${DASH_CODE}\"/" android/package/AndroidManifest.xml
 sed -i "s/android:versionName=\"[0-9.]*\"/android:versionName=\"${NEW_VERSION}\"/" android/package/AndroidManifest.xml
