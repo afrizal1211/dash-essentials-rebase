@@ -1512,9 +1512,7 @@ fn worker(cache: Arc<Cache>, rx: mpsc::Receiver<Command>) {
             }
         }
 
-        if last_idle_refresh.elapsed() >= Duration::from_millis(500)
-            && crate::app_visible()
-        {
+        if last_idle_refresh.elapsed() >= Duration::from_millis(500) && crate::app_visible() {
             match refresh(&cache) {
                 Ok(()) => {
                     if !logged_pass {

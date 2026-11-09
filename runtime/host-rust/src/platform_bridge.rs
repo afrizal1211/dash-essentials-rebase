@@ -75,7 +75,10 @@ pub fn init(activity: *mut super::ANativeActivity) {
         env.new_global_ref(&object).ok()
     };
     if let Some(reference) = reference {
-        *ACTIVITY.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = Some((vm, reference));
+        *ACTIVITY
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some((vm, reference));
     }
 }
 pub fn clear() {
@@ -346,7 +349,11 @@ pub extern "C" fn dash_host_export_save(
     // oversized/negative length from a buggy caller must not turn into an
     // out-of-bounds slice read.
     const MAX_EXPORT_LEN: usize = 16 * 1024 * 1024;
-    if csv_len < 0 || png_len < 0 || csv_len as usize > MAX_EXPORT_LEN || png_len as usize > MAX_EXPORT_LEN {
+    if csv_len < 0
+        || png_len < 0
+        || csv_len as usize > MAX_EXPORT_LEN
+        || png_len as usize > MAX_EXPORT_LEN
+    {
         return 0;
     }
     let csv = unsafe { std::slice::from_raw_parts(csv_ptr, csv_len as usize) };
@@ -380,22 +387,27 @@ pub extern "C" fn dash_host_export_save(
 // the cached snapshot, so they are safe from any thread and never touch the
 // activity. Values are -1 while the daemon has not answered yet.
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepMs() -> jlong {
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepMs()
+-> jlong {
     super::backend_bridge::dash_backend_get_deep_sleep_ms()
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepPct() -> jint {
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDeepSleepPct()
+-> jint {
     super::backend_bridge::dash_backend_get_deep_sleep_pct()
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDrainPctPerHour() -> jint {
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeDrainPctPerHour()
+-> jint {
     super::backend_bridge::dash_backend_get_drain_pct_per_h()
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeBatteryPowerMw() -> jlong {
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeBatteryPowerMw()
+-> jlong {
     super::backend_bridge::dash_backend_get_battery_power_mw()
 }
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeRequestRefresh() {
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeRequestRefresh()
+ {
     let _ = super::backend_bridge::dash_backend_refresh();
 }

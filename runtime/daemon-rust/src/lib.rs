@@ -7515,7 +7515,8 @@ fn deep_sleep_totals() -> (u64, i32) {
     if !ok {
         return (0, -1);
     }
-    let boottime_ms = (boot.tv_sec as u64).saturating_mul(1_000) + (boot.tv_nsec as u64) / 1_000_000;
+    let boottime_ms =
+        (boot.tv_sec as u64).saturating_mul(1_000) + (boot.tv_nsec as u64) / 1_000_000;
     let monotonic_ms =
         (mono.tv_sec as u64).saturating_mul(1_000) + (mono.tv_nsec as u64) / 1_000_000;
     let deep_sleep_ms = boottime_ms.saturating_sub(monotonic_ms);
