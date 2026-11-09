@@ -47,3 +47,6 @@ perf-captures/
 runtime/flutter-engine/prebuilt/
 .opencode/
 runtime/flutter-engine/.cache/
+
+# Local build artifacts (downloaded from Actions)
+/release/
