@@ -476,7 +476,18 @@ fn foreground_package() -> Option<String> {
 /// The fastest online CPU in MHz. The overlay shows one clock, not eight; the
 /// prime core is the one that moves when a game starts or throttles.
 fn cpu_mhz() -> i32 {
-    (0..8)
+    // Probe /sys/devices/system/cpu/present instead of assuming 8 cores:
+    // the MT6991 topology differs from the Rodin's and the count changes
+    // with core_ctl hotplug.
+    let count = std::fs::read_to_string("/sys/devices/system/cpu/present")
+        .ok()
+        .and_then(|s| {
+            s.trim().split('-').last().and_then(|last| {
+                last.trim().parse::<u32>().ok().map(|n| n + 1)
+            })
+        })
+        .unwrap_or(8);
+    (0..count as usize)
         .filter_map(|cpu| crate::cpu_freq(cpu).trim().parse::<i32>().ok())
         .max()
         .map(|khz| khz / 1000)

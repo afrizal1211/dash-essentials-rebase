@@ -51,6 +51,7 @@ final class DashBackendSnapshot {
     required this.video,
     required this.dolby,
     required this.performanceProfile,
+    this.displayMaxHz = -1,
   });
 
   final DashConnectionState connection;
@@ -88,6 +89,10 @@ final class DashBackendSnapshot {
   final int video;
   final int dolby;
   final int performanceProfile;
+
+  /// Panel peak refresh rate in Hz, x10 (1200 = 120 Hz); -1 unknown.
+  /// Sourced from the daemon's display_max_hz_x10 (host slot 25).
+  final int displayMaxHz;
 
   bool get chargingBoost => chargingMode == 90;
   bool get busy => actionState == 1;
@@ -559,6 +564,7 @@ final class DashBackend {
       video: _videoNative(),
       dolby: _dolbyNative(),
       performanceProfile: _performanceNative(),
+      displayMaxHz: _backendGetNative(25),
     );
     _latest = next;
     _controller.add(next);
@@ -597,6 +603,9 @@ final class DashBackend {
   bool get bypassHardwareActive => extendedValue(115) == 1;
   int get bypassThreshold => extendedValue(119);
   int get bypassPhase => extendedValue(120);
+
+  /// Panel peak refresh rate in Hz (x10); -1 while unknown.
+  int get displayMaxHz => extendedValue(25);
   bool setBypassThreshold(int percent) =>
       const <int>{0, 20, 40, 80, 90}.contains(percent) &&
       setExtendedOperation(31, percent);
@@ -656,6 +665,7 @@ final class DashBackend {
         video: _latest.video,
         dolby: _latest.dolby,
         performanceProfile: profile,
+        displayMaxHz: _latest.displayMaxHz,
       );
       if (!_controller.isClosed) {
         _controller.add(_latest);

@@ -3,6 +3,8 @@ import 'dart:ui' show FramePhase;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
+import 'backend/dash_backend.dart';
+
 /// One rolling sample of this app's frame pace, derived from Flutter's own
 /// frame timing callbacks (the same source the platform Choreographer uses).
 /// This measures Dash's own rendering only. Foreground game FPS is read from
@@ -113,7 +115,11 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
   @override
   void initState() {
     super.initState();
-    _targetHz = _refreshRate();
+    // Panel rate from the daemon snapshot (host slot 25, x10). Falls back
+    // to 60 while unknown; the vsync budget and dropped-frame math must not
+    // assume 60 Hz on a 90/120 Hz panel.
+    final int peakX10 = DashBackend.instance.displayMaxHz;
+    if (peakX10 > 0) _targetHz = (peakX10 / 10).round();
     _attached = true;
     SchedulerBinding.instance.addTimingsCallback(_collect);
     _refresh = Timer.periodic(const Duration(milliseconds: 500), (_) {
@@ -126,7 +132,7 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
     });
   }
 
-  int _refreshRate() => 60;
+  int _refreshRate() => _targetHz > 0 ? _targetHz : 60;
 
   void _collect(List<FrameTiming> timings) {
     _frames.addAll(timings);

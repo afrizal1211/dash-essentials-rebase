@@ -107,9 +107,11 @@ fn with_activity<R>(
 
 /// Starts or stops the foreground FPS overlay. `0` means the window
 /// permission is missing, so the caller must not persist "enabled".
+/// A real error returns -1 (and clears the pending JNI exception) so the
+/// caller can report it instead of misreading it as a permission denial.
 #[unsafe(no_mangle)]
 pub extern "C" fn dash_host_fps_overlay(enabled: i32) -> i32 {
-    with_activity(|env, activity| {
+    match with_activity(|env, activity| {
         env.call_method(
             activity,
             "setFpsOverlay",
@@ -117,8 +119,10 @@ pub extern "C" fn dash_host_fps_overlay(enabled: i32) -> i32 {
             &[JValue::Bool(u8::from(enabled != 0))],
         )?
         .i()
-    })
-    .unwrap_or(0)
+    }) {
+        Some(code) => code,
+        None => -1,
+    }
 }
 
 /// Whether Android will let this app draw over other apps.

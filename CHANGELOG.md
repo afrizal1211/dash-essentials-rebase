@@ -6,6 +6,35 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.2
+
+### Changed
+
+- The status notification now uses its own layout instead of mirroring the
+  decompiled RedFox Prism battery notification: the collapsed title carries
+  the headline number (live power in W while discharging, drain %/h otherwise,
+  "Dash Essential" when neither is available), and the compact text reports
+  charging/using state plus on/off/deep-sleep durations. The expanded body
+  stays unchanged. Drain rate is suppressed while charging unless the level
+  reads 100%.
+- Thermal safety in adaptive CPU profiles no longer falls back to full clock
+  when a reading sits at or above the safety ceiling; such readings are
+  clamped to the ceiling so the profile lands at its floor instead of
+  pinning the CPU at max.
+- The FPS overlay's refresh-rate budget now reads the panel peak refresh
+  rate from the backend snapshot instead of assuming 60 Hz.
+
+### Fixed
+
+- A devicetree reporting `max_safe_temp_c` equal to or below
+  `min_operating_temp_c` produced a NaN headroom that clamped the CPU
+  target to 1 kHz; the degenerate band is now treated as "no headroom".
+- CPU topology probing in the FPS telemetry path read cores 0..7 from a
+  hardcoded count; it now parses /sys/devices/system/cpu/present.
+- The FPS overlay JNI bridge mapped every call failure to the
+  permission-missing code; real errors now return -1 so the caller can
+  report them instead of silently disabling the overlay.
+
 ## 1.23.1
 
 ### Changed

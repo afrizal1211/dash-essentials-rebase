@@ -75,13 +75,10 @@ pub fn compute_profile(
     //    readings fall back to "no headroom scaling".
     let max_temp = telemetry.max_safe_temp_c.unwrap_or(85) as i32;
     let min_temp = telemetry.min_operating_temp_c as i32;
-    let raw_cur = telemetry.cpu_temp_dc;
-    // Treat values above 150 as deciCelsius; above 150 °C is not realistic.
-    let cur_temp = if raw_cur > 150 { raw_cur / 10 } else { raw_cur };
-
-    // Safety guards (item 3): negative or absurd readings disable scaling.
-    if !(min_temp..max_temp).contains(&cur_temp) {
-        // Out of range (or missing) — fall back to no thermal scaling.
+    // A devicetree that reports max == min (or max < min) would make the
+    // headroom division produce NaN; .clamp keeps NaN, and NaN as u32 is 0.
+    // Treat a degenerate band as "no headroom" instead of a silent 1 kHz.
+    if max_temp <= min_temp {
         let cpu_target = (telemetry.cpu_max_freq_khz as f32 * base_bias).round() as u32;
         return ProfileConfig {
             cpu_target_khz: cpu_target,
@@ -89,6 +86,25 @@ pub fn compute_profile(
             headroom: 1.0,
         };
     }
+    let raw_cur = telemetry.cpu_temp_dc;
+    // Treat values above 150 as deciCelsius; above 150 °C is not realistic.
+    let cur_temp = if raw_cur > 150 { raw_cur / 10 } else { raw_cur };
+
+    // Safety guards: an implausible reading disables scaling. A reading at
+    // or above the safety ceiling is treated as out of headroom, not as
+    // garbage — clamping it to the ceiling costs nothing when it is real and
+    // keeps a runaway sensor from pinning the CPU at max (below-max bias still
+    // applies through the normal path). A negative or missing reading falls
+    // back to no thermal scaling.
+    if !(min_temp..max_temp).contains(&cur_temp) && cur_temp < max_temp {
+        let cpu_target = (telemetry.cpu_max_freq_khz as f32 * base_bias).round() as u32;
+        return ProfileConfig {
+            cpu_target_khz: cpu_target,
+            mode: ProfileMode::Max,
+            headroom: 1.0,
+        };
+    }
+    let cur_temp = cur_temp.min(max_temp);
     let headroom = ((max_temp - cur_temp) as f32 / (max_temp - min_temp) as f32).clamp(0.0, 1.0);
 
     // 2. Core-count weight, normalised against a reference of 8 cores. Guard
@@ -208,11 +224,15 @@ mod tests {
     }
 
     #[test]
-    fn high_temperature_falls_back_to_bias_only() {
-        // Above max_safe_temp — should also fall back.
+    fn over_ceiling_temperature_clamps_headroom_to_zero() {
+        // Above max_safe_temp — real overheating, not garbage: headroom 0,
+        // target at the floor, mode Steady. A runaway sensor must not pin
+        // the CPU at max.
         let t = base_telemetry(120, 8, 3_000_000);
         let cfg = compute_profile(&t, BIAS_EXTREME_BEAST, None);
-        assert_eq!(cfg.cpu_target_khz, 3_000_000);
+        assert_eq!(cfg.cpu_target_khz, 1);
+        assert_eq!(cfg.mode, ProfileMode::Steady);
+        assert!((cfg.headroom - 0.0).abs() < 0.001);
     }
 
     #[test]

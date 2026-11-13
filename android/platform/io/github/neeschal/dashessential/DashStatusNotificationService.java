@@ -16,8 +16,9 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import java.util.Locale;
 
-/** Prism-style status notification: screen on/off, deep sleep, battery drain,
+/** Own-layout status notification (no Prism mirror): screen on/off, deep sleep, battery drain,
     live power. Deep sleep and the drain rate are computed by the privileged
     daemon and read through the native bridge; screen buckets and the
     screen-off drain are measured in-process. No privileges required. */
@@ -178,27 +179,51 @@ public final class DashStatusNotificationService extends Service implements Runn
 
         // Battery line: level, discharge rate over the daemon's sample window,
         // and live |V·I| power, labelled by the framework charging state.
-        StringBuilder battery = new StringBuilder("Battery: ").append(batteryLevel()).append('%');
+        // The rate uses the daemon's non-rising window; the state label comes
+        // from the framework's sticky battery intent. The two can disagree
+        // while a charge starts or stops between the daemon's last sample and
+        // this paint. The label never overrides the number: a positive rate
+        // shown next to "Charging" would be a lie, so the rate is dropped.
+        int level = batteryLevel();
+        boolean charging = chargingNow();
+        StringBuilder battery = new StringBuilder("Battery: ").append(level).append('%');
         int drain = nativeDrainPctPerHour();
-        if (drain >= 0) battery.append(" · ").append(drain).append("%/h");
+        if (drain >= 0 && (!charging || level == 100)) battery.append(" · ").append(drain).append("%/h");
         long powerMw = nativeBatteryPowerMw();
         if (powerMw > 0) {
-            battery.append(" · ").append(chargingNow() ? "Charging " : "Using ")
-                .append(String.format("%.1fW", powerMw / 1_000.0));
+            battery.append(" · ").append(charging ? "Charging " : "Using ")
+                .append(String.format(Locale.US, "%.1fW", powerMw / 1_000.0));
         }
         body.append('\n').append(battery);
 
         // Last measured screen-off drain, when one exists.
         float offDrain = p.getFloat("off_drain", -1f);
         if (offDrain >= 0f) {
-            body.append("\nScreen-off drain: ").append(String.format("%.1f", offDrain)).append("%/h");
+            body.append("\nScreen-off drain: ").append(String.format(Locale.US, "%.1f", offDrain)).append("%/h");
         }
+
+        // Title carries the headline number so the collapsed row answers the
+        // only question it can fit: what is the battery doing right now.
+        String title = "Dash Essential";
+        if (powerMw > 0) {
+            title = "Dash Essential · " + String.format(Locale.US, "%.1fW", powerMw / 1_000.0);
+        } else if (drain >= 0) {
+            title = "Dash Essential · " + drain + "%/h";
+        }
+
+        // Compact line: the current state first, then the totals. Deep sleep
+        // shows as a duration only, so the compact row stays one glance long.
+        String compact = (charging ? "Charging" : "Using")
+            + " " + level + "%"
+            + " · On " + duration(onMs)
+            + " · Off " + duration(offMs)
+            + (deep >= 0 ? " · Deep " + duration(deepMs) : "");
 
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(getResources().getIdentifier(
                 "ic_fps_overlay", "drawable", getPackageName()))
-            .setContentTitle("Dash Essential")
-            .setContentText(body.toString().replace("\n", " · "))
+            .setContentTitle(title)
+            .setContentText(compact)
             .setStyle(new Notification.BigTextStyle().bigText(body.toString()))
             .setContentIntent(PendingIntent.getActivity(this, 1,
                 new Intent(this, DashActivity.class)
