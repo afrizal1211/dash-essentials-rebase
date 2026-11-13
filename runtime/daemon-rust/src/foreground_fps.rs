@@ -482,9 +482,10 @@ fn cpu_mhz() -> i32 {
     let count = std::fs::read_to_string("/sys/devices/system/cpu/present")
         .ok()
         .and_then(|s| {
-            s.trim().split('-').last().and_then(|last| {
-                last.trim().parse::<u32>().ok().map(|n| n + 1)
-            })
+            s.trim()
+                .split('-')
+                .last()
+                .and_then(|last| last.trim().parse::<u32>().ok().map(|n| n + 1))
         })
         .unwrap_or(8);
     (0..count as usize)

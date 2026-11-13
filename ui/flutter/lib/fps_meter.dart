@@ -132,8 +132,6 @@ class _DashFpsMeterState extends State<DashFpsMeter> {
     });
   }
 
-  int _refreshRate() => _targetHz > 0 ? _targetHz : 60;
-
   void _collect(List<FrameTiming> timings) {
     _frames.addAll(timings);
     // Keep only the last second of samples; older frames are stale.
