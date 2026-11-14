@@ -64,6 +64,14 @@ struct Runtime {
     /// Where the last foreground answer came from. A resume event names the
     /// app outright; anything else had to be read from the framework.
     source: &'static str,
+    /// When the framework first reported a foreground that owns no profile.
+    ///
+    /// A release hands the controls back to the global profile, and a moment
+    /// later the app's profile applies them again. The framework reports
+    /// transient foreground losses the same way as real ones, so the release
+    /// is only honoured once the new foreground has outlived the grace
+    /// window. A resume event still applies immediately.
+    release_seen: Option<Instant>,
 }
 fn runtime() -> &'static Mutex<Runtime> {
     RUNTIME.get_or_init(|| {
@@ -77,6 +85,7 @@ fn runtime() -> &'static Mutex<Runtime> {
             error: None,
             watching: false,
             source: "none",
+            release_seen: None,
         })
     })
 }
@@ -886,31 +895,61 @@ where
         // the framework costs hundreds of milliseconds, and a per-app profile
         // that lands half a second late is a per-app profile that appears
         // broken.
-        r.foreground = match hint {
-            Wake::Resumed(app) => {
-                r.source = "resume-event";
-                Some(app)
-            }
-            Wake::Changed => match read() {
-                Ok(app) => {
-                    r.source = "framework-summary";
-                    app
-                }
-                Err(error) => {
-                    // The framework did not answer. The app that is in the
-                    // foreground is not known, but the profile that is in
-                    // effect still belongs to the last app that was known to
-                    // be in the foreground. Giving it back here is what
-                    // makes a per-app profile look like it was never
-                    // applied: the profile is released and taken again
-                    // within a second, and the user sees the device's own
-                    // profile instead of the app's.
-                    return Err(error);
-                }
-            },
+        let resolved = match hint {
+            Wake::Resumed(ref app) => Ok(Some(app.clone())),
+            Wake::Changed => read(),
         };
+        match resolved {
+            Ok(app) => {
+                let has_profile = app
+                    .as_ref()
+                    .and_then(|a| r.config.profiles.get(a))
+                    .is_some();
+                // A framework summary that names no profiled app releases the
+                // profile. The framework reports a transient foreground loss
+                // (a null top resumed activity between scenes, the shade, the
+                // diagnostics app being opened for a moment) exactly like a
+                // real switch, and each release re-imposes the global profile
+                // for the second the app's own profile is away. The release
+                // is therefore delayed until the unprofiled foreground has
+                // outlived the grace window.
+                let transient_release = matches!(hint, Wake::Changed)
+                    && !has_profile
+                    && matches!(r.owner.status, Status::Active(_));
+                if transient_release {
+                    let now = Instant::now();
+                    let first_seen = r.release_seen.unwrap_or(now);
+                    r.release_seen = Some(first_seen);
+                    if now.duration_since(first_seen) < RELEASE_GRACE {
+                        schedule_recheck(RELEASE_GRACE - now.duration_since(first_seen));
+                        // Keep the app that owned the profile as the answer
+                        // while the loss is still transient.
+                        publish_owned(r.owner.applied_mask());
+                        return Ok(());
+                    }
+                }
+                r.release_seen = None;
+                r.foreground = app;
+                r.source = match &hint {
+                    Wake::Resumed(_) => "resume-event",
+                    Wake::Changed => "framework-summary",
+                };
+            }
+            Err(error) => {
+                // The framework did not answer. The app that is in the
+                // foreground is not known, but the profile that is in
+                // effect still belongs to the last app that was known to
+                // be in the foreground. Giving it back here is what
+                // makes a per-app profile look like it was never
+                // applied: the profile is released and taken again
+                // within a second, and the user sees the device's own
+                // profile instead of the app's.
+                return Err(error);
+            }
+        }
     } else {
         r.foreground = None;
+        r.release_seen = None;
     }
     let profile = r
         .foreground
@@ -1282,6 +1321,18 @@ fn stronger_hint(current: Wake, next: Wake) -> Wake {
         (Wake::Changed, Wake::Resumed(app)) => Wake::Resumed(app),
         (Wake::Changed, Wake::Changed) => Wake::Changed,
     }
+}
+
+/// How long a framework-reported foreground that owns no profile has to
+/// outlast before the per-app profile is released back to the global one.
+const RELEASE_GRACE: Duration = Duration::from_millis(1500);
+
+/// Ask the wake loop to look again once the grace window has elapsed.
+fn schedule_recheck(after: Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        wake(Wake::Changed);
+    });
 }
 
 pub(super) fn wake(hint: Wake) {
@@ -1678,6 +1729,47 @@ mod tests {
     }
 
     #[test]
+    fn a_transient_foreground_loss_does_not_release_the_profile_immediately() {
+        // The framework reports a null top resumed activity between scenes the
+        // same way it reports a real switch. The release must outlive the
+        // grace window before it takes the per-app profile away, or the global
+        // profile is re-imposed for the second the app's profile is away and
+        // the per-app settings look like they never applied.
+        let app = App::new(0, "com.example.game").expect("app");
+        let profile = Profile::parse(&json!({"enabled": true, "touch": 2})).expect("profile");
+        let mut hardware = MockHardware::default();
+        let mut owner = Ownership::<Saved>::default();
+        owner
+            .transition(&mut hardware, Some(&app), Some(&profile), true, true)
+            .expect("apply");
+        let mut config = Config {
+            enabled: true,
+            ..Config::default()
+        };
+        config.profiles.insert(app.clone(), profile);
+        let mut runtime = Runtime {
+            config,
+            config_error: None,
+            owner,
+            foreground: Some(app.clone()),
+            error: None,
+            watching: true,
+            source: "test",
+            release_seen: None,
+        };
+        // Two consecutive summaries that report no foreground at all must keep
+        // the profile armed while the loss is still transient.
+        reconcile_with(&mut runtime, Wake::Changed, true, || Ok::<_, String>(None)).unwrap();
+        reconcile_with(&mut runtime, Wake::Changed, true, || Ok::<_, String>(None)).unwrap();
+        assert!(runtime.release_seen.is_some());
+        assert!(!runtime.owner.held().is_empty());
+        assert_eq!(
+            runtime.foreground.as_ref().map(|app| app.package.as_str()),
+            Some("com.example.game")
+        );
+    }
+
+    #[test]
     fn a_foreground_that_does_not_answer_keeps_the_profile_of_the_app() {
         let app = App::new(0, "com.example.kept").expect("app");
         let profile = Profile::parse(&json!({"enabled":true,"touch":2})).expect("profile");
@@ -1700,6 +1792,7 @@ mod tests {
             error: None,
             watching: true,
             source: "test",
+            release_seen: None,
         };
         // The framework does not answer.
         let result = reconcile_with(&mut runtime, Wake::Changed, true, || {

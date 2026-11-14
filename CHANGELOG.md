@@ -6,6 +6,26 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.6 — Hikari
+
+### Fixed
+
+- A transient foreground loss no longer takes the per-app profile away. The
+  activity manager reports a null top resumed activity between game scenes,
+  while the notification shade is open, or while the diagnostics app itself is
+  in the foreground exactly like a real app switch, and every such report
+  released the profile back to the global one: the global CPU ceiling and the
+  global GPU profile were re-imposed for the second the game's own profile was
+  away, and the per-app CPU ceiling looked like it never applied. The release
+  now waits for the foreground to have owned no profile for a full grace
+  window before it hands the controls back. A resume event still applies
+  immediately, so a real switch is instant.
+
+### Changed
+
+- The module codename shown by the Flutter UI now follows the module (Hikari);
+  it had been left at the 1.23.3 name.
+
 ## 1.23.5 — Sakura
 
 ### Changed
