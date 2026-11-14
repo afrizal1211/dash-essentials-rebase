@@ -6,7 +6,7 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
-## 1.23.3
+## 1.23.3 — Tsuki
 
 ### Fixed
 

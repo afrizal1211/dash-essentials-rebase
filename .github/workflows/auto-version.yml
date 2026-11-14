@@ -104,7 +104,7 @@ jobs:
           CODENAME: ${{ steps.bump.outputs.CODENAME }}
         run: |
           DATE=$(date +%Y-%m-%d)
-          sed -i "1,/^## /s/^## /## ${NEW_VERSION}\n\n### Changed\n- Auto version bump with codename **${CODENAME}**.\n\n## /" CHANGELOG.md
+          sed -i "1,/^## /s/^## /## ${NEW_VERSION} — ${CODENAME}\n\n### Changed\n- Auto version bump with codename **${CODENAME}**.\n\n## /" CHANGELOG.md
 
       - name: Commit and tag
         env:

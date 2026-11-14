@@ -19,7 +19,7 @@ DASH_MANIFEST_CODE="$(sed -n 's/.*android:versionCode="\([^"]*\)".*/\1/p' \
     "$DASH_MANIFEST")"
 DASH_FLUTTER_VERSION="$(sed -n 's/^version: \([^+]*\)+.*/\1/p' "$DASH_FLUTTER")"
 DASH_FLUTTER_CODE="$(sed -n 's/^version: [^+]*+\([0-9]*\).*/\1/p' "$DASH_FLUTTER")"
-DASH_CHANGELOG_VERSION="$(sed -n 's/^## \([0-9][0-9.]*\)$/\1/p' \
+DASH_CHANGELOG_VERSION="$(sed -n 's/^## \([0-9][0-9.]*\)\( .*\)\?$/\1/p' \
     "$DASH_ROOT/CHANGELOG.md" | head -n 1)"
 
 for DASH_VERSION in \
