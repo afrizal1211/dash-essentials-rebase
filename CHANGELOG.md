@@ -6,6 +6,19 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.3
+
+### Fixed
+
+- Per-App Controls no longer hold a control hostage when the platform takes it
+  back. If a vendor service re-clamps a setting after the profile applied it,
+  the re-apply fails and the control is returned to the global settings right
+  away. Before, the control stayed owned by a profile that did not have it, so
+  the global setting for it was refused with "owned by the foreground app's
+  Per-App Controls profile" while the app was not getting it either. The
+  refusal is still reported per control, and the rest of the profile is still
+  applied.
+
 ## 1.23.2
 
 ### Changed

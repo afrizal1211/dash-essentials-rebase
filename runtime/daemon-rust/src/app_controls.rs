@@ -485,10 +485,6 @@ impl<S: Clone> Ownership<S> {
                 }
             }
         }
-        // The controls whose original was read just now. A control that was
-        // captured for this attempt is given back if it cannot be applied;
-        // one that was already owned keeps whatever it had.
-        let captured_now: Vec<Control> = captures.keys().cloned().collect();
         self.baseline.extend(captures);
         let releasing: Vec<_> = self
             .baseline
@@ -534,18 +530,22 @@ impl<S: Clone> Ownership<S> {
                 continue;
             }
             if let Err(error) = hardware.apply(control, target) {
-                // The control is given back on its own and the reason is
-                // recorded. The other controls of the profile are still
-                // applied, because a control the hardware cannot take must
-                // not silence the whole profile.
+                // The control is given back and the reason is recorded.
+                // The other controls of the profile are still applied,
+                // because a control the hardware cannot take must not
+                // silence the whole profile.
                 super::diagnostics::record(
                     super::diagnostics::AREA_PER_APP,
                     "error",
                     "control.apply",
                     &format!("control={control:?} target={target:?} error={error}"),
                 );
-                let fresh = captured_now.contains(control);
-                if fresh && let Some(saved) = self.baseline.get(control).cloned() {
+                // The control is given back even when this profile already
+                // held it. A re-apply that fails — the vendor service clamps
+                // the setting again — must not keep the global settings
+                // hostage behind the ownership journal: the app is not
+                // getting the control, so the app may not hold it either.
+                if let Some(saved) = self.baseline.get(control).cloned() {
                     if let Err(restore_error) = hardware.restore(control, &saved) {
                         // The control could not be given back, so the
                         // state of the hardware is unknown. That is not a
@@ -797,6 +797,40 @@ mod tests {
         assert_eq!(h.writes, 2);
         assert_eq!(owner.status, Status::Active(app()));
     }
+    #[test]
+    fn a_control_the_hardware_refuses_again_is_released_not_kept_hostage() {
+        let mut h = hardware();
+        let mut owner = Ownership::default();
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(1));
+        // The platform takes the control back, and the hardware then refuses
+        // the re-apply: the vendor service clamps the setting again.
+        h.values.insert(Control::Gpu, Target::Gpu(2));
+        h.fail_apply = Some(Control::Gpu);
+        owner
+            .transition(&mut h, Some(&app()), Some(&profile()), true, true)
+            .unwrap();
+        // The control is given back to the global state instead of staying
+        // owned by a profile that does not have it.
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
+        assert!(!owner.owns(&Control::Gpu));
+        assert_eq!(owner.applied_mask() & control_bit(&Control::Gpu), 0);
+        let refused: Vec<_> = owner.refused();
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].0, "Gpu");
+        // The other control still follows its profile.
+        assert_eq!(h.values[&Control::Touch], Target::Touch(2));
+        assert_eq!(owner.status, Status::Active(app()));
+        // Leaving the app restores only what is still held: the released
+        // control is not restored a second time.
+        let writes = h.writes;
+        owner.transition(&mut h, None, None, true, true).unwrap();
+        assert_eq!(h.values[&Control::Gpu], Target::Gpu(3));
+        assert_eq!(h.writes, writes + 1);
+    }
+
     #[test]
     fn a_control_the_platform_took_back_is_written_again() {
         let mut h = hardware();
