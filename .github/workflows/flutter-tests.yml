@@ -35,4 +35,6 @@ jobs:
 
       - name: Analyze code (optional)
         working-directory: ui/flutter
-        run: flutter analyze
+        # Info-level notices (the upstream `material.dart` deprecation) must not
+        # fail the build; warnings and errors still do.
+        run: flutter analyze --no-fatal-infos

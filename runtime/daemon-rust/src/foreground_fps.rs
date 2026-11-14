@@ -484,7 +484,7 @@ fn cpu_mhz() -> i32 {
         .and_then(|s| {
             s.trim()
                 .split('-')
-                .last()
+                .next_back()
                 .and_then(|last| last.trim().parse::<u32>().ok().map(|n| n + 1))
         })
         .unwrap_or(8);
