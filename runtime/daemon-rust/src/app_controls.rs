@@ -50,6 +50,10 @@ pub(super) enum Control {
     CpuRange(u8),
     CpuGovernor(u8),
     CpuCores,
+    /// Scheduler utilisation clamps, a floor and a ceiling in 0..=1024.
+    UClamp,
+    /// MediaTek FPSGO frame-deadline scheduling.
+    FpsGo,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +68,13 @@ pub(super) enum Target {
     },
     CpuGovernor(String),
     CpuCores(u8),
+    /// Scheduler utilisation clamps. The min is a boost floor, the max a
+    /// utilisation ceiling. 0 and 1024 are the kernel's own "no clamp".
+    UClamp {
+        min: u32,
+        max: u32,
+    },
+    FpsGo(bool),
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -88,6 +99,10 @@ pub(super) struct Capabilities {
     pub cpu_frequencies: BTreeMap<u8, BTreeSet<u32>>,
     pub cpu_governors: BTreeMap<u8, BTreeSet<String>>,
     pub manual_cores: bool,
+    /// /sys/devices/system/cpu/cpuN/uclamp_min is published by the kernel.
+    pub uclamp: bool,
+    /// /sys/kernel/fpsgo/common/fpsgo_enable is published by the FPSGO module.
+    pub fpsgo: bool,
 }
 
 impl Capabilities {
@@ -109,6 +124,10 @@ impl Capabilities {
                     .get(policy)
                     .is_some_and(|table| table.contains(value)),
                 (Control::CpuCores, Target::CpuCores(mask)) => self.manual_cores && mask & 1 != 0,
+                (Control::UClamp, Target::UClamp { min, max }) => {
+                    self.uclamp && *min <= 1024 && *max <= 1024 && min <= max
+                }
+                (Control::FpsGo, Target::FpsGo(_)) => self.fpsgo,
                 _ => false,
             };
             if !supported {
@@ -144,7 +163,9 @@ impl Profile {
     pub fn parse(value: &Value) -> Result<Self, String> {
         fields(
             value,
-            &["enabled", "touch", "refresh", "gpu", "cpu", "cores"],
+            &[
+                "enabled", "touch", "refresh", "gpu", "cpu", "cores", "uclamp", "fpsgo",
+            ],
         )?;
         let mut profile = Self {
             enabled: boolean(value, "enabled")?,
@@ -213,6 +234,23 @@ impl Profile {
                 }
             }
         }
+        if let Some(uclamp) = value.get("uclamp").filter(|v| !v.is_null()) {
+            fields(uclamp, &["min", "max"])?;
+            let min = integer(uclamp, "min", 1024)? as u32;
+            let max = integer(uclamp, "max", 1024)? as u32;
+            if max < min {
+                return Err("uclamp maximum below minimum".into());
+            }
+            profile
+                .controls
+                .insert(Control::UClamp, Target::UClamp { min, max });
+        }
+        if let Some(fpsgo) = value.get("fpsgo").filter(|v| !v.is_null()) {
+            let enabled = fpsgo.as_bool().ok_or("invalid fpsgo")?;
+            profile
+                .controls
+                .insert(Control::FpsGo, Target::FpsGo(enabled));
+        }
         Ok(profile)
     }
 
@@ -243,6 +281,12 @@ impl Profile {
                         value["cpu"][&key] = json!({});
                     }
                     value["cpu"][&key]["governor"] = json!(v);
+                }
+                (Control::UClamp, Target::UClamp { min, max }) => {
+                    value["uclamp"] = json!({"min": min, "max": max});
+                }
+                (Control::FpsGo, Target::FpsGo(enabled)) => {
+                    value["fpsgo"] = json!(enabled);
                 }
                 _ => unreachable!("validated control-target pair"),
             }
@@ -386,6 +430,8 @@ pub(super) fn control_bit(control: &Control) -> u32 {
         Control::CpuCores => 1 << 3,
         Control::CpuRange(_) => 1 << 4,
         Control::CpuGovernor(_) => 1 << 5,
+        Control::UClamp => 1 << 6,
+        Control::FpsGo => 1 << 7,
     }
 }
 
@@ -1227,5 +1273,34 @@ mod tests {
         );
         fs::remove_file(path).unwrap();
         fs::remove_dir(dir).unwrap();
+    }
+    #[test]
+    fn a_uclamp_profile_round_trips_and_rejects_out_of_range_requests() {
+        let p = Profile::parse(&json!({"enabled":true,"uclamp":{"min":200,"max":1024}})).unwrap();
+        assert_eq!(Profile::parse(&p.json()).unwrap(), p);
+        assert!(Profile::parse(&json!({"uclamp":{"min":0,"max":1025}})).is_err());
+        assert!(Profile::parse(&json!({"uclamp":{"min":600,"max":400}})).is_err());
+        let caps = Capabilities {
+            uclamp: true,
+            ..Default::default()
+        };
+        caps.validate(&p).unwrap();
+        assert!(
+            caps.validate(&Profile::parse(&json!({"uclamp":{"min":0,"max":1024}})).unwrap())
+                .is_ok()
+        );
+        let unsupported = Capabilities::default();
+        assert!(unsupported.validate(&p).is_err());
+    }
+    #[test]
+    fn an_fpsgo_profile_round_trips_and_is_refused_without_the_node() {
+        let p = Profile::parse(&json!({"enabled":true,"fpsgo":false})).unwrap();
+        assert_eq!(Profile::parse(&p.json()).unwrap(), p);
+        let caps = Capabilities {
+            fpsgo: true,
+            ..Default::default()
+        };
+        caps.validate(&p).unwrap();
+        assert!(Capabilities::default().validate(&p).is_err());
     }
 }

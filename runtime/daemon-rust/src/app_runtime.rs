@@ -100,6 +100,8 @@ fn key(control: &Control) -> String {
         Control::CpuCores => "cores".into(),
         Control::CpuRange(p) => format!("range{p}"),
         Control::CpuGovernor(p) => format!("governor{p}"),
+        Control::UClamp => "uclamp".into(),
+        Control::FpsGo => "fpsgo".into(),
     }
 }
 fn control(key: &str) -> Option<Control> {
@@ -108,6 +110,8 @@ fn control(key: &str) -> Option<Control> {
         "gpu" => Some(Control::Gpu),
         "refresh" => Some(Control::Refresh),
         "cores" => Some(Control::CpuCores),
+        "uclamp" => Some(Control::UClamp),
+        "fpsgo" => Some(Control::FpsGo),
         _ => [0, 4, 7].into_iter().find_map(|p| {
             if key == format!("range{p}") {
                 Some(Control::CpuRange(p))
@@ -261,6 +265,8 @@ impl Hardware for Adapter {
                     "preferred":cli("/system/bin/cmd",&["display","get-user-preferred-display-mode","0"])?,
                     "vendor":capture_vendor_refresh(user)?})
             }
+            Control::UClamp => read_cpu_uclamp(),
+            Control::FpsGo => read_fpsgo(),
             _ => Value::Null,
         };
         let saved = Saved { state, live };
@@ -298,6 +304,8 @@ impl Hardware for Adapter {
                     _ => {}
                 })
             }
+            (Control::UClamp, Target::UClamp { min, max }) => set_cpu_uclamp(*min, *max),
+            (Control::FpsGo, Target::FpsGo(enabled)) => set_fpsgo_enabled(*enabled),
             (Control::CpuCores, Target::CpuCores(mask)) => {
                 set_cpu_manual(true)?;
                 apply_saved_cpu_mask(*mask as i32)?;
@@ -374,6 +382,12 @@ impl Hardware for Adapter {
                     }
                 }
                 Control::Refresh => restore_refresh(&saved.live)?,
+                Control::UClamp => restore_cpu_uclamp(&saved.live)?,
+                Control::FpsGo => {
+                    if let Some(enabled) = saved.live.get("enabled").and_then(Value::as_i64) {
+                        set_fpsgo_enabled(enabled != 0)?;
+                    }
+                }
             }
         }
         // The preferences of the device are restored and saved here, outside
@@ -692,6 +706,8 @@ fn capabilities() -> Result<Capabilities, String> {
         );
     }
     caps.manual_cores = Path::new("/sys/devices/system/cpu/cpu1/online").exists();
+    caps.uclamp = uclamp_supported();
+    caps.fpsgo = fpsgo_supported();
     Ok(caps)
 }
 fn capabilities_json() -> Result<Value, String> {
@@ -701,7 +717,8 @@ fn capabilities_json() -> Result<Value, String> {
         cpu[p.to_string()] = json!({"frequencies":caps.cpu_frequencies.get(&p),"governors":caps.cpu_governors.get(&p)});
     }
     Ok(
-        json!({"touch":caps.touch,"gpu":caps.gpu,"refresh":caps.refresh,"cpu":cpu,"cores":caps.manual_cores}),
+        json!({"touch":caps.touch,"gpu":caps.gpu,"refresh":caps.refresh,"cpu":cpu,"cores":caps.manual_cores,
+            "uclamp":caps.uclamp,"fpsgo":caps.fpsgo}),
     )
 }
 /// The package currently in the foreground, resolved the same way the per-app

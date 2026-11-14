@@ -1115,6 +1115,116 @@ fn set_cpu_governor(policy: i32, governor: &str) -> Result<(), String> {
     }
 }
 
+/// CPU indices published by the kernel, parsed from /sys/devices/system/cpu/present.
+/// The same layout the frequency controls already assume, reused so a hotplugged
+/// or big.LITTLE asymmetric layout cannot move a clamp to the wrong CPU.
+fn uclamp_cpu_indices() -> Vec<u32> {
+    read_trimmed("/sys/devices/system/cpu/present")
+        .ok()
+        .and_then(|raw| {
+            let span = raw.rsplit('-').next().unwrap_or("0");
+            span.parse::<u32>().ok().map(|last| last + 1)
+        })
+        .map(|count| (0..count).collect())
+        .unwrap_or_else(|| (0..8).collect())
+}
+
+/// Whether the kernel publishes per-CPU scheduler utilisation clamps.
+fn uclamp_supported() -> bool {
+    Path::new("/sys/devices/system/cpu/cpu0/uclamp_min").exists()
+}
+
+/// The live clamp pair of every published CPU, for capture and restore.
+fn read_cpu_uclamp() -> serde_json::Value {
+    let mut cpus = serde_json::json!({});
+    for cpu in uclamp_cpu_indices() {
+        let min = read_trimmed(format!("/sys/devices/system/cpu/cpu{cpu}/uclamp_min"))
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+        let max = read_trimmed(format!("/sys/devices/system/cpu/cpu{cpu}/uclamp_max"))
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+        if let (Some(min), Some(max)) = (min, max) {
+            cpus[cpu.to_string()] = serde_json::json!([min, max]);
+        }
+    }
+    serde_json::json!({"cpus": cpus})
+}
+
+/// Write a utilisation floor and ceiling to every published CPU.
+///
+/// A clamp survives the vendor thermal service: the scheduler keeps the
+/// aggregated clamps, so a profile keeps its floor even when the same service
+/// rewrites scaling_min_freq. Both bounds are honoured exactly, because unlike
+/// the frequency nodes the kernel never narrows these on its own.
+fn set_cpu_uclamp(min: u32, max: u32) -> Result<(), String> {
+    if min > 1024 || max > 1024 || min > max {
+        return Err("invalid uclamp request".into());
+    }
+    for cpu in uclamp_cpu_indices() {
+        for (attr, value) in [("uclamp_min", min), ("uclamp_max", max)] {
+            let path = PathBuf::from(format!("/sys/devices/system/cpu/cpu{cpu}/{attr}"));
+            if !path.exists() {
+                continue;
+            }
+            let actual = write_verified(&path, &value.to_string())?;
+            if actual.parse::<u32>().unwrap_or(u32::MAX) != value {
+                return Err(format!("cpu{cpu} {attr} verify {actual}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restore the clamps captured before a profile was applied.
+fn restore_cpu_uclamp(saved: &serde_json::Value) -> Result<(), String> {
+    let Some(cpus) = saved.get("cpus").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    for (cpu, pair) in cpus {
+        let Some(values) = pair.as_array() else {
+            continue;
+        };
+        let (Some(min), Some(max)) = (
+            values.first().and_then(serde_json::Value::as_u64),
+            values.get(1).and_then(serde_json::Value::as_u64),
+        ) else {
+            continue;
+        };
+        for (attr, value) in [("uclamp_min", min), ("uclamp_max", max)] {
+            let path = PathBuf::from(format!("/sys/devices/system/cpu/cpu{cpu}/{attr}"));
+            if path.exists() {
+                write_verified(&path, &value.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether the FPSGO frame scheduler publishes its enable switch.
+fn fpsgo_supported() -> bool {
+    Path::new("/sys/kernel/fpsgo/common/fpsgo_enable").exists()
+}
+
+/// The live FPSGO switch, for capture and restore.
+fn read_fpsgo() -> serde_json::Value {
+    let enabled = read_trimmed("/sys/kernel/fpsgo/common/fpsgo_enable")
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok());
+    serde_json::json!({"enabled": enabled})
+}
+
+/// Enable or disable the MediaTek FPSGO frame-deadline scheduler.
+fn set_fpsgo_enabled(enabled: bool) -> Result<(), String> {
+    let path = PathBuf::from("/sys/kernel/fpsgo/common/fpsgo_enable");
+    let value = if enabled { "1" } else { "0" };
+    let actual = write_verified(&path, value)?;
+    if actual.trim() == value {
+        Ok(())
+    } else {
+        Err(format!("fpsgo_enable verify {actual}"))
+    }
+}
 fn cpu_policy_default_range(policy: i32) -> Option<(i32, i32)> {
     match policy {
         0 => Some((300, 2100)),

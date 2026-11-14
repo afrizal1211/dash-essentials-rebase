@@ -6,6 +6,26 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.8 — Rigel
+
+### Changed
+
+- Per-App Controls learned two new controls, both detected from the kernel
+  nodes and offered only when the nodes exist, so a kernel without them is
+  unchanged:
+
+  - Scheduler utilisation clamps (UClamp): a per-app minimum and maximum
+    between 0 and 1024 are written to /sys/devices/system/cpu/cpuN/uclamp_min
+    and uclamp_max for every published CPU. A clamp is honoured by the
+    scheduler directly, so a floor survives the vendor thermal service
+    rewriting CPU frequencies. The clamps captured before the profile are
+    restored on exit.
+
+  - FPSGO: the MediaTek frame-deadline scheduler can be switched per app
+    through /sys/kernel/fpsgo/common/fpsgo_enable, for scenes that miss
+    fewer deadlines without kernel frame scheduling. The original state is
+    restored when the profile releases.
+
 ## 1.23.7 — Sora
 
 ### Changed

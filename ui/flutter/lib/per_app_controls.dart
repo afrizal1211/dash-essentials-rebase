@@ -899,6 +899,11 @@ class _PerAppEditorState extends State<_PerAppEditor> {
   Map<String, dynamic> _cpu(int policy) => Map<String, dynamic>.from(
     (_draft['cpu'] as Map?)?['$policy'] as Map? ?? <String, dynamic>{},
   );
+  Map<String, dynamic> _uclamp() =>
+      (_draft['uclamp'] as Map?)?.cast<String, dynamic>() ??
+      <String, dynamic>{};
+  void _uclampSet(int min, int max) =>
+      _set('uclamp', <String, dynamic>{'min': min, 'max': max});
   void _cpuSet(int policy, String key, dynamic value) {
     final Map<String, dynamic> cpu = Map<String, dynamic>.from(
       _draft['cpu'] as Map? ?? <String, dynamic>{},
@@ -1148,6 +1153,112 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                   style: TextStyle(fontSize: 12, height: 1.4),
                 ),
               ],
+            ),
+          ),
+        if (widget.capabilities['uclamp'] == true)
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: SurfaceCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const _PerAppSectionTitle(
+                    title: 'Scheduler clamps',
+                    icon: Icons.tune_rounded,
+                    accent: Color(0xFFFFB74D),
+                  ),
+                  const SizedBox(height: 14),
+                  _choice(
+                    'UClamp',
+                    _draft['uclamp'] == null ? null : 'manual',
+                    const <String, String>{'manual': 'Set utilisation clamps'},
+                    (String? v) => _set(
+                      'uclamp',
+                      v == null
+                          ? null
+                          : <String, dynamic>{'min': 256, 'max': 1024},
+                    ),
+                  ),
+                  if (_draft['uclamp'] != null) ...<Widget>[
+                    Text(
+                      'Minimum ${_uclamp()['min'] ?? 0}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    Slider(
+                      min: 0,
+                      max: 1024,
+                      divisions: 128,
+                      value: (_uclamp()['min'] as num? ?? 0).toDouble(),
+                      onChanged: widget.busy || _saving
+                          ? null
+                          : (double value) => _uclampSet(
+                              value.round().clamp(0, (_uclamp()['max'] as num? ?? 1024).toInt()),
+                              (_uclamp()['max'] as num? ?? 1024).toInt(),
+                            ),
+                    ),
+                    Text(
+                      'Maximum ${_uclamp()['max'] ?? 1024}',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                    Slider(
+                      min: 0,
+                      max: 1024,
+                      divisions: 128,
+                      value: (_uclamp()['max'] as num? ?? 1024).toDouble(),
+                      onChanged: widget.busy || _saving
+                          ? null
+                          : (double value) => _uclampSet(
+                              (_uclamp()['min'] as num? ?? 0).toInt(),
+                              value.round().clamp((_uclamp()['min'] as num? ?? 0).toInt(), 1024),
+                            ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'A clamp is honoured by the scheduler even when the thermal service rewrites CPU frequencies, so a floor survives vendor clamping.',
+                      style: TextStyle(fontSize: 11, height: 1.4),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        if (widget.capabilities['fpsgo'] == true)
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: SurfaceCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const _PerAppSectionTitle(
+                    title: 'Frame scheduler',
+                    icon: Icons.speed_rounded,
+                    accent: Color(0xFF4FC3F7),
+                  ),
+                  const SizedBox(height: 14),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: <Widget>[
+                      const Flexible(
+                        child: Text(
+                          'FPSGO frame scheduling',
+                          style: TextStyle(fontSize: 14),
+                        ),
+                      ),
+                      Switch(
+                        value: _draft['fpsgo'] == true,
+                        onChanged: widget.busy || _saving
+                            ? null
+                            : (bool value) => _set('fpsgo', value),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'FPSGO schedules rendering to the display rate. Some heavy scenes miss fewer deadlines with it off; the state captured before the profile is restored on exit.',
+                    style: TextStyle(fontSize: 11, height: 1.4),
+                  ),
+                ],
+              ),
             ),
           ),
         const SizedBox(height: 16),
