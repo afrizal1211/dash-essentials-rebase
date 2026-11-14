@@ -6,6 +6,29 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.10 — Lyra
+
+### Added
+
+- Conditional Profiles, a new Control Hub screen and the fixed layer between
+  the per-app profiles and the global one. A conditional answers the state of
+  the device instead of an app: while charging, while the screen is off.
+- The stack has one precedence rule and it is fixed: a charging condition
+  outranks the screen state, and the profile the stack picks only takes over
+  when no foreground app holds its own profile. The global profile is what
+  the stack falls back to.
+- The daemon polls the charger and the screen state, so a conditional flips
+  within seconds of the state changing instead of waiting for the next
+  foreground event.
+- Host bridge whitelists `GET conditional.list`,
+  `SET conditional.save <json>`, and `ACTION conditional.delete <name>`.
+
+### Changed
+
+- `GET app.controls` reports the active conditional as the owner while one
+  holds the controls, so the owner field stays an honest answer about what
+  is holding them.
+
 ## 1.23.9 — Spica
 
 ### Added

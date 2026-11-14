@@ -1,4 +1,4 @@
 // Release names are our little night sky, not a hardware capability claim.
-const String dashVersionName = '1.23.9';
-const int dashVersionCode = 12309;
-const String dashReleaseCodename = 'Spica';
+const String dashVersionName = '1.23.10';
+const int dashVersionCode = 12310;
+const String dashReleaseCodename = 'Lyra';

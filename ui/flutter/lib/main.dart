@@ -34,6 +34,7 @@ import 'surface_lines.dart';
 part 'system_colors.dart';
 part 'per_app_controls.dart';
 part 'dexopt_scheduler.dart';
+part 'conditional_stack.dart';
 part 'diagnostics_logs.dart';
 part 'fps_history.dart';
 part 'easter_eggs.dart';
@@ -79,6 +80,7 @@ enum DashScreen {
   systemColors,
   perAppControls,
   dexopt,
+  conditional,
   subsystemClocks,
   healthLogs,
 }
@@ -118,6 +120,8 @@ extension DashScreenName on DashScreen {
         return 'Per-App Controls';
       case DashScreen.dexopt:
         return 'DexOpt Scheduler';
+      case DashScreen.conditional:
+        return 'Conditional Profiles';
       case DashScreen.subsystemClocks:
         return 'Memory DVFS & UFS';
       case DashScreen.healthLogs:
@@ -1059,6 +1063,8 @@ class _DashShellState extends State<DashShell>
         return PerAppControlsScreen(onBack: _back);
       case DashScreen.dexopt:
         return DexOptSchedulerScreen(onBack: _back);
+      case DashScreen.conditional:
+        return ConditionalStackScreen(onBack: _back);
       case DashScreen.subsystemClocks:
         return SubsystemClocksScreen(onBack: _back);
       case DashScreen.healthLogs:
@@ -5118,6 +5124,16 @@ class HubsScreen extends StatelessWidget {
                       icon: Icons.schedule_rounded,
                       accent: const Color(0xFF4DD0E1),
                       onTap: () => onOpen(DashScreen.dexopt),
+                    ),
+                    const _HubControlDivider(),
+                    _HubControlRow(
+                      title: 'Conditional Profiles',
+                      subtitle:
+                          'Profiles for while the device is charging or the screen is off, above the global profile.',
+                      wrapSubtitle: true,
+                      icon: Icons.layers_rounded,
+                      accent: const Color(0xFFFFB74D),
+                      onTap: () => onOpen(DashScreen.conditional),
                     ),
                   ],
                 ),

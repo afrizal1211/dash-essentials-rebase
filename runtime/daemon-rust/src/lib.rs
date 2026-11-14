@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 mod app_controls;
 mod app_runtime;
 mod bypass_policy;
+mod conditional;
 mod dexopt;
 mod diagnostics;
 mod foreground_app;

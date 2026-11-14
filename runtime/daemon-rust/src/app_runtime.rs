@@ -72,6 +72,10 @@ struct Runtime {
     /// is only honoured once the new foreground has outlived the grace
     /// window. A resume event still applies immediately.
     release_seen: Option<Instant>,
+    /// Profiles that apply while a condition holds and no foreground app
+    /// owns the controls. The strongest match wins, so a charging profile
+    /// outranks one for the screen being off.
+    stack: conditional::Stack,
 }
 fn runtime() -> &'static Mutex<Runtime> {
     RUNTIME.get_or_init(|| {
@@ -86,6 +90,7 @@ fn runtime() -> &'static Mutex<Runtime> {
             watching: false,
             source: "none",
             release_seen: None,
+            stack: conditional::Stack::load(),
         })
     })
 }
@@ -1063,14 +1068,29 @@ where
         r.foreground = None;
         r.release_seen = None;
     }
-    let profile = r
+    let mut profile = r
         .foreground
         .as_ref()
-        .and_then(|app| r.config.profiles.get(app));
+        .and_then(|app| r.config.profiles.get(app))
+        .cloned();
+    let mut owner_app = r.foreground.clone();
+    // No foreground app owns the controls; the strongest condition that
+    // currently holds takes over instead of the global profile. The stack is
+    // named as the owner, because the stack is what holds the controls for
+    // as long as its condition is true.
+    if profile.is_none()
+        && let Some(conditional) = r.stack.active(
+            crate::usb("online") == "1",
+            crate::screen_is_on() == Some(true),
+        )
+    {
+        profile = Some(conditional.profile().clone());
+        owner_app = App::new(0, "conditional_stack").ok();
+    }
     let result = r.owner.transition(
         &mut Adapter::new(),
-        r.foreground.as_ref(),
-        profile,
+        owner_app.as_ref(),
+        profile.as_ref(),
         watching,
         watching,
     );
@@ -1103,7 +1123,14 @@ fn status(r: &Runtime) -> Value {
         .into_iter()
         .map(|(control, error)| json!({"control":control,"error":error}))
         .collect();
-    json!({"config":r.config.json(),"status":state,"owner":owner,"foreground":foreground,"controls":controls,"refused":refused,"error":r.config_error.as_ref().or(r.error.as_ref()),"watching":r.watching,"serviceEnabled":service_control::enabled()})
+    let conditional = r
+        .stack
+        .active(
+            crate::usb("online") == "1",
+            crate::screen_is_on() == Some(true),
+        )
+        .map(|c| c.json());
+    json!({"config":r.config.json(),"status":state,"owner":owner,"foreground":foreground,"controls":controls,"refused":refused,"error":r.config_error.as_ref().or(r.error.as_ref()),"watching":r.watching,"serviceEnabled":service_control::enabled(),"conditional":conditional})
 }
 /// A per-app health summary for the diagnostics view.
 ///
@@ -1200,6 +1227,9 @@ pub(super) fn is_command(cmd: &str) -> bool {
         || cmd.starts_with("SET app.enabled ")
         || cmd.starts_with("ACTION app.reset ")
         || cmd == "ACTION app.reset_all"
+        || cmd == "GET conditional.list"
+        || cmd.starts_with("SET conditional.save ")
+        || cmd.starts_with("ACTION conditional.delete ")
 }
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if cmd == "GET app.fps" {
@@ -1303,6 +1333,32 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
         .map_err(|_| "per-app runtime lock poisoned")?;
     if cmd == "GET app.controls" {
         return Ok(status(&r));
+    }
+    if cmd == "GET conditional.list" {
+        return Ok(r.stack.list());
+    }
+    if let Some(raw) = cmd.strip_prefix("SET conditional.save ") {
+        if raw.len() > 3000 {
+            return Err("conditional too large".into());
+        }
+        let v: Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+        let caps = capabilities()?;
+        let mut stack = r.stack.clone();
+        stack.upsert(&v, &caps)?;
+        stack.save()?;
+        r.stack = stack;
+        r.error = reconcile(&mut r, Wake::Changed).err();
+        wake(Wake::Changed);
+        return Ok(r.stack.list());
+    }
+    if let Some(name) = cmd.strip_prefix("ACTION conditional.delete ") {
+        let mut stack = r.stack.clone();
+        stack.remove(name)?;
+        stack.save()?;
+        r.stack = stack;
+        r.error = reconcile(&mut r, Wake::Changed).err();
+        wake(Wake::Changed);
+        return Ok(r.stack.list());
     }
     if !RECOVERY_READY.load(Ordering::Acquire) {
         return Err("Per-App Controls is waiting for recovery; no new override was applied".into());
@@ -1537,6 +1593,27 @@ pub(super) fn start() {
         RECOVERY_READY.store(true, Ordering::Release);
         #[cfg(target_os = "android")]
         std::thread::spawn(event_reader);
+        // The conditional stack answers the charger and the screen, and
+        // neither broadcasts a change. Poll both, and wake the owner when a
+        // condition the stack could care about flips, so the stack is
+        // applied as the state changes instead of on the next unrelated
+        // foreground event. Two sysfs reads every ten seconds is cheap not
+        // only next to the profile transitions it triggers, but also next
+        // to doing nothing at all when the stack is empty.
+        std::thread::spawn(move || {
+            let mut charging = crate::usb("online") == "1";
+            let mut screen = crate::screen_is_on();
+            loop {
+                std::thread::sleep(Duration::from_secs(10));
+                let now_charging = crate::usb("online") == "1";
+                let now_screen = crate::screen_is_on();
+                if now_charging != charging || now_screen != screen {
+                    charging = now_charging;
+                    screen = now_screen;
+                    wake(Wake::Changed);
+                }
+            }
+        });
         wake(Wake::Changed);
         while let Ok(first) = receiver.recv() {
             // Keep the strongest hint while events arrive. A resume event
@@ -1908,6 +1985,7 @@ mod tests {
             watching: true,
             source: "test",
             release_seen: None,
+            stack: conditional::Stack::default(),
         };
         // Two consecutive summaries that report no foreground at all must keep
         // the profile armed while the loss is still transient.
@@ -1945,6 +2023,7 @@ mod tests {
             watching: true,
             source: "test",
             release_seen: None,
+            stack: conditional::Stack::default(),
         };
         // The framework does not answer.
         let result = reconcile_with(&mut runtime, Wake::Changed, true, || {
@@ -1955,6 +2034,53 @@ mod tests {
         // because the platform was slow.
         assert!(!runtime.owner.held().is_empty());
         assert!(matches!(runtime.owner.status, Status::Active(_)));
+    }
+
+    #[test]
+    fn a_conditional_profile_takes_over_when_no_app_is_in_front() {
+        // The conditional stack sits between the per-app layer and the global
+        // profile: with no app in front that owns the controls, the strongest
+        // condition that holds decides what the device runs.
+        let mut stack = conditional::Stack::default();
+        stack
+            .upsert(
+                &json!({
+                    "name": "unconditional",
+                    "enabled": true,
+                    "charging": null,
+                    "screen_on": null,
+                    "profile": {"enabled": true, "touch": 1}
+                }),
+                &Capabilities {
+                    touch: std::collections::BTreeSet::from([1u8, 2, 3]),
+                    ..Capabilities::default()
+                },
+            )
+            .expect("upsert");
+        let mut runtime = Runtime {
+            config: Config {
+                enabled: true,
+                ..Config::default()
+            },
+            config_error: None,
+            owner: Ownership::<Saved>::default(),
+            foreground: None,
+            error: None,
+            watching: true,
+            source: "test",
+            release_seen: None,
+            stack,
+        };
+        reconcile_with(&mut runtime, Wake::Changed, true, || Ok::<_, String>(None)).unwrap();
+        // The stack is the owner now, which is what distinguishes it from the
+        // global profile the runtime would otherwise fall back to. Whether
+        // the control actually lands on the metal depends on the device
+        // answering, which the adapter does on a phone and refuses in a test
+        // environment; the choice the runtime made is the portable assertion.
+        match &runtime.owner.status {
+            Status::Active(app) => assert_eq!(app.package, "conditional_stack"),
+            _ => panic!("the conditional stack did not take over"),
+        }
     }
 
     #[test]
