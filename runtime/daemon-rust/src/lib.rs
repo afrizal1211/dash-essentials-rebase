@@ -9378,7 +9378,7 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // the ladder, so such a readback is a clamp and not a write failure.
         assert!(super::gpu_devfreq_readback_is_clamped("520000000"));
         assert!(super::gpu_devfreq_readback_is_clamped(" 598000000\n"));
-assert!(super::gpu_devfreq_readback_is_clamped("338000000"));
+        assert!(super::gpu_devfreq_readback_is_clamped("338000000"));
         assert!(super::gpu_devfreq_readback_is_clamped("1612000000"));
         // Outside the operating range the readback is a genuine rejection.
         assert!(!super::gpu_devfreq_readback_is_clamped("0"));
