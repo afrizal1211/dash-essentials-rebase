@@ -6,6 +6,24 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.4 — Hoshi
+
+### Fixed
+
+- GPU frequency writes no longer fail when the vendor thermal/power service
+  clamps the node below what was requested. On MT6991 the per-app profiles
+  apply cleanly, but the thermal service (THERMAL_AP) keeps the Mali devfreq
+  node below the requested value while the device is warm, for example
+  598 MHz requested with 520 MHz kept. The strict read-back check treated
+  that as a write failure, so every re-apply and restore failed and the whole
+  per-app profile (CPU governors, cores, touch) was rolled back repeatedly,
+  ending with the global profile re-applied mid-game. A read-back that stays
+  inside the GPU operating range is now accepted as a vendor clamp: the write
+  returns success, the clamped value is persisted as the live one, and a
+  `devfreq.clamped` warning is recorded in diagnostics. Read-backs outside
+  the operating range are still hard failures. The same tolerance is applied
+  to the GPU min/max sysfs writes and to the uncap reset check.
+
 ## 1.23.3 — Tsuki
 
 ### Fixed

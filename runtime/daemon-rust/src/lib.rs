@@ -1872,35 +1872,57 @@ fn profile_uses_ged_boost(profile: i32) -> bool {
     matches!(profile, 1 | 3)
 }
 
+/// A devfreq readback that stayed inside the operating range was clamped by
+/// the vendor thermal/power service instead of being rejected by the node.
+fn gpu_devfreq_readback_is_clamped(actual: &str) -> bool {
+    let Some(actual_hz) = actual.trim().parse::<u64>().ok() else {
+        return false;
+    };
+    let floor_hz = DASH_GPU_FLOOR_MHZ as u64 * 1_000_000;
+    let top_hz = DASH_GPU_TOP_MHZ as u64 * 1_000_000;
+    (floor_hz..=top_hz).contains(&actual_hz)
+}
+
 /// Write a devfreq node of the Mali device.
+///
+/// The vendor thermal/power service may clamp what the node keeps below (for
+/// max_freq) or above (for min_freq) what was written. That is not a failure:
+/// the write landed as far as the platform allows, so the accepted value is
+/// recorded and the caller keeps what it got instead of erroring out and
+/// rolling the whole profile back. A readback outside the operating range is
+/// still an error.
 fn gpu_write_devfreq(node: &str, value: &str) -> Result<(), String> {
-    // Try sysfs path first
-    if let Some(path) = gpu_devfreq_sysfs_path() {
-        let full = path.join(node);
-        if full.exists() {
-            service_control::write(&full, value).map_err(|e| format!("{node}: {e}"))?;
-            let actual = read_trimmed(&full).map_err(|e| format!("{node} verify: {e}"))?;
-            if actual == value {
-                return Ok(());
-            }
-            return Err(format!(
-                "gpu {node} verify: requested {value}, got {actual}"
-            ));
+    let write_one = |full: &Path| -> Result<String, String> {
+        service_control::write(full, value).map_err(|e| format!("{node}: {e}"))?;
+        read_trimmed(full).map_err(|e| format!("{node} verify: {e}"))
+    };
+    let accept_clamped = |actual: &str| {
+        if !gpu_devfreq_readback_is_clamped(actual) {
+            return false;
         }
-    }
-    // Try misc path
-    if let Some(path) = gpu_devfreq_misc_path() {
+        diagnostics::record(
+            diagnostics::AREA_GPU,
+            "warn",
+            "devfreq.clamped",
+            &format!("node={node} requested={value} actual={actual}"),
+        );
+        true
+    };
+    for path in gpu_devfreq_sysfs_path()
+        .into_iter()
+        .chain(gpu_devfreq_misc_path())
+    {
         let full = path.join(node);
-        if full.exists() {
-            service_control::write(&full, value).map_err(|e| format!("{node}: {e}"))?;
-            let actual = read_trimmed(&full).map_err(|e| format!("{node} verify: {e}"))?;
-            if actual == value {
-                return Ok(());
-            }
-            return Err(format!(
-                "gpu {node} verify: requested {value}, got {actual}"
-            ));
+        if !full.exists() {
+            continue;
         }
+        let actual = write_one(&full)?;
+        if actual == value || accept_clamped(&actual) {
+            return Ok(());
+        }
+        return Err(format!(
+            "gpu {node} verify: requested {value}, got {actual}"
+        ));
     }
     Err("GPU devfreq path not found".into())
 }
@@ -7044,15 +7066,25 @@ fn set_gpu_min_freq(mhz: i32) -> Result<(), String> {
     );
 
     let resolved = gpu_hz_to_mhz(hz);
-    if gpu_get_min_freq_mhz() != resolved {
+    let live = gpu_get_min_freq_mhz();
+    // The vendor may run the floor above what was asked for. Accept the
+    // higher floor, but never one above the top or below the request.
+    if !(mhz..=DASH_GPU_TOP_MHZ).contains(&live) {
         return Err(format!(
-            "GPU minimum frequency verify failed: requested {mhz} MHz, live {} MHz",
-            gpu_get_min_freq_mhz()
+            "GPU minimum frequency verify failed: requested {mhz} MHz, live {live} MHz"
         ));
     }
+    if live != resolved {
+        diagnostics::record(
+            diagnostics::AREA_GPU,
+            "warn",
+            "min_freq.clamped",
+            &format!("requested {resolved} MHz, accepted {live} MHz"),
+        );
+    }
     mutate_persisted_state(|state| {
-        state.gpu_min_freq_mhz = resolved;
-        if resolved < DASH_GPU_TOP_MHZ {
+        state.gpu_min_freq_mhz = live;
+        if live < DASH_GPU_TOP_MHZ {
             state.gpu_uncap = 0;
         }
     })?;
@@ -7094,15 +7126,25 @@ fn set_gpu_max_freq(mhz: i32) -> Result<(), String> {
     );
 
     let resolved = gpu_hz_to_mhz(hz);
-    if gpu_get_max_freq_mhz() != resolved {
+    let live = gpu_get_max_freq_mhz();
+    // The vendor thermal service may keep the ceiling below what was asked
+    // for. Accept the lower ceiling, but never one below the floor.
+    if !(DASH_GPU_FLOOR_MHZ..=mhz).contains(&live) {
         return Err(format!(
-            "GPU maximum frequency verify failed: requested {mhz} MHz, live {} MHz",
-            gpu_get_max_freq_mhz()
+            "GPU maximum frequency verify failed: requested {mhz} MHz, live {live} MHz"
         ));
     }
+    if live != resolved {
+        diagnostics::record(
+            diagnostics::AREA_GPU,
+            "warn",
+            "max_freq.clamped",
+            &format!("requested {resolved} MHz, accepted {live} MHz"),
+        );
+    }
     mutate_persisted_state(|state| {
-        state.gpu_max_freq_mhz = resolved;
-        if resolved < DASH_GPU_TOP_MHZ {
+        state.gpu_max_freq_mhz = live;
+        if live < DASH_GPU_TOP_MHZ {
             state.gpu_uncap = 0;
         }
     })?;
@@ -7163,8 +7205,14 @@ fn set_gpu_uncap(enable: bool) -> Result<(), String> {
         gpu_write_devfreq("governor", "simple_ondemand")?;
         let floor_mhz = gpu_hz_to_mhz(floor);
         let top_mhz = gpu_hz_to_mhz(top);
-        if gpu_get_min_freq_mhz() != floor_mhz
-            || gpu_get_max_freq_mhz() != top_mhz
+        let live_min = gpu_get_min_freq_mhz();
+        let live_max = gpu_get_max_freq_mhz();
+        // Frequency limits may come back clamped by the vendor thermal
+        // service. The reset still holds when both ends are inside the
+        // operating range: the floor not above the top, the ceiling not below
+        // the floor.
+        if !(floor_mhz..=DASH_GPU_TOP_MHZ).contains(&live_min)
+            || !(DASH_GPU_FLOOR_MHZ..=top_mhz).contains(&live_max)
             || gpu_get_governor() != "simple_ondemand"
             || gpu_get_power_policy() != "coarse_demand"
             || gpu_get_dvfs_enabled() != 1
@@ -7183,8 +7231,8 @@ fn set_gpu_uncap(enable: bool) -> Result<(), String> {
             state.gpu = "performance".to_string();
             state.gpu_governor = "performance".to_string();
         } else {
-            state.gpu_min_freq_mhz = gpu_hz_to_mhz(gpu_floor_hz());
-            state.gpu_max_freq_mhz = gpu_hz_to_mhz(gpu_top_hz());
+            state.gpu_min_freq_mhz = gpu_get_min_freq_mhz();
+            state.gpu_max_freq_mhz = gpu_get_max_freq_mhz();
             state.gpu_ged_boost = 0;
             state.gpu_power_policy = "coarse_demand".to_string();
             state.gpu = "simple_ondemand".to_string();
@@ -9322,6 +9370,21 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         // Three entries publish 338 MHz; the first of them is the ceiling.
         assert_eq!(gpu_ged_index_for_ceiling(338_000_000, &ladder), Some(49));
         assert_eq!(gpu_ged_index_for_ceiling(1, &ladder), None);
+    }
+
+    #[test]
+    fn a_devfreq_readback_inside_the_operating_range_was_clamped_not_rejected() {
+        // The vendor thermal service keeps the value the node holds inside
+        // the ladder, so such a readback is a clamp and not a write failure.
+        assert!(super::gpu_devfreq_readback_is_clamped("520000000"));
+        assert!(super::gpu_devfreq_readback_is_clamped(" 598000000\n"));
+assert!(super::gpu_devfreq_readback_is_clamped("338000000"));
+        assert!(super::gpu_devfreq_readback_is_clamped("1612000000"));
+        // Outside the operating range the readback is a genuine rejection.
+        assert!(!super::gpu_devfreq_readback_is_clamped("0"));
+        assert!(!super::gpu_devfreq_readback_is_clamped(""));
+        assert!(!super::gpu_devfreq_readback_is_clamped("99999999999"));
+        assert!(!super::gpu_devfreq_readback_is_clamped("not a number"));
     }
 
     #[test]
