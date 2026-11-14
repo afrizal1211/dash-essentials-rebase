@@ -711,6 +711,80 @@ pub(super) fn foreground_package() -> Option<String> {
     foreground().ok().flatten().map(|app| app.package)
 }
 
+/// The out-of-memory adjustment below which the framework keeps a process
+/// that is in the foreground. The framework publishes this per process under
+/// /proc/pid/oom_score_adj and it is the mechanism Prism's daemon uses to
+/// track the top app: it survives a null top resumed activity, because that
+/// does not change which processes the framework keeps scheduled.
+const PROC_FOREGROUND_ADJ: i32 = 200;
+
+/// One app process seen while scanning /proc.
+struct ProcCandidate {
+    process: String,
+    user: u32,
+    adj: i32,
+}
+
+/// Whether /proc still shows the app that owns the profile as a foreground
+/// process. A null top resumed activity does not demote the game's own
+/// processes, so the process scan is the tie-breaker that tells a transient
+/// foreground loss (the process is still foreground) from a real one.
+fn proc_keeps_foreground(candidates: &[ProcCandidate], app: &App) -> bool {
+    candidates.iter().any(|c| {
+        c.adj <= PROC_FOREGROUND_ADJ
+            && c.user == app.user
+            && (c.process == app.package || c.process.starts_with(&format!("{}:", app.package)))
+    })
+}
+
+/// Scan /proc once for app processes the framework keeps in the foreground.
+fn proc_candidates() -> Vec<ProcCandidate> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid < 100 {
+            continue;
+        }
+        let Ok(cmd) = fs::read_to_string(format!("/proc/{pid}/cmdline")) else {
+            continue;
+        };
+        let Some(process) = cmd.split('\0').next().map(str::to_owned) else {
+            continue;
+        };
+        if process.is_empty() {
+            continue;
+        }
+        let adj = fs::read_to_string(format!("/proc/{pid}/oom_score_adj"))
+            .ok()
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .unwrap_or(1000);
+        if adj > PROC_FOREGROUND_ADJ {
+            continue;
+        }
+        let user = fs::read_to_string(format!("/proc/{pid}/status"))
+            .ok()
+            .and_then(|raw| {
+                raw.lines()
+                    .find(|line| line.starts_with("Uid:"))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|uid| uid.parse::<u32>().ok())
+            })
+            .map(|uid| uid / 100_000)
+            .unwrap_or(0);
+        out.push(ProcCandidate { process, user, adj });
+    }
+    out
+}
+
 /// The Android user a package was last resolved to.
 ///
 /// The framework answers most of the time, but when it does not the fallback
@@ -917,6 +991,27 @@ where
                     && !has_profile
                     && matches!(r.owner.status, Status::Active(_));
                 if transient_release {
+                    // The process scan adapts the mechanism Prism's daemon
+                    // uses to track the top app. A null top resumed activity
+                    // does not demote the game's own processes, so while /proc
+                    // still shows them in the foreground the framework summary
+                    // is a transient one and the profile is kept without
+                    // arming a release at all.
+                    if let Some(owner) = r.foreground.as_ref()
+                        && proc_keeps_foreground(&proc_candidates(), owner)
+                    {
+                        diagnostics::record(
+                            diagnostics::AREA_PER_APP,
+                            "info",
+                            "foreground.proc_confirmed",
+                            &format!(
+                                "processes of {} are still foreground, keeping the profile",
+                                owner.package
+                            ),
+                        );
+                        publish_owned(r.owner.applied_mask());
+                        return Ok(());
+                    }
                     let now = Instant::now();
                     let first_seen = r.release_seen.unwrap_or(now);
                     r.release_seen = Some(first_seen);
@@ -1726,6 +1821,46 @@ mod tests {
         assert_eq!(before.perf, after.perf);
         assert_eq!(before.gpu, after.gpu);
         assert_eq!(before.gpu_governor, after.gpu_governor);
+    }
+
+    #[test]
+    fn a_process_scan_tells_a_transient_loss_from_a_real_one() {
+        let app = App::new(0, "com.example.game").expect("app");
+        // The main process still in the foreground keeps the profile.
+        let live = vec![ProcCandidate {
+            process: "com.example.game".to_owned(),
+            user: 0,
+            adj: 0,
+        }];
+        assert!(proc_keeps_foreground(&live, &app));
+        // A background process of the same package does not.
+        let bg = vec![ProcCandidate {
+            process: "com.example.game".to_owned(),
+            user: 0,
+            adj: 900,
+        }];
+        assert!(!proc_keeps_foreground(&bg, &app));
+        // A foreground process of another package does not.
+        let other = vec![ProcCandidate {
+            process: "com.other".to_owned(),
+            user: 0,
+            adj: 0,
+        }];
+        assert!(!proc_keeps_foreground(&other, &app));
+        // Another Android user running the same package name does not.
+        let dual = vec![ProcCandidate {
+            process: "com.example.game".to_owned(),
+            user: 10,
+            adj: 0,
+        }];
+        assert!(!proc_keeps_foreground(&dual, &app));
+        // A service process of the package in the foreground does.
+        let svc = vec![ProcCandidate {
+            process: "com.example.game:gl".to_owned(),
+            user: 0,
+            adj: 100,
+        }];
+        assert!(proc_keeps_foreground(&svc, &app));
     }
 
     #[test]

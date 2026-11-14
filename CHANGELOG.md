@@ -6,6 +6,21 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.7 — Sora
+
+### Changed
+
+- Foreground detection now has a third source, adapted from the mechanism
+  RedFox Prism's daemon uses: a scan of /proc that reads each process's
+  Android user, command line, and out-of-memory adjustment. When the activity
+  manager reports a foreground that owns no profile, the process scan decides
+  what it means. The game's own processes are still in the foreground (low
+  oom_score_adj) means the report is transient, so the profile is kept at
+  once, without waiting for the release grace window, and the event is
+  recorded in diagnostics as a foreground.proc_confirmed info entry. Only a
+  profiled app's processes are matched, and the Android user must match too,
+  so a dual app or a work profile clone never confirms the other user.
+
 ## 1.23.6 — Hikari
 
 ### Fixed
