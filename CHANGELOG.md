@@ -6,6 +6,22 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.9 — Spica
+
+### Added
+
+- DexOpt Scheduler, a new Control Hub screen. The daemon recompiles app dex
+  code on a weekly, biweekly, or monthly schedule, but only while the screen
+  is off and the device is charging, so the work costs nothing the user can
+  feel. Packages can be excluded line by line, and the screen shows the last
+  run and the last failure. The schedule lives in `dexopt.json` next to the
+  other daemon state.
+
+### Changed
+
+- The host bridge now allows `GET dexopt.status` and `SET dexopt.schedule`
+  through the per-app controls socket, so the scheduler screen talks to the
+  daemon over the same channel the other controls use.
 ## 1.23.8 — Rigel
 
 ### Changed

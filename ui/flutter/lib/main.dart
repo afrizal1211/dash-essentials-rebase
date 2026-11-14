@@ -33,6 +33,7 @@ import 'surface_lines.dart';
 
 part 'system_colors.dart';
 part 'per_app_controls.dart';
+part 'dexopt_scheduler.dart';
 part 'diagnostics_logs.dart';
 part 'fps_history.dart';
 part 'easter_eggs.dart';
@@ -77,6 +78,7 @@ enum DashScreen {
   maliGpu,
   systemColors,
   perAppControls,
+  dexopt,
   subsystemClocks,
   healthLogs,
 }
@@ -114,6 +116,8 @@ extension DashScreenName on DashScreen {
         return 'System Colors';
       case DashScreen.perAppControls:
         return 'Per-App Controls';
+      case DashScreen.dexopt:
+        return 'DexOpt Scheduler';
       case DashScreen.subsystemClocks:
         return 'Memory DVFS & UFS';
       case DashScreen.healthLogs:
@@ -1053,6 +1057,8 @@ class _DashShellState extends State<DashShell>
         return SystemColorsScreen(onBack: _back);
       case DashScreen.perAppControls:
         return PerAppControlsScreen(onBack: _back);
+      case DashScreen.dexopt:
+        return DexOptSchedulerScreen(onBack: _back);
       case DashScreen.subsystemClocks:
         return SubsystemClocksScreen(onBack: _back);
       case DashScreen.healthLogs:
@@ -5102,6 +5108,16 @@ class HubsScreen extends StatelessWidget {
                       icon: Icons.apps_rounded,
                       accent: const Color(0xFFB087FF),
                       onTap: () => onOpen(DashScreen.perAppControls),
+                    ),
+                    const _HubControlDivider(),
+                    _HubControlRow(
+                      title: 'DexOpt Scheduler',
+                      subtitle:
+                          'Rebuild app dex code on a schedule while the screen is off and charging.',
+                      wrapSubtitle: true,
+                      icon: Icons.schedule_rounded,
+                      accent: const Color(0xFF4DD0E1),
+                      onTap: () => onOpen(DashScreen.dexopt),
                     ),
                   ],
                 ),

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 mod app_controls;
 mod app_runtime;
 mod bypass_policy;
+mod dexopt;
 mod diagnostics;
 mod foreground_app;
 mod foreground_fps;
@@ -6321,6 +6322,7 @@ pub fn start_background_services() {
     std::thread::spawn(late_boot_restore_loop);
     std::thread::spawn(maintenance_loop);
     std::thread::spawn(cpu_frequency_guard);
+    std::thread::spawn(dexopt::start);
     std::thread::spawn(gaming_dynamic_guard);
     #[cfg(target_os = "android")]
     std::thread::spawn(charging_power_supply_event_loop);
@@ -8650,6 +8652,18 @@ fn handle_enabled_command(line: &str) -> String {
     }
     if cmd == "GET snapshot" {
         return format!("OK {}", snapshot());
+    }
+    if cmd == "GET dexopt.status" {
+        return match dexopt::status_json() {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
+    if let Some(raw) = cmd.strip_prefix("SET dexopt.schedule ") {
+        return match dexopt::set_schedule(raw) {
+            Ok(()) => "OK applied".into(),
+            Err(error) => format!("ERR {error}"),
+        };
     }
     if cmd == "GET profile.scaling" {
         let telemetry = telemetry::sample(None);

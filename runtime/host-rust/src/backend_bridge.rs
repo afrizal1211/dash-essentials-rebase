@@ -515,6 +515,8 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         || command == "GET logs"
         || command == "GET health"
         || command == "GET profile.scaling"
+        || command == "GET dexopt.status"
+        || command.starts_with("SET dexopt.schedule ")
         || command.starts_with("SET perf.hysteresis ")
         || command == "ACTION logs.export"
         || command == "ACTION logs.clear"
