@@ -702,6 +702,44 @@ pub(super) fn foreground_package() -> Option<String> {
     foreground().ok().flatten().map(|app| app.package)
 }
 
+/// The Android user a package was last resolved to.
+///
+/// The framework answers most of the time, but when it does not the fallback
+/// only has the package name from the accessibility tracker. Without this
+/// cache the fallback always assumes user 0, so a dual app or a work profile
+/// app (user 10, 999, ...) never matches its own per-app profile even though
+/// the daemon saw it in the foreground minutes earlier.
+static PACKAGE_USER_CACHE: OnceLock<Mutex<BTreeMap<String, u32>>> = OnceLock::new();
+
+fn remember_package_user(app: &App) {
+    if let Ok(mut cache) = PACKAGE_USER_CACHE
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        cache.entry(app.package.clone()).or_insert(app.user);
+    }
+}
+
+fn remembered_user(package: &str) -> Option<u32> {
+    PACKAGE_USER_CACHE
+        .get()
+        .and_then(|cache| cache.lock().ok())
+        .and_then(|cache| cache.get(package).copied())
+}
+
+/// The accessibility tracker and the activity manager can disagree while a
+/// transition is in flight. The framework wins the decision, but the
+/// disagreement is recorded because it is the fingerprint of the per-app
+/// profile landing on the wrong app.
+fn record_foreground_mismatch(tracker: &str, framework: &str) {
+    diagnostics::record(
+        diagnostics::AREA_PER_APP,
+        "warn",
+        "foreground.mismatch",
+        &format!("accessibility tracker reports {tracker}, framework reports {framework}"),
+    );
+}
+
 fn foreground() -> Result<Option<App>, String> {
     // First try the AccessibilityService-based tracker (more efficient)
     if let Some(info) = crate::foreground_app::ForegroundAppTracker::global().current_app()
@@ -711,15 +749,25 @@ fn foreground() -> Result<Option<App>, String> {
         if let Ok(raw) = cli("/system/bin/dumpsys", &["activity", "activities"])
             && let Ok(Some(app)) = parse_foreground(&raw)
         {
+            remember_package_user(&app);
+            if app.package != info.package_name {
+                record_foreground_mismatch(&info.package_name, &app.package);
+            }
             return Ok(Some(app));
         }
-        // Fallback: create App from package name (user 0)
-        return App::new(0, &info.package_name).map(Some);
+        // Fallback: the framework did not answer, so the user the package was
+        // last resolved to is the best answer there is.
+        let user = remembered_user(&info.package_name).unwrap_or(0);
+        return App::new(user, &info.package_name).map(Some);
     }
 
     // Fallback to dumpsys parsing
     let raw = cli("/system/bin/dumpsys", &["activity", "activities"])?;
-    parse_foreground(&raw)
+    let app = parse_foreground(&raw)?;
+    if let Some(app) = app.as_ref() {
+        remember_package_user(app);
+    }
+    Ok(app)
 }
 fn parse_foreground(raw: &str) -> Result<Option<App>, String> {
     if raw.lines().any(|line| {
@@ -1482,6 +1530,16 @@ mod tests {
             stronger_hint(Wake::Resumed(app), Wake::Resumed(other.clone())),
             Wake::Resumed(ref current) if current.package == "com.example.other"
         ));
+    }
+
+    #[test]
+    fn a_remembered_user_survives_a_framework_that_does_not_answer() {
+        // A dual app or a work profile app runs as another user, so the
+        // fallback must not hand it back to the profile lookup as user 0.
+        let app = super::App::new(10, "com.example.dualapp").unwrap();
+        super::remember_package_user(&app);
+        assert_eq!(super::remembered_user("com.example.dualapp"), Some(10));
+        assert_eq!(super::remembered_user("com.example.other"), None);
     }
 
     #[test]

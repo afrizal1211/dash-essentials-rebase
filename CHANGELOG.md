@@ -6,6 +6,34 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.5 — Sakura
+
+### Changed
+
+- Foreground app detection keeps the Android user a package was last resolved
+  to. When the activity manager does not answer and only the accessibility
+  tracker has the package, the profile lookup used to assume user 0, so a
+  dual app or a work profile app never matched its own per-app profile. The
+  last resolved user is now remembered and reused. A disagreement between the
+  accessibility tracker and the activity manager is recorded in diagnostics
+  as a `foreground.mismatch` warning, which is the fingerprint of a per-app
+  profile landing on the wrong app.
+
+### Fixed
+
+- Per-app CPU frequency ranges no longer fail when the vendor thermal
+  service clamps the cluster below what was requested, the same way the GPU
+  path was fixed in 1.23.4. A read-back that stays inside the requested
+  range (the ceiling came down or the floor went up) is accepted as an
+  armed-but-capped state with a `cpu_freq.clamped` warning instead of
+  refusing the control, which made the per-app CPU ceiling look like it was
+  never applied. Read-backs that widen past the request are still hard
+  failures.
+- A CPU governor that is missing from `scaling_available_governors` on the
+  first read is re-read once before the write is refused. The policy list is
+  re-published while a thermal mode change or hotplug is in flight, so a
+  single short read refused governors that were available a moment later.
+
 ## 1.23.4 — Hoshi
 
 ### Fixed

@@ -1095,9 +1095,16 @@ fn set_cpu_governor(policy: i32, governor: &str) -> Result<(), String> {
     let base = format!("/sys/devices/system/cpu/cpufreq/policy{policy}");
     let available = format!("{base}/scaling_available_governors");
     if !list_contains(&available, governor) {
-        return Err(format!(
-            "governor {governor} not available for policy{policy}"
-        ));
+        // The policy governor list is re-published while a thermal mode change
+        // or hotplug is in flight, so a single read can come back short and
+        // the very next read has the governor back. Re-read once before
+        // refusing the control.
+        std::thread::sleep(Duration::from_millis(50));
+        if !list_contains(&available, governor) {
+            return Err(format!(
+                "governor {governor} not available for policy{policy}"
+            ));
+        }
     }
     let path = PathBuf::from(format!("{base}/scaling_governor"));
     let actual = write_verified(&path, governor)?;
@@ -1517,6 +1524,7 @@ fn apply_cluster_freq_controls_unlocked(
 
     let mut actual_min = get_cpu_cluster_live_min_freq(policy);
     let mut actual_max = get_cpu_cluster_live_max_freq(policy);
+    let mut clamped = false;
     for attempt in 0..4 {
         write_vendor_constraints()?;
 
@@ -1546,13 +1554,58 @@ fn apply_cluster_freq_controls_unlocked(
             if actual_min == min_mhz && actual_max == max_mhz {
                 return Ok(());
             }
+            if cpu_range_clamped(policy, min_mhz, max_mhz, actual_min, actual_max) {
+                clamped = true;
+                break;
+            }
             // Thermal daemon overrode our settings, retry
+        } else if cpu_range_clamped(policy, min_mhz, max_mhz, actual_min, actual_max) {
+            // The vendor thermal service narrowed the range on the same write
+            // instead of overriding it afterwards. Stop fighting it: the exact
+            // retry loop would refuse a range the platform will keep, and a
+            // refused per-app control rolls the whole profile back.
+            clamped = true;
+            break;
         }
+    }
+
+    if clamped {
+        // The hardware holds a narrower range than requested, but still inside
+        // it: the vendor thermal service clamped the ceiling or raised the
+        // floor. Report it as armed-but-capped like the GPU path does, instead
+        // of failing the write and losing the rest of the profile.
+        diagnostics::record(
+            diagnostics::AREA_CPU,
+            "warn",
+            "cpu_freq.clamped",
+            &format!(
+                "policy{policy} requested {min_mhz}-{max_mhz} MHz, live {actual_min}-{actual_max} MHz"
+            ),
+        );
+        return Ok(());
     }
 
     Err(format!(
         "policy{policy} frequency verify requested {min_mhz}-{max_mhz} MHz, live {actual_min}-{actual_max} MHz"
     ))
+}
+
+/// Whether the live CPU range is a vendor clamp of the requested one.
+///
+/// A clamp narrows the range: the floor went up or the ceiling went down, but
+/// the live range never widens past what was asked for. Widening means the
+/// write genuinely did not land, so the caller keeps failing.
+fn cpu_range_clamped(
+    _policy: i32,
+    min_mhz: i32,
+    max_mhz: i32,
+    actual_min: i32,
+    actual_max: i32,
+) -> bool {
+    (min_mhz..=max_mhz).contains(&actual_min)
+        && (min_mhz..=max_mhz).contains(&actual_max)
+        && actual_min <= actual_max
+        && (actual_min != min_mhz || actual_max != max_mhz)
 }
 
 fn apply_cluster_freq_controls(policy: i32, min_mhz: i32, max_mhz: i32) -> Result<(), String> {
@@ -9385,6 +9438,22 @@ io.github.neeschal.dashessential 10228 0 /data/user/0/io.github.neeschal.dashess
         assert!(!super::gpu_devfreq_readback_is_clamped(""));
         assert!(!super::gpu_devfreq_readback_is_clamped("99999999999"));
         assert!(!super::gpu_devfreq_readback_is_clamped("not a number"));
+    }
+
+    #[test]
+    fn a_clamped_cpu_range_is_narrowed_not_widened() {
+        // A vendor clamp narrows the range: the ceiling comes down or the
+        // floor goes up, and the live range stays inside what was requested.
+        assert!(super::cpu_range_clamped(4, 300, 3000, 300, 2500));
+        assert!(super::cpu_range_clamped(4, 300, 3000, 600, 3000));
+        assert!(super::cpu_range_clamped(4, 300, 3000, 600, 2500));
+        // Widening past the request is a genuine write failure.
+        assert!(!super::cpu_range_clamped(4, 300, 3000, 200, 3000));
+        assert!(!super::cpu_range_clamped(4, 300, 3000, 300, 3200));
+        // Matching the request exactly is not a clamp, and an inverted range
+        // is never one either.
+        assert!(!super::cpu_range_clamped(4, 300, 3000, 300, 3000));
+        assert!(!super::cpu_range_clamped(4, 300, 3000, 3000, 300));
     }
 
     #[test]
