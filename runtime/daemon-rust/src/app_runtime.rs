@@ -1594,11 +1594,23 @@ pub(super) fn apply_config(config: Config) -> Result<(), String> {
 /// and validated against the live capabilities the way a single edit is, so
 /// the stack cannot hold a control this device cannot take; entries it cannot
 /// honour are named in the reply. The reply is the per-domain report:
-/// `{"ok":true,"rejected":[names]}`.
+/// `{"ok":true,"rejected":[names]}`. `null` means the exporter never had a
+/// stack, which replaces with an empty one.
 pub(super) fn replace_conditionals(items: &Value) -> Result<serde_json::Value, String> {
-    let caps = capabilities()?;
+    let empty = serde_json::json!([]);
+    let entries = match items {
+        Value::Null => &empty,
+        value => value,
+    };
     let mut stack = conditional::Stack::default();
-    let rejected = stack.replace(items, &caps)?;
+    let rejected = if entries.as_array().is_some_and(|list| list.is_empty()) {
+        // Nothing to validate: an empty replace clears the stack without
+        // asking the hardware what it could do.
+        Vec::new()
+    } else {
+        let caps = capabilities()?;
+        stack.replace(entries, &caps)?
+    };
     stack.save()?;
     let mut r = runtime()
         .lock()

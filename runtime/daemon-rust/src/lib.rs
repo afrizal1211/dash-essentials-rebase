@@ -4407,6 +4407,124 @@ fn import_chunk(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Apply the bundle the chunked upload assembled. Import replaces everything:
+/// per-app profiles, the conditional stack, the dexopt schedule, and the
+/// persisted hardware state. Each domain is applied independently, because
+/// aborting a replace-everything import midway leaves the phone on a blank
+/// slate, which is worse than a transfer minus one domain; the reply names
+/// every domain's outcome and every line the state parser refused.
+fn import_apply() -> Result<serde_json::Value, String> {
+    let raw = {
+        let mut upload = IMPORT_UPLOAD
+            .lock()
+            .map_err(|_| "import upload lock poisoned")?;
+        upload
+            .take()
+            .ok_or_else(|| "no import upload pending".to_string())?
+            .bytes
+    };
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|e| format!("import JSON: {e}"))?;
+    if bundle["schema"].as_u64() != Some(1) {
+        return Err("unsupported backup schema".into());
+    }
+    if bundle["app"]["platform"].as_str() != Some("dash") {
+        return Err("bundle is not from this platform".into());
+    }
+    if !service_control::enabled() {
+        return Err("Dash Essential is disabled; enable it in Settings".into());
+    }
+    let hardware = bundle["hardware"]
+        .as_object()
+        .ok_or("missing hardware block")?;
+
+    // Per-app profiles: release any borrowed control and clear the profiles
+    // first, then make the imported config durable and live.
+    let profiles = (|| -> Result<serde_json::Value, String> {
+        app_runtime::reset_all()?;
+        let config = match &hardware["profiles"] {
+            serde_json::Value::Null => app_controls::Config::default(),
+            value => {
+                let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
+                app_controls::Config::parse(&text)?
+            }
+        };
+        app_runtime::apply_config(config)?;
+        Ok(serde_json::json!({"ok": true}))
+    })();
+    let profiles = profiles
+        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    // The conditional stack: `null` on the exporter means no stack, which
+    // replaces with an empty one here.
+    let conditionals = app_runtime::replace_conditionals(&hardware["conditionals"])
+        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    // The dexopt schedule: `null` means the exporter never set one, so the
+    // schedule on this device is left alone.
+    let dexopt = match &hardware["dexopt"] {
+        serde_json::Value::Null => serde_json::json!({"ok": true, "skipped": true}),
+        value => match serde_json::to_string(value)
+            .map_err(|e| e.to_string())
+            .and_then(|text| dexopt::set_schedule(&text))
+        {
+            Ok(()) => serde_json::json!({"ok": true}),
+            Err(error) => serde_json::json!({"ok": false, "error": error}),
+        },
+    };
+
+    // The persisted hardware state, replayed through the exact path a `SET`
+    // takes and then through the boot-restore path, so both the file and the
+    // live device carry the import.
+    let state = (|| -> Result<serde_json::Value, String> {
+        let lines = hardware["state"]
+            .as_array()
+            .ok_or("missing state lines")?;
+        let raw: String = lines
+            .iter()
+            .filter_map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (parsed, rejected) = parse_persisted_state_reported(&raw);
+        mutate_persisted_state(|current| *current = parsed.clone())?;
+        restore_persisted_state();
+        let runtime_result = reassert_runtime_state(true);
+        reassert_persisted_governors();
+        // Charging is restored only once per boot by design
+        // (CHARGING_BOOT_RESTORE_DONE), so an import applies the profile now:
+        // without this, the imported setting would stay dormant until the
+        // next reboot.
+        if parsed.bypass_charging != 1 && valid_charging_profile(parsed.charging) {
+            let _ = apply_charging_profile(parsed.charging);
+        }
+        let mut result = serde_json::json!({"ok": true, "rejected": rejected});
+        if let Err(error) = runtime_result {
+            result["error"] = serde_json::json!(error);
+        }
+        Ok(result)
+    })();
+    let state = state
+        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    let summary = format!(
+        "state={} profiles={} conditionals={} dexopt={}",
+        state["ok"], profiles["ok"], conditionals["ok"], dexopt["ok"]
+    );
+    diagnostics::record(
+        diagnostics::AREA_BACKUP,
+        "info",
+        "import",
+        &summary,
+    );
+
+    Ok(serde_json::json!({
+        "state": state,
+        "profiles": profiles,
+        "conditionals": conditionals,
+        "dexopt": dexopt,
+    }))
+}
+
 fn mutate_persisted_state<F>(f: F) -> Result<(), String>
 where
     F: FnOnce(&mut PersistedState),
@@ -8895,6 +9013,19 @@ fn handle_command_inner(line: &str) -> String {
             Err(error) => format!("ERR {error}"),
         };
     }
+    if cmd == "ACTION import.apply" {
+        // A top-level branch, never an arm of `handle_enabled_command`: that
+        // function runs under a held `GATE.read`, and applying an import
+        // needs the write lock.
+        let _gate = match service_control::GATE.write() {
+            Ok(gate) => gate,
+            Err(_) => return "ERR service transition lock poisoned".into(),
+        };
+        return match import_apply() {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     let _gate = match service_control::GATE.read() {
         Ok(gate) => gate,
         Err(_) => return "ERR service transition lock poisoned".into(),
@@ -9670,6 +9801,131 @@ mod tests {
 
     fn reset_import_upload() {
         *super::IMPORT_UPLOAD.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn import_refuses_a_foreign_platform_before_touching_state() {
+        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let directory = std::path::PathBuf::from(directory);
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "rodin"},
+                "hardware": {
+                    "state": ["charging=65"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": serde_json::Value::Null,
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let error = super::import_apply().unwrap_err();
+            assert_eq!(error, "bundle is not from this platform");
+            assert!(super::IMPORT_UPLOAD.lock().unwrap().is_none());
+            assert!(!directory.join("state.conf").exists());
+            return;
+        }
+        let directory = std::env::temp_dir()
+            .join(format!("dash-import-{}-platform", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = state_dir_child(
+            "tests::import_refuses_a_foreign_platform_before_touching_state",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_applies_state_and_names_rejected_lines() {
+        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let directory = std::path::PathBuf::from(directory);
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "dash"},
+                "hardware": {
+                    "state": ["charging=65", "touch=2", "unknown_key=1"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": serde_json::Value::Null,
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let reply = super::import_apply().unwrap();
+            assert_eq!(reply["state"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(
+                reply["state"]["rejected"],
+                serde_json::json!(["unknown_key=1"])
+            );
+            assert_eq!(reply["profiles"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["conditionals"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["dexopt"]["ok"], serde_json::Value::Bool(true));
+            let saved = std::fs::read_to_string(directory.join("state.conf")).unwrap();
+            assert!(saved.contains("charging=65"), "state.conf: {saved}");
+            assert!(!saved.contains("unknown_key"), "state.conf: {saved}");
+            return;
+        }
+        let directory = std::env::temp_dir()
+            .join(format!("dash-import-{}-state", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("service.json"),
+            "{\"enabled\":true,\"configured\":false}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::import_applies_state_and_names_rejected_lines",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_reports_a_failed_domain_and_still_applies_the_rest() {
+        if let Some(_directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "dash"},
+                "hardware": {
+                    "state": ["charging=65"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": {"cadence": "hourly", "day": 0, "opt_out": []},
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let reply = super::import_apply().unwrap();
+            assert_eq!(reply["dexopt"]["ok"], serde_json::Value::Bool(false));
+            assert!(reply["dexopt"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("cadence"));
+            assert_eq!(reply["state"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["conditionals"]["ok"], serde_json::Value::Bool(true));
+            return;
+        }
+        let directory = std::env::temp_dir()
+            .join(format!("dash-import-{}-partial", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("service.json"),
+            "{\"enabled\":true,\"configured\":false}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::import_reports_a_failed_domain_and_still_applies_the_rest",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_without_an_upload_is_refused() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        let error = super::import_apply().unwrap_err();
+        assert_eq!(error, "no import upload pending");
     }
 
     #[test]
