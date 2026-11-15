@@ -69,3 +69,16 @@ jobs:
       # integration tests are written for and the one a developer runs by hand.
       - name: Clippy
         run: cargo clippy -p dash-essential-daemon --all-targets -- -D warnings
+
+      # The daemon's unit and integration tests are written to run on a plain
+      # Linux host: every Android-only half is behind
+      # #[cfg(target_os = "android")] with a non-Android counterpart, and its
+      # integration tests are #![cfg(not(target_os = "android"))]. This step is
+      # the only CI path that executes them, so a broken test is reported on
+      # the change that broke it instead of by a user's phone.
+      #
+      # `runtime/host-rust` is deliberately not tested here: it links the
+      # Android system libraries unconditionally (see the note above) and does
+      # not build off Android, so there is no host-side test that could run.
+      - name: Tests
+        run: cargo test -p dash-essential-daemon
