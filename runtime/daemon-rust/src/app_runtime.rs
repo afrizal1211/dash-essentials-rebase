@@ -1620,6 +1620,7 @@ pub(super) fn replace_conditionals(items: &Value) -> Result<serde_json::Value, S
     wake(Wake::Changed);
     Ok(serde_json::json!({"ok": true, "rejected": rejected}))
 }
+
 /// The hint that carries the most information.
 ///
 /// A resume event names the app that took the foreground, so it is preferred
