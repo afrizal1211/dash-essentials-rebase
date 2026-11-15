@@ -211,13 +211,13 @@ void main() {
     await tester.tap(find.text('com.example.game'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('Set minimum and maximum'),
+      find.text('Dynamic range'),
       250,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.drag(find.byType(Scrollable).first, const Offset(0, -220));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Set minimum and maximum'));
+    await tester.tap(find.text('Dynamic range'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('Maximum frequency'),
@@ -237,6 +237,36 @@ void main() {
     expect(saved['profile']['cpu'], <String, dynamic>{
       '0': <String, dynamic>{
         'range': <int>[300, 1000],
+      },
+    });
+    await tester.pumpWidget(const SizedBox());
+  });
+  testWidgets('exact lock pins both limits to one supported clock', (
+    WidgetTester tester,
+  ) async {
+    final List<String> commands = <String>[];
+    await show(tester, commands);
+    await tester.ensureVisible(find.text('com.example.game'));
+    await tester.tap(find.text('com.example.game'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Dynamic range'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -220));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Exact lock'));
+    await tester.pumpAndSettle();
+    final String command = commands.lastWhere(
+      (String c) => c.startsWith('SET app.profile '),
+    );
+    final Map<String, dynamic> saved =
+        jsonDecode(command.substring('SET app.profile '.length))
+            as Map<String, dynamic>;
+    expect(saved['profile']['cpu'], <String, dynamic>{
+      '0': <String, dynamic>{
+        'range': <int>[2100, 2100],
       },
     });
     await tester.pumpWidget(const SizedBox());
