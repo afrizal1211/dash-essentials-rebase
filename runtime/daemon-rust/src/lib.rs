@@ -4195,12 +4195,20 @@ fn load_persisted_state() -> PersistedState {
 }
 
 fn parse_persisted_state(raw: &str) -> PersistedState {
+    parse_persisted_state_reported(raw).0
+}
+
+/// The same parse, naming every `key=value` line the field table could not
+/// consume. Import reporting relies on this: a line the destination device
+/// cannot honour must reach the user instead of vanishing.
+fn parse_persisted_state_reported(raw: &str) -> (PersistedState, Vec<String>) {
     // State written before GPU/CPU profile isolation did not carry this key.
     // Mark an existing file as legacy until the parser finds the new marker.
     let mut state = PersistedState {
         gpu_profile_cpu_isolated: 0,
         ..PersistedState::default()
     };
+    let mut rejected = Vec::new();
 
     for line in raw.lines() {
         let line = line.trim();
@@ -4209,24 +4217,31 @@ fn parse_persisted_state(raw: &str) -> PersistedState {
         }
 
         let Some((key, value)) = line.split_once('=') else {
+            rejected.push(line.to_string());
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
 
+        let mut matched = false;
         for field in PERSISTED_FIELDS {
             if field.key != key {
                 continue;
             }
             if field.text {
                 (field.write_text)(&mut state, value);
+                matched = true;
             } else if let Some(parsed) = value.parse().ok().and_then(field.parse) {
                 (field.write)(&mut state, parsed);
+                matched = true;
             }
             break;
         }
+        if !matched {
+            rejected.push(line.to_string());
+        }
     }
 
-    state
+    (state, rejected)
 }
 
 fn persisted_state() -> &'static Mutex<PersistedState> {
@@ -9373,6 +9388,21 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn rejected_state_lines_are_reported_and_isolated() {
+        let raw = "gpu_max_freq_mhz=abc\nunknown_key=1\ncharging=65\ntouch=2\n";
+        let (state, rejected) = super::parse_persisted_state_reported(raw);
+        assert_eq!(rejected, vec!["gpu_max_freq_mhz=abc", "unknown_key=1"]);
+        assert_eq!(state.charging, 65);
+        assert_eq!(state.touch, 2);
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_not_rejections() {
+        let (_state, rejected) = super::parse_persisted_state_reported("# comment\n\n   \n");
+        assert!(rejected.is_empty());
+    }
+
     #[test]
     fn bypass_readback_accepts_explicit_kernel_booleans_only() {
         for value in ["1", " Y\n", "true", "ON", "enabled"] {
