@@ -6,6 +6,22 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.13 — Polaris
+
+### Added
+
+- Settings backup import and export, so every restorable setting can be
+  carried to another phone. Export writes one JSON bundle of the hardware
+  state, per-app profiles, conditional stack, dexopt schedule, appearance,
+  and motion settings to Downloads through MediaStore, then offers a share
+  action for Drive or any other transport. Import picks the bundle with the
+  system file picker, refuses one made for another platform, normalizes the
+  custom background to what this phone can still resolve, and replays the
+  hardware half through the same daemon code paths a live setting uses
+  instead of copying files over them. Import replaces everything, and every
+  domain that fails is reported instead of aborting the ones that would
+  have applied.
+
 ## 1.23.12 — Alcor
 
 ### Added

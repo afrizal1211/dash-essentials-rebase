@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="io.github.neeschal.dashessential"
-    android:versionCode="12312"
-    android:versionName="1.23.12">
+    android:versionCode="12313"
+    android:versionName="1.23.13">
 
     <uses-sdk
         android:minSdkVersion="31"
