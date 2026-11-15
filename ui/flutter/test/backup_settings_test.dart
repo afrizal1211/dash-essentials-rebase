@@ -164,6 +164,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    // Section 8 sits far down a lazily built scroll view, so reach it the way
+    // a user does instead of asserting on an offscreen child.
+    await tester.scrollUntilVisible(
+      find.text('Export settings backup'),
+      400,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('BACKUP & TRANSFER'), findsOneWidget);
     expect(find.text('Export settings backup'), findsOneWidget);
     expect(find.text('Import settings backup'), findsOneWidget);
