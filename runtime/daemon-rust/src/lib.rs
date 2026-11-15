@@ -4356,6 +4356,57 @@ fn read_store_json(name: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(&raw).map_err(|e| format!("export {name}: {e}"))
 }
 
+/// One in-flight import upload. Chunks arrive as bounded commands because
+/// the framed reader caps a command at 4096 bytes; the accumulator lets a
+/// bundle of any sane size cross that cap without raising it for every
+/// command.
+struct ImportUpload {
+    next_index: usize,
+    bytes: Vec<u8>,
+}
+
+/// The accumulator is bounded: an import that grows past this is refused
+/// instead of consuming daemon memory.
+const IMPORT_UPLOAD_LIMIT: usize = 1024 * 1024;
+
+static IMPORT_UPLOAD: Mutex<Option<ImportUpload>> = Mutex::new(None);
+
+/// Append one chunk of an import upload. Index 0 starts an upload and
+/// discards anything a previous, abandoned attempt left behind; every later
+/// index must extend the upload in order. Any refusal drops the buffer, so a
+/// failed upload can never leave a half-written bundle behind for the next
+/// one.
+fn import_chunk(raw: &str) -> Result<(), String> {
+    let (index, part) = raw
+        .split_once(' ')
+        .ok_or("import chunk needs an index and a part")?;
+    let index: usize = index.parse().map_err(|_| "invalid import chunk index")?;
+    let mut upload = IMPORT_UPLOAD
+        .lock()
+        .map_err(|_| "import upload lock poisoned")?;
+    if index == 0 {
+        *upload = Some(ImportUpload {
+            next_index: 1,
+            bytes: part.as_bytes().to_vec(),
+        });
+        return Ok(());
+    }
+    let pending = upload
+        .as_mut()
+        .ok_or("import chunk out of order")?;
+    if index != pending.next_index {
+        *upload = None;
+        return Err("import chunk out of order".into());
+    }
+    if pending.bytes.len() + part.len() > IMPORT_UPLOAD_LIMIT {
+        *upload = None;
+        return Err("import chunk too large".into());
+    }
+    pending.bytes.extend_from_slice(part.as_bytes());
+    pending.next_index += 1;
+    Ok(())
+}
+
 fn mutate_persisted_state<F>(f: F) -> Result<(), String>
 where
     F: FnOnce(&mut PersistedState),
@@ -8796,6 +8847,14 @@ fn handle_command_inner(line: &str) -> String {
             Err(error) => format!("ERR {error}"),
         };
     }
+    if let Some(raw) = cmd.strip_prefix("SET import.chunk ") {
+        // Buffering only: no gate, no enabled check, and no hardware side
+        // effect belongs around bytes that have not been validated yet.
+        return match import_chunk(raw) {
+            Ok(()) => "OK buffered".into(),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     if subsystem_clocks::is_command(cmd) {
         let _gate = match service_control::GATE.write() {
             Ok(gate) => gate,
@@ -9567,6 +9626,50 @@ mod tests {
         );
         assert_child(&output);
         std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn chunks_accumulate_in_order() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        super::import_chunk("1 BBBB").unwrap();
+        let guard = super::IMPORT_UPLOAD.lock().unwrap();
+        let upload = guard.as_ref().expect("an upload is in progress");
+        assert_eq!(upload.bytes, b"AAAABBBB");
+        assert_eq!(upload.next_index, 2);
+    }
+
+    #[test]
+    fn a_new_upload_drops_an_abandoned_one() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        super::import_chunk("2 BBBB").unwrap_err();
+        super::import_chunk("0 CCC").unwrap();
+        let guard = super::IMPORT_UPLOAD.lock().unwrap();
+        assert_eq!(guard.as_ref().unwrap().bytes, b"CCC");
+    }
+
+    #[test]
+    fn an_oversized_upload_is_refused_and_reset() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        let oversized = "B".repeat(super::IMPORT_UPLOAD_LIMIT);
+        super::import_chunk(&format!("1 {oversized}")).unwrap_err();
+        assert!(super::IMPORT_UPLOAD.lock().unwrap().is_none());
+    }
+
+    /// These tests share one accumulator static and the harness runs them in
+    /// parallel, so each takes this lock for its whole body.
+    fn import_upload_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static IMPORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        IMPORT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn reset_import_upload() {
+        *super::IMPORT_UPLOAD.lock().unwrap() = None;
     }
 
     #[test]
