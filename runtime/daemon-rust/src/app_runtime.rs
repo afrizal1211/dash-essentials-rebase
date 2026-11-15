@@ -2179,6 +2179,11 @@ mod tests {
         assert!(matches!(runtime.owner.status, Status::Active(_)));
     }
 
+    // The takeover writes the controls to the metal, so it needs the device's
+    // writable sysfs nodes; on a plain host the transition lands in
+    // RecoveryRequired instead of Active. The host has no touch or charging
+    // nodes to give, which is why this one runs against the device only.
+    #[cfg(target_os = "android")]
     #[test]
     fn a_conditional_profile_takes_over_when_no_app_is_in_front() {
         // The conditional stack sits between the per-app layer and the global
@@ -2214,11 +2219,7 @@ mod tests {
             release_seen: None,
             stack,
         };
-        // Whether the control actually lands on the metal depends on the
-        // device answering: on a phone the write succeeds, on a host without
-        // the sysfs nodes it is refused. The portable assertion is the owner
-        // the runtime chose, checked below.
-        let _ = reconcile_with(&mut runtime, Wake::Changed, true, || Ok::<_, String>(None));
+        reconcile_with(&mut runtime, Wake::Changed, true, || Ok::<_, String>(None)).unwrap();
         // The stack is the owner now, which is what distinguishes it from the
         // global profile the runtime would otherwise fall back to. Whether
         // the control actually lands on the metal depends on the device
