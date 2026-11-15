@@ -6,6 +6,24 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.11 — Mizar
+
+### Added
+
+- Exact Lock on the per-app CPU frequency control. The cluster card now
+  offers the same Dynamic Range / Exact Lock choice the global CPU screen
+  has: Exact Lock writes the same supported clock to both
+  `scaling_min_freq` and `scaling_max_freq`, so the governor can no longer
+  scale the cluster while the app is in front. Dynamic Range keeps the
+  minimum and maximum pair. The saved profile keeps the `range` field, so
+  nothing changes for existing profiles.
+
+### Fixed
+
+- The Conditional Profiles screen did not compile: a `finally` block that
+  closed with `});` instead of `}`, a refresh-rate field that shadowed the
+  `_refresh` method, and a bool? assigned to a bool. 1.23.10 carried these
+  and its Flutter and module builds failed; this release ships the screen.
 ## 1.23.10 — Lyra
 
 ### Added

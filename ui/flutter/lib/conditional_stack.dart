@@ -32,7 +32,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
   int _screenChoice = 0; // 0 any, 1 on, 2 off
   int? _touch;
   int? _gpu;
-  int? _refresh;
+  int? _refreshRate;
 
   @override
   void initState() {
@@ -80,14 +80,14 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
-    });
+    }
   }
 
   Map<String, dynamic> _draftPayload() {
     final Map<String, dynamic> profile = <String, dynamic>{'enabled': _draftEnabled};
     if (_touch != null) profile['touch'] = _touch;
     if (_gpu != null) profile['gpu'] = _gpu;
-    if (_refresh != null) profile['refresh'] = _refresh;
+    if (_refreshRate != null) profile['refresh'] = _refreshRate;
     return <String, dynamic>{
       'name': _name.text.trim(),
       'enabled': _draftEnabled,
@@ -97,13 +97,13 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
     };
   }
 
-  bool get _draftValid => _name.text.trim().isNotEmpty && (_touch != null || _gpu != null || _refresh != null);
+  bool get _draftValid => _name.text.trim().isNotEmpty && (_touch != null || _gpu != null || _refreshRate != null);
 
   Future<void> _save() async {
     if (!_draftValid) {
       setState(() => _error = 'Give the profile a name and at least one control.');
       return;
-    });
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -121,7 +121,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
-    });
+    }
   }
 
   Future<void> _delete(String name) async {
@@ -136,7 +136,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
-    });
+    }
   }
 
   void _edit(Map<String, dynamic>? existing) {
@@ -144,7 +144,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
       _editing = true;
       _error = null;
       _name.text = existing != null ? '${existing['name'] ?? ''}' : '';
-      _draftEnabled = existing == null || (existing['enabled'] as bool?) ?? true;
+      _draftEnabled = existing == null || ((existing['enabled'] as bool?) ?? true);
       final Object? charging = existing?['charging'];
       _chargingChoice = charging is bool ? (charging ? 1 : 2) : 0;
       final Object? screen = existing?['screen_on'];
@@ -154,7 +154,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
           : null;
       _touch = profile != null && profile['touch'] is int ? profile['touch'] as int : null;
       _gpu = profile != null && profile['gpu'] is int ? profile['gpu'] as int : null;
-      _refresh = profile != null && profile['refresh'] is int ? profile['refresh'] as int : null;
+      _refreshRate = profile != null && profile['refresh'] is int ? profile['refresh'] as int : null;
     });
   }
 
@@ -257,7 +257,7 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
           const SizedBox(height: 6),
           _levelPicker('Touch', touchLevels, _touch, (int? value) => setState(() => _touch = value)),
           _levelPicker('GPU', gpuLevels, _gpu, (int? value) => setState(() => _gpu = value)),
-          _levelPicker('Refresh rate', refreshLevels, _refresh, (int? value) => setState(() => _refresh = value)),
+          _levelPicker('Refresh rate', refreshLevels, _refreshRate, (int? value) => setState(() => _refreshRate = value)),
           Row(
             children: <Widget>[
               Expanded(

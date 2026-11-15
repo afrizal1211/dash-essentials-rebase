@@ -1307,6 +1307,8 @@ class _PerAppEditorState extends State<_PerAppEditor> {
         .toList();
     if (frequencies.isEmpty) return const SizedBox.shrink();
     final List<dynamic>? range = _cpu(policy)['range'] as List?;
+    final bool locked =
+        range != null && (range[0] as num) == (range[1] as num);
     final String name = policy == 0
         ? 'Efficiency cluster'
         : policy == 4
@@ -1326,57 +1328,87 @@ class _PerAppEditorState extends State<_PerAppEditor> {
             const SizedBox(height: 14),
             _choice(
               'Frequency control',
-              range == null ? null : 'range',
-              const <String, String>{'range': 'Set minimum and maximum'},
-              (String? v) => _cpuSet(
-                policy,
-                'range',
-                v == null ? null : <int>[frequencies.first, frequencies.last],
-              ),
+              range == null ? null : (locked ? 'lock' : 'range'),
+              const <String, String>{
+                'range': 'Dynamic range',
+                'lock': 'Exact lock',
+              },
+              (String? v) {
+                if (v == null) {
+                  _cpuSet(policy, 'range', null);
+                  return;
+                }
+                final int ceiling =
+                    range != null ? (range[1] as num).toInt() : frequencies.last;
+                _cpuSet(
+                  policy,
+                  'range',
+                  v == 'lock'
+                      ? <int>[ceiling, ceiling]
+                      : <int>[frequencies.first, ceiling],
+                );
+              },
             ),
-            if (range != null) ...<Widget>[
-              _choice(
-                'Minimum frequency',
-                range[0],
-                <String, String>{
-                  for (final int v in frequencies)
-                    if (v <= (range[1] as num)) '$v': '$v MHz',
-                },
-                (String? v) {
-                  if (v != null)
-                    _cpuSet(policy, 'range', <int>[
-                      int.parse(v),
-                      (range[1] as num).toInt(),
-                    ]);
-                },
-                followGlobal: false,
-              ),
-              _choice(
-                'Maximum frequency',
-                range[1],
-                <String, String>{
-                  for (final int v in frequencies)
-                    if (v >= (range[0] as num)) '$v': '$v MHz',
-                },
-                (String? v) {
-                  if (v != null)
-                    _cpuSet(policy, 'range', <int>[
+            if (range != null)
+              if (locked)
+                _choice(
+                  'Lock target',
+                  range[0],
+                  <String, String>{
+                    for (final int v in frequencies) '$v': '$v MHz',
+                  },
+                  (String? v) {
+                    if (v != null)
+                      _cpuSet(policy, 'range', <int>[
+                        int.parse(v),
+                        int.parse(v),
+                      ]);
+                  },
+                  followGlobal: false,
+                )
+              else ...<Widget>[
+                _choice(
+                  'Minimum frequency',
+                  range[0],
+                  <String, String>{
+                    for (final int v in frequencies)
+                      if (v <= (range[1] as num)) '$v': '$v MHz',
+                  },
+                  (String? v) {
+                    if (v != null)
+                      _cpuSet(policy, 'range', <int>[
+                        int.parse(v),
+                        (range[1] as num).toInt(),
+                      ]);
+                  },
+                  followGlobal: false,
+                ),
+                _choice(
+                  'Maximum frequency',
+                  range[1],
+                  <String, String>{
+                    for (final int v in frequencies)
+                      if (v >= (range[0] as num)) '$v': '$v MHz',
+                  },
+                  (String? v) {
+                    if (v != null)
+                      _cpuSet(policy, 'range', <int>[
                       (range[0] as num).toInt(),
                       int.parse(v),
                     ]);
-                },
-                followGlobal: false,
-              ),
-              Text(
-                'Use the same minimum and maximum for an exact frequency target.',
-                style: TextStyle(
-                  color: colors.onSurfaceVariant,
-                  fontSize: 12,
-                  height: 1.4,
+                  },
+                  followGlobal: false,
                 ),
-              ),
-              const SizedBox(height: 14),
-            ],
+                Text(
+                  'Exact lock pins both limits to one supported clock, so the governor can no longer scale the cluster.',
+                  style: TextStyle(
+                    color: colors.onSurfaceVariant,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 14),
+              ],
             _choice(
               'Governor',
               _cpu(policy)['governor'],
