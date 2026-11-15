@@ -9664,7 +9664,9 @@ mod tests {
     fn assert_child(output: &std::process::Output) {
         assert!(
             output.status.success(),
-            "state-directory child failed: {}",
+            "state-directory child failed: {} | stdout: {} | stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -9731,12 +9733,13 @@ mod tests {
             std::env::temp_dir().join(format!("dash-bundle-{}-oversized", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("state.conf"), "charging=65\n").unwrap();
-        // Valid JSON whose content is only padding, so it is the size budget
-        // that refuses the export, not the parser.
-        let padding = " ".repeat(super::EXPORT_BUNDLE_BUDGET);
+        // Valid JSON that round-trips large: the budget is measured on the
+        // re-serialized bundle, so whitespace padding would vanish in the
+        // parser and the refusal would never happen.
+        let padding = "0,".repeat(400_000);
         std::fs::write(
             directory.join("conditionals.json"),
-            format!("{{\"conditionals\": [{padding}]}}"),
+            format!("{{\"conditionals\": [{}0]}}", padding),
         )
         .unwrap();
         let output = state_dir_child("tests::save_bundle_refuses_an_oversized_store", &directory);
