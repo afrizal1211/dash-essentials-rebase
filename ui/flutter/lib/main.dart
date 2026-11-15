@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'dart:async';
 import 'dart:math' as math;
@@ -516,6 +517,26 @@ class _DashShellState extends State<DashShell>
     }
   }
 
+  /// Applies a whole appearance config at once, so an import replaces the
+  /// appearance instead of editing one control at a time. Mirrors the
+  /// side-effect tail of `_loadAppearance`, which runs once at boot and never
+  /// again because `load()` is `_loaded`-gated.
+  void applyAppearance(DashAppearanceConfig config) {
+    if (!mounted) {
+      return;
+    }
+    _appearance.value = config;
+    unawaited(_persistAppearance());
+    DashThemeController.setPreference(config.themePreference);
+    _pushFpsOverlayStyle(config);
+    _restoreFpsOverlay(config.fpsOverlay);
+    unawaited(_pushFpsRecording(config.fpsRecord));
+    unawaited(_pushFpsAuto(config.fpsAuto));
+    if (config.statusNotification) {
+      DashBackend.instance.setStatusNotification(true);
+    }
+  }
+
   void _setThemePreference(DashThemePreference preference) {
     DashThemeController.setPreference(preference);
 
@@ -995,6 +1016,7 @@ class _DashShellState extends State<DashShell>
                   onFpsAutoChanged: _setFpsAuto,
                   onOpenFpsHistory: _openFpsHistory,
                   onStatusNotificationChanged: _setStatusNotification,
+                  onImportAppearance: applyAppearance,
                 );
               },
         );
@@ -1995,6 +2017,119 @@ class _OverlaySliderRow extends StatelessWidget {
   }
 }
 
+/// One finished backup operation, shown in a result sheet.
+class DashBackupResult {
+  const DashBackupResult({
+    required this.title,
+    required this.lines,
+    this.shareUri,
+  });
+
+  final String title;
+  final List<String> lines;
+
+  /// The MediaStore URI of an exported file, present only after an export.
+  final String? shareUri;
+}
+
+/// Assembles the settings bundle the UI exports: the daemon's durable
+/// `hardware` block plus the two UI blocks, under the header the import gate
+/// checks before anything reaches the daemon.
+Map<String, dynamic> buildBackupBundle({
+  required Map<String, dynamic> hardware,
+  required Map<String, dynamic> appearance,
+  required Map<String, dynamic> interaction,
+  required String version,
+}) {
+  return <String, dynamic>{
+    'schema': 1,
+    'app': <String, dynamic>{'version': version, 'platform': 'dash'},
+    'ui': <String, dynamic>{
+      'appearance': appearance,
+      'interaction': interaction,
+    },
+    'hardware': hardware,
+  };
+}
+
+/// The local half of the import gate, run before any daemon traffic: the
+/// schema and platform must be ours, and both payload blocks must be present.
+({String? error, DashImportRequest? request}) parseDashImport(String raw) {
+  try {
+    final Object? decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) {
+      return (
+        error: 'This file is not a settings backup.',
+        request: null,
+      );
+    }
+    if (decoded['schema'] != 1) {
+      return (
+        error: 'This backup uses a format Dash Essential cannot read.',
+        request: null,
+      );
+    }
+    final Object? app = decoded['app'];
+    if (app is! Map<String, dynamic> || app['platform'] != 'dash') {
+      return (
+        error: 'This backup was made for a different platform.',
+        request: null,
+      );
+    }
+    final Object? ui = decoded['ui'];
+    final Object? hardware = decoded['hardware'];
+    if (ui is! Map<String, dynamic> || hardware is! Map<String, dynamic>) {
+      return (error: 'This backup is incomplete.', request: null);
+    }
+    return (
+      error: null,
+      request: DashImportRequest(ui: ui, hardware: hardware),
+    );
+  } catch (_) {
+    return (error: 'This backup file could not be read.', request: null);
+  }
+}
+
+class DashImportRequest {
+  const DashImportRequest({required this.ui, required this.hardware});
+
+  final Map<String, dynamic> ui;
+  final Map<String, dynamic> hardware;
+}
+
+/// Normalizes an imported `customPath` to what this device can still resolve:
+/// an existing file or `content://` URI is kept verbatim, anything else is
+/// pruned to `''` so the app falls back to its default background. `raw` is
+/// trimmed of nothing else — a path is not a setting to be guessed at.
+String normalizeCustomPath(String raw, {
+  required bool Function(String uri) contentExists,
+}) {
+  if (raw.isEmpty) {
+    return raw;
+  }
+  if (raw.startsWith('content://')) {
+    return contentExists(raw) ? raw : '';
+  }
+  return File(raw).existsSync() ? raw : '';
+}
+
+/// One line of the import result sheet: what a domain did, or why it did not.
+String backupDomainLine(String name, Map<String, dynamic> domain) {
+  if (domain['ok'] != true) {
+    return '$name failed: ${domain['error'] ?? 'unknown error'}';
+  }
+  final List<dynamic> rejected =
+      domain['rejected'] as List<dynamic>? ?? <dynamic>[];
+  if (domain['skipped'] == true) {
+    return '$name: nothing to apply';
+  }
+  if (rejected.isEmpty) {
+    return '$name: applied';
+  }
+  final String names = rejected.map((Object? item) => '$item').join(', ');
+  return '$name: applied; not supported here: $names';
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     required this.config,
@@ -2020,6 +2155,7 @@ class SettingsScreen extends StatefulWidget {
     required this.onFpsAutoChanged,
     required this.onOpenFpsHistory,
     required this.onStatusNotificationChanged,
+    required this.onImportAppearance,
     super.key,
   });
 
@@ -2047,6 +2183,9 @@ class SettingsScreen extends StatefulWidget {
   final VoidCallback onOpenFpsHistory;
   final ValueChanged<bool> onStatusNotificationChanged;
 
+  /// An import replaces the whole appearance config at once.
+  final ValueChanged<DashAppearanceConfig> onImportAppearance;
+
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
@@ -2054,6 +2193,335 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _choosingPhoto = false;
   String? _photoMessage;
+  bool _backupBusy = false;
+  String? _backupMessage;
+
+  /// Polls the backup state slot at the photo flow's cadence until the
+  /// activity answers, or twenty seconds pass. `0` on timeout or unmount.
+  Future<int> _pollBackupState(DashBackend backend) async {
+    for (int i = 0; i < 100; i += 1) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      if (!mounted) {
+        return 0;
+      }
+
+      final int state = backend.backupState();
+
+      if (state != 0) {
+        return state;
+      }
+    }
+
+    return 0;
+  }
+
+  /// Exports every restorable setting: the daemon's durable hardware state
+  /// merged with the UI blocks, written to Downloads through the activity,
+  /// then offered for sharing.
+  Future<void> _exportBackup() async {
+    if (_backupBusy) {
+      return;
+    }
+
+    setState(() {
+      _backupBusy = true;
+      _backupMessage = null;
+    });
+
+    final DashBackend backend = DashBackend.instance;
+
+    try {
+      final Map<String, dynamic> hardware = await backend.saveBundle();
+      final Map<String, dynamic> bundle = buildBackupBundle(
+        hardware: hardware,
+        appearance: widget.config.toJson(),
+        interaction: DashInteractionSettings.toJson(),
+        version: dashVersionName,
+      );
+
+      backend.backupReset();
+
+      if (!backend.backupExport(
+        Uint8List.fromList(utf8.encode(jsonEncode(bundle))),
+      )) {
+        setState(() {
+          _backupMessage = 'The backup could not be written to Downloads.';
+        });
+
+        return;
+      }
+
+      final int state = await _pollBackupState(backend);
+
+      if (!mounted) {
+        return;
+      }
+
+      if (state != 1) {
+        setState(() {
+          _backupMessage = 'The export did not finish. Try again.';
+        });
+
+        return;
+      }
+
+      final Uint8List? payload = backend.backupPayload();
+      final String uri =
+          payload == null || payload.isEmpty ? '' : utf8.decode(payload);
+
+      if (!mounted) {
+        return;
+      }
+
+      _showBackupSheet(
+        DashBackupResult(
+          title: 'Backup saved',
+          lines: <String>[
+            'The backup is in Downloads. Share it to carry your settings to '
+            'another phone, or keep it somewhere safe.',
+            'Everything restorable is included: hardware state, per-app '
+            'profiles, conditionals, appearance, and motion.',
+          ],
+          shareUri: uri.isEmpty ? null : uri,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _backupMessage = 'The export failed. The daemon did not answer.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _backupBusy = false;
+        });
+      }
+    }
+  }
+
+  /// Imports a backup: the local gate runs first, then the custom background
+  /// is normalized to what this device still has, then the daemon replaces
+  /// its half and the UI replaces its own.
+  Future<void> _importBackup() async {
+    if (_backupBusy) {
+      return;
+    }
+
+    setState(() {
+      _backupBusy = true;
+      _backupMessage = null;
+    });
+
+    final DashBackend backend = DashBackend.instance;
+
+    try {
+      backend.backupReset();
+
+      if (!backend.backupImport()) {
+        setState(() {
+          _backupMessage = 'The file picker could not open.';
+        });
+
+        return;
+      }
+
+      final int state = await _pollBackupState(backend);
+
+      if (!mounted) {
+        return;
+      }
+
+      // 5 is the activity's cancellation, not a failure to report as one.
+      if (state == 5) {
+        setState(() {
+          _backupMessage = 'Import cancelled.';
+        });
+
+        return;
+      }
+
+      if (state != 3) {
+        setState(() {
+          _backupMessage = 'The backup file could not be read.';
+        });
+
+        return;
+      }
+
+      final Uint8List? payload = backend.backupPayload();
+
+      if (payload == null || payload.isEmpty) {
+        setState(() {
+          _backupMessage = 'The backup file is empty.';
+        });
+
+        return;
+      }
+
+      final ({String? error, DashImportRequest? request}) parsed =
+          parseDashImport(utf8.decode(payload));
+
+      if (parsed.error != null || parsed.request == null) {
+        setState(() {
+          _backupMessage = parsed.error ?? 'The backup file is not valid.';
+        });
+
+        return;
+      }
+
+      final DashImportRequest request = parsed.request!;
+      final Map<String, dynamic> ui = request.ui;
+      final Map<String, dynamic> appearance =
+          ui['appearance'] is Map<String, dynamic>
+          ? Map<String, dynamic>.from(ui['appearance'] as Map<String, dynamic>)
+          : <String, dynamic>{};
+
+      // The background may exist on the exporting phone and not here. A path
+      // that cannot be confirmed is pruned, not kept dangling.
+      final String rawPath = appearance['customPath'] as String? ?? '';
+      final String normalized = normalizeCustomPath(
+        rawPath,
+        contentExists: backend.backupPathExists,
+      );
+      final bool pruned = normalized.isEmpty && rawPath.isNotEmpty;
+
+      final Map<String, dynamic> reply =
+          await backend.importApply(jsonEncode(request.hardware));
+
+      // The daemon half is applied; only now does the UI replace its own
+      // half, because a failed import must not leave a new appearance on top
+      // of hardware that never arrived.
+      if (appearance.isNotEmpty) {
+        appearance['customPath'] = normalized;
+        widget.onImportAppearance(DashAppearanceConfig.fromJson(appearance));
+      }
+
+      final Object? interaction = ui['interaction'];
+
+      if (interaction is Map<String, dynamic>) {
+        await DashInteractionSettings.replace(
+          motionSpeed:
+              (interaction['motionSpeed'] as num?)?.toDouble() ?? 1.00,
+          haptics: interaction['hapticsEnabled'] as bool? ?? true,
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      _showBackupSheet(
+        DashBackupResult(
+          title: 'Import finished',
+          lines: <String>[
+            backupDomainLine(
+              'Hardware state',
+              reply['state'] is Map<String, dynamic>
+                  ? reply['state'] as Map<String, dynamic>
+                  : <String, dynamic>{'ok': false},
+            ),
+            backupDomainLine(
+              'Per-app profiles',
+              reply['profiles'] is Map<String, dynamic>
+                  ? reply['profiles'] as Map<String, dynamic>
+                  : <String, dynamic>{'ok': false},
+            ),
+            backupDomainLine(
+              'Conditionals',
+              reply['conditionals'] is Map<String, dynamic>
+                  ? reply['conditionals'] as Map<String, dynamic>
+                  : <String, dynamic>{'ok': false},
+            ),
+            backupDomainLine(
+              'Dexopt schedule',
+              reply['dexopt'] is Map<String, dynamic>
+                  ? reply['dexopt'] as Map<String, dynamic>
+                  : <String, dynamic>{'ok': false},
+            ),
+            if (pruned)
+              'The custom background was not found on this phone '
+              'and was reset.',
+            if (appearance.isNotEmpty)
+              'Appearance and motion settings applied.',
+          ],
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _backupMessage =
+            'Import failed: '
+            '${error is StateError ? error.message : '$error'}';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _backupBusy = false;
+        });
+      }
+    }
+  }
+
+  void _showBackupSheet(DashBackupResult result) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        final ColorScheme colors = Theme.of(context).colorScheme;
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  result.title,
+                  style: const TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                for (final String line in result.lines) ...<Widget>[
+                  Text(
+                    line,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.4,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                if (result.shareUri != null) ...<Widget>[
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: () {
+                        DashBackend.instance.backupShare(result.shareUri!);
+                      },
+                      icon: const Icon(Icons.ios_share_rounded),
+                      label: const Text('Share backup'),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 
   Future<int> _ensurePhotoPermission() async {
     final DashBackend backend = DashBackend.instance;
@@ -3250,6 +3718,105 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
+          ),
+        ),
+
+        // 8. BACKUP & TRANSFER
+        const SizedBox(height: 20),
+        const SectionLabel('Backup & transfer'),
+        const SizedBox(height: 9),
+        SurfaceCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                'Carry settings to another phone',
+                style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Export writes a backup of every restorable setting to '
+                'Downloads. Import replaces everything on this phone.',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              PressScale(
+                onTap: _backupBusy ? null : _exportBackup,
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.upload_file_rounded,
+                      color: colors.secondary,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Export settings backup',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (_backupBusy)
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: colors.secondary,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              PressScale(
+                onTap: _backupBusy ? null : _importBackup,
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.download_for_offline_rounded,
+                      color: colors.secondary,
+                      size: 22,
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Import settings backup',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    if (_backupBusy)
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: colors.secondary,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (_backupMessage != null) ...<Widget>[
+                const SizedBox(height: 10),
+                Text(
+                  _backupMessage!,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ],
@@ -16725,6 +17292,29 @@ class DashInteractionSettings {
     await _persist();
   }
 
+  /// Replaces both settings from an import. Import replaces everything, and
+  /// marking `_loaded` keeps a later `load()` from overwriting the replacement
+  /// with whatever file the boot gate had already read.
+  static Future<void> replace({
+    double motionSpeed = 1.00,
+    bool haptics = true,
+  }) async {
+    previewMotionSpeed(motionSpeed);
+    hapticsEnabled = haptics;
+    _loaded = true;
+    revision.value += 1;
+    await _persist();
+  }
+
+  /// The persisted shape of both settings, shared by `_persist` and export.
+  static Map<String, Object> toJson() {
+    return <String, Object>{
+      'motionModelVersion': _motionModelVersion,
+      'motionSpeed': motionSpeed,
+      'hapticsEnabled': hapticsEnabled,
+    };
+  }
+
   static Future<void> _persist() async {
     try {
       final File file = _file;
@@ -16732,11 +17322,7 @@ class DashInteractionSettings {
       await file.parent.create(recursive: true);
 
       await file.writeAsString(
-        jsonEncode(<String, Object>{
-          'motionModelVersion': _motionModelVersion,
-          'motionSpeed': motionSpeed,
-          'hapticsEnabled': hapticsEnabled,
-        }),
+        jsonEncode(toJson()),
         flush: false,
       );
     } catch (_) {}
