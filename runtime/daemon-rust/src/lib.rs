@@ -9671,8 +9671,7 @@ mod tests {
 
     #[test]
     fn save_bundle_round_trips_the_durable_state() {
-        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
-            let directory = std::path::PathBuf::from(directory);
+        if std::env::var_os("DASH_BUNDLE_TEST_CHILD").is_some() {
             let bundle = super::save_bundle().unwrap();
             let state: Vec<String> = bundle["state"]
                 .as_array()
