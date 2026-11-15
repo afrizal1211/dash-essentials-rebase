@@ -407,12 +407,15 @@ pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_native
     env: JNIEnv,
     _: JClass,
     code: jint,
-    data: jni::sys::jbytearray,
+    data: jni::sys::jbyteArray,
 ) {
     let bytes = if data.is_null() {
         None
     } else {
-        env.convert_byte_array(data).ok()
+        // The Java side hands over a raw local reference; `from_raw` adopts it
+        // into this frame so `convert_byte_array` can read it.
+        let array = unsafe { jni::objects::JByteArray::from_raw(data) };
+        env.convert_byte_array(&array).ok()
     };
     store_backup_result(code, bytes);
 }
