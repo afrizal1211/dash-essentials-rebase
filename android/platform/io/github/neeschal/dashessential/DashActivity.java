@@ -19,6 +19,9 @@ import android.window.OnBackAnimationCallback;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
@@ -34,6 +37,10 @@ public final class DashActivity extends NativeActivity {
     private static native boolean nativeInterceptBack();
     private static native void nativeBack(int phase, float progress, int edge);
     private static native void nativeOpenBypassSettings();
+    private static native void nativeBackupResult(int code, byte[] data);
+
+    private static final int BACKUP_REQUEST = 0x100;
+    private static final int BACKUP_LIMIT = 4 * 1024 * 1024;
 
     @Override protected void onCreate(Bundle state) {
         current = this;
@@ -156,6 +163,82 @@ public final class DashActivity extends NativeActivity {
             } catch (Exception ignored) {}
         }
         return uri.toString();
+    }
+
+    /** Settings backup, written to Downloads the same way an FPS export is;
+        the URI it produced comes back so the UI can offer a share action. */
+    public void saveBackup(byte[] data) {
+        try {
+            String name = "dash-essential-backup-" + System.currentTimeMillis() + ".json";
+            String uri = writeMedia(getContentResolver(),
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, name,
+                    "application/json", "RedFox/Backup/", data);
+            if (uri != null) {
+                nativeBackupResult(1, uri.getBytes(StandardCharsets.UTF_8));
+            } else {
+                nativeBackupResult(2, null);
+            }
+        } catch (Exception error) {
+            nativeBackupResult(2, null);
+        }
+    }
+
+    /** Settings restore: the user picks the backup, the activity reads it. */
+    public void openBackup() {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/json");
+            startActivityForResult(intent, BACKUP_REQUEST);
+        });
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != BACKUP_REQUEST) return;
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            nativeBackupResult(5, null);
+            return;
+        }
+        try (InputStream in = getContentResolver().openInputStream(data.getData());
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream()) {
+            if (in == null) {
+                nativeBackupResult(4, null);
+                return;
+            }
+            byte[] block = new byte[8192];
+            int read;
+            while ((read = in.read(block)) > 0) {
+                buffer.write(block, 0, read);
+                // A real backup is a few kilobytes; anything past the limit is
+                // not a bundle this UI should hand to the daemon.
+                if (buffer.size() > BACKUP_LIMIT) {
+                    nativeBackupResult(4, null);
+                    return;
+                }
+            }
+            nativeBackupResult(3, buffer.toByteArray());
+        } catch (Exception error) {
+            nativeBackupResult(4, null);
+        }
+    }
+
+    /** Hands the exported backup to Drive or any other transport. */
+    public void shareBackup(String uri) {
+        runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("application/json");
+            intent.putExtra(Intent.EXTRA_STREAM, Uri.parse(uri));
+            startActivity(Intent.createChooser(intent, "Share backup"));
+        });
+    }
+
+    /** Whether an imported custom background still resolves on this device. */
+    public boolean backupPathExists(String path) {
+        if (path.startsWith("content://")) {
+            return getContentResolver().getType(Uri.parse(path)) != null;
+        }
+        return new File(path).exists();
     }
 
     /** Called only when native navigation ownership changes; no polling loop. */
