@@ -1570,6 +1570,57 @@ pub(super) fn reset_all() -> Result<(), String> {
     r.config_error = None;
     Ok(())
 }
+
+/// Replace the per-app config with an imported one, where `reset_all` clears
+/// to the default. The imported config is made both durable and live: `r.config`
+/// is what the foreground watcher applies, so a config that was only written
+/// to disk would not take effect until a daemon restart.
+pub(super) fn apply_config(config: Config) -> Result<(), String> {
+    let mut r = runtime()
+        .lock()
+        .map_err(|_| "per-app runtime lock poisoned")?;
+    config.save(&state_dir().join("app-profiles.json"))?;
+    r.config = config;
+    r.config_error = None;
+    if r.config.enabled && !r.config.profiles.is_empty() && service_control::enabled() {
+        service_control::set_intent(true, true)?;
+    }
+    r.error = reconcile(&mut r, Wake::Changed).err();
+    wake(Wake::Changed);
+    Ok(())
+}
+
+/// Replace the conditional stack with the imported one. Every entry is parsed
+/// and validated against the live capabilities the way a single edit is, so
+/// the stack cannot hold a control this device cannot take; entries it cannot
+/// honour are named in the reply. The reply is the per-domain report:
+/// `{"ok":true,"rejected":[names]}`. `null` means the exporter never had a
+/// stack, which replaces with an empty one.
+pub(super) fn replace_conditionals(items: &Value) -> Result<serde_json::Value, String> {
+    let empty = serde_json::json!([]);
+    let entries = match items {
+        Value::Null => &empty,
+        value => value,
+    };
+    let mut stack = conditional::Stack::default();
+    let rejected = if entries.as_array().is_some_and(|list| list.is_empty()) {
+        // Nothing to validate: an empty replace clears the stack without
+        // asking the hardware what it could do.
+        Vec::new()
+    } else {
+        let caps = capabilities()?;
+        stack.replace(entries, &caps)?
+    };
+    stack.save()?;
+    let mut r = runtime()
+        .lock()
+        .map_err(|_| "per-app runtime lock poisoned")?;
+    r.stack = stack;
+    r.error = reconcile(&mut r, Wake::Changed).err();
+    wake(Wake::Changed);
+    Ok(serde_json::json!({"ok": true, "rejected": rejected}))
+}
+
 /// The hint that carries the most information.
 ///
 /// A resume event names the app that took the foreground, so it is preferred
@@ -2128,6 +2179,11 @@ mod tests {
         assert!(matches!(runtime.owner.status, Status::Active(_)));
     }
 
+    // The takeover writes the controls to the metal, so it needs the device's
+    // writable sysfs nodes; on a plain host the transition lands in
+    // RecoveryRequired instead of Active. The host has no touch or charging
+    // nodes to give, which is why this one runs against the device only.
+    #[cfg(target_os = "android")]
     #[test]
     fn a_conditional_profile_takes_over_when_no_app_is_in_front() {
         // The conditional stack sits between the per-app layer and the global
@@ -2237,5 +2293,43 @@ mod tests {
         let error = restore_journal_entry("no-such-control", &token)
             .expect_err("an unknown control cannot be restored");
         assert_eq!(error, "unknown recovery control");
+    }
+
+    /// `state_dir()` resolves once per process, so a test that needs a state
+    /// directory runs its assertions in a child process that sees only its
+    /// own `DASH_STATE_DIR`.
+    #[test]
+    fn apply_config_is_durable_and_live() {
+        if let Some(directory) = std::env::var_os("DASH_APPLY_CONFIG_CHILD") {
+            let _directory = std::path::PathBuf::from(directory);
+            let raw = "{\"schema\":1,\"enabled\":true,\"notify\":false,\"profiles\":[{\"user\":0,\"package\":\"com.example.game\",\"profile\":{}}]}";
+            let config = Config::parse(raw).unwrap();
+            super::apply_config(config).unwrap();
+            let reloaded = Config::load(&super::state_dir().join("app-profiles.json")).unwrap();
+            assert!(reloaded.enabled);
+            assert_eq!(reloaded.profiles.len(), 1);
+            let runtime = super::runtime().lock().unwrap();
+            assert_eq!(runtime.config.profiles.len(), 1);
+            assert!(runtime.config_error.is_none());
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-apply-config-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "app_runtime::tests::apply_config_is_durable_and_live",
+            ])
+            .env(crate::STATE_DIR_ENV, &directory)
+            .env("DASH_APPLY_CONFIG_CHILD", &directory)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "apply_config child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(&directory).ok();
     }
 }

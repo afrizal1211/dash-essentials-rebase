@@ -4195,12 +4195,20 @@ fn load_persisted_state() -> PersistedState {
 }
 
 fn parse_persisted_state(raw: &str) -> PersistedState {
+    parse_persisted_state_reported(raw).0
+}
+
+/// The same parse, naming every `key=value` line the field table could not
+/// consume. Import reporting relies on this: a line the destination device
+/// cannot honour must reach the user instead of vanishing.
+fn parse_persisted_state_reported(raw: &str) -> (PersistedState, Vec<String>) {
     // State written before GPU/CPU profile isolation did not carry this key.
     // Mark an existing file as legacy until the parser finds the new marker.
     let mut state = PersistedState {
         gpu_profile_cpu_isolated: 0,
         ..PersistedState::default()
     };
+    let mut rejected = Vec::new();
 
     for line in raw.lines() {
         let line = line.trim();
@@ -4209,24 +4217,31 @@ fn parse_persisted_state(raw: &str) -> PersistedState {
         }
 
         let Some((key, value)) = line.split_once('=') else {
+            rejected.push(line.to_string());
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
 
+        let mut matched = false;
         for field in PERSISTED_FIELDS {
             if field.key != key {
                 continue;
             }
             if field.text {
                 (field.write_text)(&mut state, value);
+                matched = true;
             } else if let Some(parsed) = value.parse().ok().and_then(field.parse) {
                 (field.write)(&mut state, parsed);
+                matched = true;
             }
             break;
         }
+        if !matched {
+            rejected.push(line.to_string());
+        }
     }
 
-    state
+    (state, rejected)
 }
 
 fn persisted_state() -> &'static Mutex<PersistedState> {
@@ -4279,6 +4294,225 @@ fn save_persisted_state(state: &PersistedState) -> Result<(), String> {
         .and_then(|dir| dir.sync_all())
         .map_err(|e| format!("state directory sync: {e}"))?;
     Ok(())
+}
+
+/// The export ceiling. The host bridge reads at most 786,432 bytes of a reply
+/// (`backend_bridge.rs`) and Dart allocates 1 MiB, so an export answers this
+/// error instead of letting the host truncate the reply out from under it.
+const EXPORT_BUNDLE_BUDGET: usize = 700_000;
+
+/// The durable half of a settings bundle: the persisted `key=value` lines and
+/// the three JSON stores, each `null` when it has never been written. Every
+/// value leaves through the same parser a manual change or a boot restore
+/// uses, so export can never carry a shape import cannot replay.
+fn save_bundle() -> Result<serde_json::Value, String> {
+    let global = {
+        let state = persisted_state()
+            .lock()
+            .map_err(|_| "persisted state lock poisoned")?;
+        app_runtime::global_preferences(&state)?
+    };
+    let lines = persisted_state_text(&global)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+
+    let profiles_path = state_dir().join("app-profiles.json");
+    // `Config::load` answers the default config for a missing file, so the
+    // file's existence is what distinguishes "never configured" from "empty".
+    let profiles = if profiles_path.exists() {
+        serde_json::to_value(app_controls::Config::load(&profiles_path)?.json())
+            .map_err(|e| e.to_string())?
+    } else {
+        serde_json::Value::Null
+    };
+
+    let bundle = serde_json::json!({
+        "state": lines,
+        "profiles": profiles,
+        "conditionals": read_store_json("conditionals.json")?,
+        "dexopt": read_store_json("dexopt.json")?,
+    });
+    if serde_json::to_string(&bundle)
+        .map_err(|e| e.to_string())?
+        .len()
+        > EXPORT_BUNDLE_BUDGET
+    {
+        return Err("export bundle too large".into());
+    }
+    Ok(bundle)
+}
+
+/// One JSON store under the state directory as a value, or `null` when the
+/// file has never been written. A file that exists but cannot be parsed is an
+/// error: silently omitting a store the user has would hide a fault as a
+/// clean export.
+fn read_store_json(name: &str) -> Result<serde_json::Value, String> {
+    let path = state_dir().join(name);
+    if !path.exists() {
+        return Ok(serde_json::Value::Null);
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("export {name}: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("export {name}: {e}"))
+}
+
+/// One in-flight import upload. Chunks arrive as bounded commands because
+/// the framed reader caps a command at 4096 bytes; the accumulator lets a
+/// bundle of any sane size cross that cap without raising it for every
+/// command.
+struct ImportUpload {
+    next_index: usize,
+    bytes: Vec<u8>,
+}
+
+/// The accumulator is bounded: an import that grows past this is refused
+/// instead of consuming daemon memory.
+const IMPORT_UPLOAD_LIMIT: usize = 1024 * 1024;
+
+static IMPORT_UPLOAD: Mutex<Option<ImportUpload>> = Mutex::new(None);
+
+/// Append one chunk of an import upload. Index 0 starts an upload and
+/// discards anything a previous, abandoned attempt left behind; every later
+/// index must extend the upload in order. Any refusal drops the buffer, so a
+/// failed upload can never leave a half-written bundle behind for the next
+/// one.
+fn import_chunk(raw: &str) -> Result<(), String> {
+    let (index, part) = raw
+        .split_once(' ')
+        .ok_or("import chunk needs an index and a part")?;
+    let index: usize = index.parse().map_err(|_| "invalid import chunk index")?;
+    let mut upload = IMPORT_UPLOAD
+        .lock()
+        .map_err(|_| "import upload lock poisoned")?;
+    if index == 0 {
+        *upload = Some(ImportUpload {
+            next_index: 1,
+            bytes: part.as_bytes().to_vec(),
+        });
+        return Ok(());
+    }
+    let pending = upload.as_mut().ok_or("import chunk out of order")?;
+    if index != pending.next_index {
+        *upload = None;
+        return Err("import chunk out of order".into());
+    }
+    if pending.bytes.len() + part.len() > IMPORT_UPLOAD_LIMIT {
+        *upload = None;
+        return Err("import chunk too large".into());
+    }
+    pending.bytes.extend_from_slice(part.as_bytes());
+    pending.next_index += 1;
+    Ok(())
+}
+
+/// Apply the bundle the chunked upload assembled. Import replaces everything:
+/// per-app profiles, the conditional stack, the dexopt schedule, and the
+/// persisted hardware state. Each domain is applied independently, because
+/// aborting a replace-everything import midway leaves the phone on a blank
+/// slate, which is worse than a transfer minus one domain; the reply names
+/// every domain's outcome and every line the state parser refused.
+fn import_apply() -> Result<serde_json::Value, String> {
+    let raw = {
+        let mut upload = IMPORT_UPLOAD
+            .lock()
+            .map_err(|_| "import upload lock poisoned")?;
+        upload
+            .take()
+            .ok_or_else(|| "no import upload pending".to_string())?
+            .bytes
+    };
+    let bundle: serde_json::Value =
+        serde_json::from_slice(&raw).map_err(|e| format!("import JSON: {e}"))?;
+    if bundle["schema"].as_u64() != Some(1) {
+        return Err("unsupported backup schema".into());
+    }
+    if bundle["app"]["platform"].as_str() != Some("dash") {
+        return Err("bundle is not from this platform".into());
+    }
+    if !service_control::enabled() {
+        return Err("Dash Essential is disabled; enable it in Settings".into());
+    }
+    let hardware = bundle["hardware"]
+        .as_object()
+        .ok_or("missing hardware block")?;
+
+    // Per-app profiles: release any borrowed control and clear the profiles
+    // first, then make the imported config durable and live.
+    let profiles = (|| -> Result<serde_json::Value, String> {
+        app_runtime::reset_all()?;
+        let config = match &hardware["profiles"] {
+            serde_json::Value::Null => app_controls::Config::default(),
+            value => {
+                let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
+                app_controls::Config::parse(&text)?
+            }
+        };
+        app_runtime::apply_config(config)?;
+        Ok(serde_json::json!({"ok": true}))
+    })();
+    let profiles =
+        profiles.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    // The conditional stack: `null` on the exporter means no stack, which
+    // replaces with an empty one here.
+    let conditionals = app_runtime::replace_conditionals(&hardware["conditionals"])
+        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    // The dexopt schedule: `null` means the exporter never set one, so the
+    // schedule on this device is left alone.
+    let dexopt = match &hardware["dexopt"] {
+        serde_json::Value::Null => serde_json::json!({"ok": true, "skipped": true}),
+        value => match serde_json::to_string(value)
+            .map_err(|e| e.to_string())
+            .and_then(|text| dexopt::set_schedule(&text))
+        {
+            Ok(()) => serde_json::json!({"ok": true}),
+            Err(error) => serde_json::json!({"ok": false, "error": error}),
+        },
+    };
+
+    // The persisted hardware state, replayed through the exact path a `SET`
+    // takes and then through the boot-restore path, so both the file and the
+    // live device carry the import.
+    let state = (|| -> Result<serde_json::Value, String> {
+        let lines = hardware["state"].as_array().ok_or("missing state lines")?;
+        let raw: String = lines
+            .iter()
+            .filter_map(|line| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (parsed, rejected) = parse_persisted_state_reported(&raw);
+        mutate_persisted_state(|current| *current = parsed.clone())?;
+        restore_persisted_state();
+        let runtime_result = reassert_runtime_state(true);
+        reassert_persisted_governors();
+        // Charging is restored only once per boot by design
+        // (CHARGING_BOOT_RESTORE_DONE), so an import applies the profile now:
+        // without this, the imported setting would stay dormant until the
+        // next reboot.
+        if parsed.bypass_charging != 1 && valid_charging_profile(parsed.charging) {
+            let _ = apply_charging_profile(parsed.charging);
+        }
+        let mut result = serde_json::json!({"ok": true, "rejected": rejected});
+        if let Err(error) = runtime_result {
+            result["error"] = serde_json::json!(error);
+        }
+        Ok(result)
+    })();
+    let state = state.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+
+    let summary = format!(
+        "state={} profiles={} conditionals={} dexopt={}",
+        state["ok"], profiles["ok"], conditionals["ok"], dexopt["ok"]
+    );
+    diagnostics::record(diagnostics::AREA_BACKUP, "info", "import", &summary);
+
+    Ok(serde_json::json!({
+        "state": state,
+        "profiles": profiles,
+        "conditionals": conditionals,
+        "dexopt": dexopt,
+    }))
 }
 
 fn mutate_persisted_state<F>(f: F) -> Result<(), String>
@@ -8721,6 +8955,14 @@ fn handle_command_inner(line: &str) -> String {
             Err(error) => format!("ERR {error}"),
         };
     }
+    if let Some(raw) = cmd.strip_prefix("SET import.chunk ") {
+        // Buffering only: no gate, no enabled check, and no hardware side
+        // effect belongs around bytes that have not been validated yet.
+        return match import_chunk(raw) {
+            Ok(()) => "OK buffered".into(),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     if subsystem_clocks::is_command(cmd) {
         let _gate = match service_control::GATE.write() {
             Ok(gate) => gate,
@@ -8761,6 +9003,19 @@ fn handle_command_inner(line: &str) -> String {
             Err(error) => format!("ERR {error}"),
         };
     }
+    if cmd == "ACTION import.apply" {
+        // A top-level branch, never an arm of `handle_enabled_command`: that
+        // function runs under a held `GATE.read`, and applying an import
+        // needs the write lock.
+        let _gate = match service_control::GATE.write() {
+            Ok(gate) => gate,
+            Err(_) => return "ERR service transition lock poisoned".into(),
+        };
+        return match import_apply() {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     let _gate = match service_control::GATE.read() {
         Ok(gate) => gate,
         Err(_) => return "ERR service transition lock poisoned".into(),
@@ -8791,6 +9046,12 @@ fn handle_enabled_command(line: &str) -> String {
     }
     if cmd == "GET snapshot" {
         return format!("OK {}", snapshot());
+    }
+    if cmd == "GET save.bundle" {
+        return match save_bundle() {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
     }
     if cmd == "GET dexopt.status" {
         return match dexopt::status_json() {
@@ -9373,6 +9634,292 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn rejected_state_lines_are_reported_and_isolated() {
+        let raw = "gpu_max_freq_mhz=abc\nunknown_key=1\ncharging=65\ntouch=2\n";
+        let (state, rejected) = super::parse_persisted_state_reported(raw);
+        assert_eq!(rejected, vec!["gpu_max_freq_mhz=abc", "unknown_key=1"]);
+        assert_eq!(state.charging, 65);
+        assert_eq!(state.touch, 2);
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_not_rejections() {
+        let (_state, rejected) = super::parse_persisted_state_reported("# comment\n\n   \n");
+        assert!(rejected.is_empty());
+    }
+
+    /// `state_dir()` resolves once per process, so every test that needs a
+    /// state directory runs as a child process that sees only its own
+    /// `DASH_STATE_DIR`, exactly the way the crash tests do.
+    fn state_dir_child(test: &str, directory: &std::path::Path) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .env(super::STATE_DIR_ENV, directory)
+            .env("DASH_BUNDLE_TEST_CHILD", directory)
+            .output()
+            .expect("spawn the state-directory child")
+    }
+
+    fn assert_child(output: &std::process::Output) {
+        assert!(
+            output.status.success(),
+            "state-directory child failed: {} | stdout: {} | stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn save_bundle_round_trips_the_durable_state() {
+        if std::env::var_os("DASH_BUNDLE_TEST_CHILD").is_some() {
+            let bundle = super::save_bundle().unwrap();
+            let state: Vec<String> = bundle["state"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap().to_string())
+                .collect();
+            assert!(state.iter().any(|line| line == "charging=65"));
+            assert!(state.iter().any(|line| line == "touch=2"));
+            let (parsed, rejected) = super::parse_persisted_state_reported(&state.join("\n"));
+            assert!(
+                rejected.is_empty(),
+                "re-exported lines were rejected: {rejected:?}"
+            );
+            assert_eq!(parsed.charging, 65);
+            assert_eq!(parsed.touch, 2);
+            assert_eq!(bundle["conditionals"], serde_json::Value::Null);
+            assert_eq!(bundle["dexopt"], serde_json::Value::Null);
+            assert_eq!(
+                bundle["profiles"]["enabled"],
+                serde_json::Value::Bool(false)
+            );
+            assert_eq!(
+                bundle["profiles"]["profiles"],
+                serde_json::Value::Array(vec![])
+            );
+            let config =
+                super::app_controls::Config::parse(&bundle["profiles"].to_string()).unwrap();
+            assert_eq!(config.profiles.len(), 0);
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-bundle-{}-round-trip", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("state.conf"), "charging=65\ntouch=2\n").unwrap();
+        std::fs::write(
+            directory.join("app-profiles.json"),
+            "{\"schema\":1,\"enabled\":false,\"notify\":false,\"profiles\":[]}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::save_bundle_round_trips_the_durable_state",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn save_bundle_refuses_an_oversized_store() {
+        if let Some(_directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let error = super::save_bundle().unwrap_err();
+            assert_eq!(error, "export bundle too large");
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-bundle-{}-oversized", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("state.conf"), "charging=65\n").unwrap();
+        // Valid JSON that round-trips large: the budget is measured on the
+        // re-serialized bundle, so whitespace padding would vanish in the
+        // parser and the refusal would never happen.
+        let padding = "0,".repeat(400_000);
+        std::fs::write(
+            directory.join("conditionals.json"),
+            format!("{{\"conditionals\": [{}0]}}", padding),
+        )
+        .unwrap();
+        let output = state_dir_child("tests::save_bundle_refuses_an_oversized_store", &directory);
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn chunks_accumulate_in_order() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        super::import_chunk("1 BBBB").unwrap();
+        let guard = super::IMPORT_UPLOAD.lock().unwrap();
+        let upload = guard.as_ref().expect("an upload is in progress");
+        assert_eq!(upload.bytes, b"AAAABBBB");
+        assert_eq!(upload.next_index, 2);
+    }
+
+    #[test]
+    fn a_new_upload_drops_an_abandoned_one() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        super::import_chunk("2 BBBB").unwrap_err();
+        super::import_chunk("0 CCC").unwrap();
+        let guard = super::IMPORT_UPLOAD.lock().unwrap();
+        assert_eq!(guard.as_ref().unwrap().bytes, b"CCC");
+    }
+
+    #[test]
+    fn an_oversized_upload_is_refused_and_reset() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        super::import_chunk("0 AAAA").unwrap();
+        let oversized = "B".repeat(super::IMPORT_UPLOAD_LIMIT);
+        super::import_chunk(&format!("1 {oversized}")).unwrap_err();
+        assert!(super::IMPORT_UPLOAD.lock().unwrap().is_none());
+    }
+
+    /// These tests share one accumulator static and the harness runs them in
+    /// parallel, so each takes this lock for its whole body.
+    fn import_upload_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static IMPORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        IMPORT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn reset_import_upload() {
+        *super::IMPORT_UPLOAD.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn import_refuses_a_foreign_platform_before_touching_state() {
+        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let directory = std::path::PathBuf::from(directory);
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "rodin"},
+                "hardware": {
+                    "state": ["charging=65"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": serde_json::Value::Null,
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let error = super::import_apply().unwrap_err();
+            assert_eq!(error, "bundle is not from this platform");
+            assert!(super::IMPORT_UPLOAD.lock().unwrap().is_none());
+            assert!(!directory.join("state.conf").exists());
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-platform", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let output = state_dir_child(
+            "tests::import_refuses_a_foreign_platform_before_touching_state",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_applies_state_and_names_rejected_lines() {
+        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let directory = std::path::PathBuf::from(directory);
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "dash"},
+                "hardware": {
+                    "state": ["charging=65", "touch=2", "unknown_key=1"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": serde_json::Value::Null,
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let reply = super::import_apply().unwrap();
+            assert_eq!(reply["state"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(
+                reply["state"]["rejected"],
+                serde_json::json!(["unknown_key=1"])
+            );
+            assert_eq!(reply["profiles"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["conditionals"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["dexopt"]["ok"], serde_json::Value::Bool(true));
+            let saved = std::fs::read_to_string(directory.join("state.conf")).unwrap();
+            assert!(saved.contains("charging=65"), "state.conf: {saved}");
+            assert!(!saved.contains("unknown_key"), "state.conf: {saved}");
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-state", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("service.json"),
+            "{\"enabled\":true,\"configured\":false}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::import_applies_state_and_names_rejected_lines",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_reports_a_failed_domain_and_still_applies_the_rest() {
+        if let Some(_directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let bundle = serde_json::json!({
+                "schema": 1,
+                "app": {"platform": "dash"},
+                "hardware": {
+                    "state": ["charging=65"],
+                    "profiles": serde_json::Value::Null,
+                    "conditionals": serde_json::Value::Null,
+                    "dexopt": {"cadence": "hourly", "day": 0, "opt_out": []},
+                },
+            });
+            super::import_chunk(&format!("0 {}", bundle)).unwrap();
+            let reply = super::import_apply().unwrap();
+            assert_eq!(reply["dexopt"]["ok"], serde_json::Value::Bool(false));
+            assert!(
+                reply["dexopt"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cadence")
+            );
+            assert_eq!(reply["state"]["ok"], serde_json::Value::Bool(true));
+            assert_eq!(reply["conditionals"]["ok"], serde_json::Value::Bool(true));
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-partial", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("service.json"),
+            "{\"enabled\":true,\"configured\":false}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::import_reports_a_failed_domain_and_still_applies_the_rest",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn import_without_an_upload_is_refused() {
+        let _serialized = import_upload_test_lock();
+        reset_import_upload();
+        let error = super::import_apply().unwrap_err();
+        assert_eq!(error, "no import upload pending");
+    }
+
     #[test]
     fn bypass_readback_accepts_explicit_kernel_booleans_only() {
         for value in ["1", " Y\n", "true", "ON", "enabled"] {

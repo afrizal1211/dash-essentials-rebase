@@ -212,6 +212,38 @@ impl Stack {
         }
         Ok(())
     }
+
+    /// Replace the whole stack from imported JSON, validating every entry
+    /// against the live capabilities the way `upsert` validates one. Entries
+    /// this device cannot honour are dropped and named in the answer, because
+    /// an import must never store a control this kernel cannot take; an entry
+    /// that does not even parse refuses the replace outright, so a malformed
+    /// bundle cannot erase a good stack. Replaces, never merges: an import
+    /// replaces everything.
+    pub(super) fn replace(
+        &mut self,
+        items: &Value,
+        caps: &Capabilities,
+    ) -> Result<Vec<String>, String> {
+        let entries = items.as_array().ok_or("missing conditionals array")?;
+        if entries.len() > MAX_CONDITIONALS {
+            return Err("too many conditionals".into());
+        }
+        // Parse and validate everything before touching the stack, so a
+        // refusal leaves it exactly as it was.
+        let mut replaced = Vec::new();
+        let mut rejected = Vec::new();
+        for item in entries {
+            let conditional = Conditional::parse(item)?;
+            match caps.validate(&conditional.profile) {
+                Ok(()) => replaced.push(conditional),
+                Err(_) => rejected.push(conditional.name),
+            }
+        }
+        replaced.sort_by_key(|conditional| conditional.rank());
+        self.conditionals = replaced;
+        Ok(rejected)
+    }
 }
 
 #[cfg(test)]
@@ -289,5 +321,43 @@ mod tests {
         assert!(stack.remove("nope").is_err());
         stack.remove("charge-job").unwrap();
         assert!(stack.conditionals.is_empty());
+    }
+
+    #[test]
+    fn replace_validates_every_entry_and_names_the_refusals() {
+        // Default capabilities carry no supported control at all, so a
+        // concrete control is always unsupported against them.
+        let caps = Capabilities::default();
+        let mut stack = Stack::default();
+        let items = serde_json::json!([
+            {"name": "kept", "enabled": true, "profile": {}},
+            {"name": "unsupported", "profile": {"touch": 1}},
+        ]);
+        let rejected = stack.replace(&items, &caps).unwrap();
+        assert_eq!(rejected, vec!["unsupported".to_string()]);
+        assert_eq!(
+            stack
+                .conditionals
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept"]
+        );
+        // A malformed entry refuses the replace and leaves the stack intact.
+        let bad = serde_json::json!([{"name": "not legal", "profile": {}}]);
+        assert!(stack.replace(&bad, &caps).is_err());
+        assert_eq!(
+            stack
+                .conditionals
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kept"]
+        );
+        // More conditionals than the stack may hold refuses the replace.
+        let many: Vec<serde_json::Value> = (0..40)
+            .map(|index| serde_json::json!({"name": format!("c{index}"), "profile": {}}))
+            .collect();
+        assert!(stack.replace(&serde_json::json!(many), &caps).is_err());
     }
 }

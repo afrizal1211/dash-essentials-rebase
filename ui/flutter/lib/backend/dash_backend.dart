@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'backend_connection.dart';
+import 'per_app_backend.dart';
 import 'system_colors_state.dart';
 import 'system_colors_preferences.dart';
 import 'system_colors_monitor.dart';
@@ -18,6 +21,39 @@ typedef _BackListenerNative =
     ffi.Void Function(ffi.Pointer<ffi.NativeFunction<_BackEventNative>>);
 typedef _BackListenerDart =
     void Function(ffi.Pointer<ffi.NativeFunction<_BackEventNative>>);
+typedef _BackupBytesNative =
+    ffi.Int32 Function(ffi.Pointer<ffi.Uint8>, ffi.Int32);
+typedef _BackupBytesDart = int Function(ffi.Pointer<ffi.Uint8>, int);
+typedef _MallocNative = ffi.Pointer<ffi.Void> Function(ffi.IntPtr);
+typedef _Malloc = ffi.Pointer<ffi.Void> Function(int);
+typedef _FreeNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
+typedef _Free = void Function(ffi.Pointer<ffi.Void>);
+
+/// One part of an import upload. The framed reader caps a command at 4096
+/// bytes, so the payload travels in parts that leave room for the
+/// `SET import.chunk <index> ` prefix.
+const int importChunkBytes = 3000;
+
+/// Splits one import payload into parts no bigger than [importChunkBytes],
+/// counting UTF-8 bytes so a boundary never lands inside a character. The
+/// parts reassemble into the payload by concatenation.
+List<String> splitImportChunks(String payload) {
+  final List<String> parts = <String>[];
+  final StringBuffer buffer = StringBuffer();
+  int used = 0;
+  for (final int rune in payload.runes) {
+    final int size = utf8.encode(String.fromCharCode(rune)).length;
+    if (used + size > importChunkBytes && buffer.isNotEmpty) {
+      parts.add(buffer.toString());
+      buffer.clear();
+      used = 0;
+    }
+    buffer.write(String.fromCharCode(rune));
+    used += size;
+  }
+  parts.add(buffer.toString());
+  return parts;
+}
 
 final class DashBackendSnapshot {
   const DashBackendSnapshot({
@@ -218,6 +254,13 @@ final class DashBackend {
   _I32Dart? _fpsOverlayGrantedNative;
   _I32Dart? _fpsOverlayRequestNative;
   _OverlayConfigDart? _fpsOverlayConfigNative;
+  _I32Dart? _backupStateNative;
+  _I32Dart? _backupResetNative;
+  _I32Dart? _backupImportNative;
+  _BackupBytesDart? _backupPayloadNative;
+  _BackupBytesDart? _backupExportNative;
+  _BackupBytesDart? _backupShareNative;
+  _BackupBytesDart? _backupPathExistsNative;
   ffi.NativeCallable<_BackEventNative>? _backListener;
 
   DashBackendSnapshot _latest = const DashBackendSnapshot(
@@ -510,6 +553,36 @@ final class DashBackend {
             .lookupFunction<_OverlayConfigNative, _OverlayConfigDart>(
               'dash_host_fps_overlay_config',
             );
+      }
+
+      // The backup symbols are newer than the base table and ship together,
+      // so a host library without them loses Backup & transfer only.
+      if (lib.providesSymbol('dash_host_backup_state')) {
+        _backupStateNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_backup_state',
+        );
+        _backupResetNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_backup_reset',
+        );
+        _backupImportNative = lib.lookupFunction<_I32Native, _I32Dart>(
+          'dash_host_backup_import',
+        );
+        _backupPayloadNative =
+            lib.lookupFunction<_BackupBytesNative, _BackupBytesDart>(
+          'dash_host_backup_payload',
+        );
+        _backupExportNative =
+            lib.lookupFunction<_BackupBytesNative, _BackupBytesDart>(
+          'dash_host_backup_export',
+        );
+        _backupShareNative =
+            lib.lookupFunction<_BackupBytesNative, _BackupBytesDart>(
+          'dash_host_backup_share',
+        );
+        _backupPathExistsNative =
+            lib.lookupFunction<_BackupBytesNative, _BackupBytesDart>(
+          'dash_host_backup_path_exists',
+        );
       }
 
       _lib = lib;
@@ -916,6 +989,132 @@ final class DashBackend {
   bool requestPhotoPermission() {
     if (!_started) return false;
     return _requestPhotoPermissionNative() == 1;
+  }
+
+  /// The settings-backup state slot the UI polls: 0 idle, 1 export ok,
+  /// 2 export failed, 3 import ready, 4 import failed, 5 import cancelled.
+  int backupState() {
+    if (!_started) return 0;
+    return _backupStateNative?.call() ?? 0;
+  }
+
+  /// Returns the slot to idle and drops its payload.
+  void backupReset() {
+    if (!_started) return;
+    _backupResetNative?.call();
+  }
+
+  /// The payload of the finished backup operation: the file URI after an
+  /// export, the bundle bytes after an import. `null` when the slot is empty
+  /// or the payload would not fit the host's buffer.
+  Uint8List? backupPayload() {
+    if (!_started) return null;
+    final _BackupBytesDart? payloadNative = _backupPayloadNative;
+    if (payloadNative == null) return null;
+    const int capacity = 1048576;
+    final ffi.Pointer<ffi.Uint8> buffer = _backupAllocate(capacity);
+    try {
+      final int length = payloadNative(buffer, capacity);
+      if (length < 0) return null;
+      return Uint8List.fromList(buffer.asTypedList(length));
+    } finally {
+      _backupRelease(buffer);
+    }
+  }
+
+  /// Writes the bundle to Downloads through `DashActivity.saveBackup`.
+  bool backupExport(Uint8List bytes) {
+    if (!_started || bytes.isEmpty) return false;
+    final _BackupBytesDart? exportNative = _backupExportNative;
+    if (exportNative == null) return false;
+    final ffi.Pointer<ffi.Uint8> buffer = _backupCopyOut(bytes);
+    if (buffer == ffi.nullptr) return false;
+    try {
+      return exportNative(buffer, bytes.length) != 0;
+    } finally {
+      _backupRelease(buffer);
+    }
+  }
+
+  /// Opens the backup picker through `DashActivity.openBackup`.
+  bool backupImport() {
+    if (!_started) return false;
+    return _backupImportNative?.call() == 1;
+  }
+
+  /// Hands the exported file to Drive or any other transport.
+  bool backupShare(String uri) {
+    if (!_started || uri.isEmpty) return false;
+    final _BackupBytesDart? shareNative = _backupShareNative;
+    if (shareNative == null) return false;
+    final Uint8List bytes = utf8.encode(uri);
+    final ffi.Pointer<ffi.Uint8> buffer = _backupCopyOut(bytes);
+    if (buffer == ffi.nullptr) return false;
+    try {
+      return shareNative(buffer, bytes.length) != 0;
+    } finally {
+      _backupRelease(buffer);
+    }
+  }
+
+  /// Whether an imported custom background still resolves here.
+  bool backupPathExists(String path) {
+    if (!_started || path.isEmpty) return false;
+    final _BackupBytesDart? existsNative = _backupPathExistsNative;
+    if (existsNative == null) return false;
+    final Uint8List bytes = utf8.encode(path);
+    final ffi.Pointer<ffi.Uint8> buffer = _backupCopyOut(bytes);
+    if (buffer == ffi.nullptr) return false;
+    try {
+      return existsNative(buffer, bytes.length) != 0;
+    } finally {
+      _backupRelease(buffer);
+    }
+  }
+
+  /// The durable half of a settings bundle from the daemon.
+  Future<Map<String, dynamic>> saveBundle() async {
+    final dynamic reply =
+        await PerAppBackend.instance.command('GET save.bundle');
+    return reply as Map<String, dynamic>;
+  }
+
+  /// Uploads the imported `hardware` block in chunks the framed reader
+  /// accepts, then applies it. Import replaces everything; the reply names
+  /// every domain's outcome.
+  Future<Map<String, dynamic>> importApply(String hardwareJson) async {
+    final List<String> parts = splitImportChunks(hardwareJson);
+    for (int index = 0; index < parts.length; index++) {
+      await PerAppBackend.instance
+          .command('SET import.chunk $index ${parts[index]}');
+    }
+    final dynamic reply =
+        await PerAppBackend.instance.command('ACTION import.apply');
+    return reply as Map<String, dynamic>;
+  }
+
+  /// The libc allocation pair `PerAppBackend` uses, looked up the same way.
+  ffi.Pointer<ffi.Uint8> _backupAllocate(int bytes) {
+    final ffi.DynamicLibrary libc = ffi.DynamicLibrary.open('libc.so');
+    final _Malloc allocate = libc.lookupFunction<_MallocNative, _Malloc>(
+      'malloc',
+    );
+    return allocate(bytes).cast<ffi.Uint8>();
+  }
+
+  ffi.Pointer<ffi.Uint8> _backupCopyOut(Uint8List bytes) {
+    final ffi.Pointer<ffi.Uint8> buffer = _backupAllocate(bytes.length);
+    if (buffer != ffi.nullptr) {
+      buffer.asTypedList(bytes.length).setAll(0, bytes);
+    }
+    return buffer;
+  }
+
+  void _backupRelease(ffi.Pointer<ffi.Uint8> buffer) {
+    if (buffer == ffi.nullptr) return;
+    final ffi.DynamicLibrary libc = ffi.DynamicLibrary.open('libc.so');
+    final _Free release = libc.lookupFunction<_FreeNative, _Free>('free');
+    release(buffer.cast<ffi.Void>());
   }
 
   /// The daemon's foreground FPS, or `null` when no frame node answered.

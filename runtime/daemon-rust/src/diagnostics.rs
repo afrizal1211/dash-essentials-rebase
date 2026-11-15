@@ -34,6 +34,7 @@ pub const AREA_CHARGING: &str = "charging";
 pub const AREA_CPU: &str = "cpu";
 pub const AREA_SERVICE: &str = "service";
 pub const AREA_CONFLICT: &str = "conflict";
+pub const AREA_BACKUP: &str = "backup";
 
 #[derive(Clone)]
 pub struct Event {

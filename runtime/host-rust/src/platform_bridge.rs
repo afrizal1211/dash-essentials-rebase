@@ -386,6 +386,145 @@ pub extern "C" fn dash_host_export_save(
     }
 }
 
+/// The settings-backup exchange with the UI. The Dart side polls a state slot
+/// exactly the way the photo-permission flow does, and pulls the payload out
+/// through a bounded copy. States: 0 idle, 1 export ok (the payload is the
+/// file URI as UTF-8), 2 export failed, 3 import ready (the payload is the
+/// bundle bytes), 4 import failed, 5 import cancelled.
+static BACKUP_STATE: AtomicI32 = AtomicI32::new(0);
+static BACKUP_PAYLOAD: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+/// Called from `DashActivity` (`saveBackup`, `onActivityResult`).
+fn store_backup_result(code: i32, data: Option<Vec<u8>>) {
+    BACKUP_STATE.store(code, Ordering::Release);
+    if let Ok(mut payload) = BACKUP_PAYLOAD.lock() {
+        *payload = data.unwrap_or_default();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_nativeBackupResult(
+    env: JNIEnv,
+    _: JClass,
+    code: jint,
+    data: jni::sys::jbyteArray,
+) {
+    let bytes = if data.is_null() {
+        None
+    } else {
+        // The Java side hands over a raw local reference; `from_raw` adopts it
+        // into this frame so `convert_byte_array` can read it.
+        let array = unsafe { jni::objects::JByteArray::from_raw(data) };
+        env.convert_byte_array(&array).ok()
+    };
+    store_backup_result(code, bytes);
+}
+
+// A backup is a few kilobytes; the cap exists only so a bad caller cannot turn
+// an FFI length into an out-of-bounds slice read.
+const MAX_BACKUP_LEN: usize = 16 * 1024 * 1024;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_state() -> i32 {
+    BACKUP_STATE.load(Ordering::Acquire)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_reset() -> i32 {
+    BACKUP_STATE.store(0, Ordering::Release);
+    if let Ok(mut payload) = BACKUP_PAYLOAD.lock() {
+        payload.clear();
+    }
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_payload(output: *mut u8, capacity: i32) -> i32 {
+    if output.is_null() || capacity <= 0 {
+        return -1;
+    }
+    let Ok(payload) = BACKUP_PAYLOAD.lock() else {
+        return -1;
+    };
+    if payload.len() > capacity as usize {
+        return -1;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(payload.as_ptr(), output, payload.len());
+    }
+    payload.len() as i32
+}
+
+/// Writes the bundle to Downloads through `DashActivity.saveBackup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_export(data: *const u8, len: i32) -> i32 {
+    if data.is_null() || len < 0 || len as usize > MAX_BACKUP_LEN {
+        return 0;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
+    with_activity(|env, activity| -> jni::errors::Result<()> {
+        let array = env.byte_array_from_slice(bytes)?;
+        env.call_method(activity, "saveBackup", "([B)V", &[JValue::Object(&array)])?;
+        Ok(())
+    })
+    .is_some() as i32
+}
+
+/// Opens the backup picker through `DashActivity.openBackup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_import() -> i32 {
+    with_activity(|env, activity| -> jni::errors::Result<()> {
+        env.call_method(activity, "openBackup", "()V", &[])?;
+        Ok(())
+    })
+    .is_some() as i32
+}
+
+/// Shares the exported file through `DashActivity.shareBackup`.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_share(path: *const u8, len: i32) -> i32 {
+    if path.is_null() || len < 0 || len as usize > MAX_BACKUP_LEN {
+        return 0;
+    }
+    let text = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(path, len as usize)) };
+    with_activity(|env, activity| -> jni::errors::Result<()> {
+        let uri = env.new_string(text)?;
+        env.call_method(
+            activity,
+            "shareBackup",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&uri)],
+        )?;
+        Ok(())
+    })
+    .is_some() as i32
+}
+
+/// Whether the imported custom background still resolves here, asked of
+/// `DashActivity.backupPathExists`. Unreadable means missing: an import prunes
+/// a path it cannot confirm rather than keeping a dangling pointer.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_backup_path_exists(path: *const u8, len: i32) -> i32 {
+    if path.is_null() || len < 0 || len as usize > MAX_BACKUP_LEN {
+        return 0;
+    }
+    let text = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(path, len as usize)) };
+    with_activity(|env, activity| -> jni::errors::Result<bool> {
+        let value = env.new_string(text)?;
+        match env.call_method(
+            activity,
+            "backupPathExists",
+            "(Ljava/lang/String;)Z",
+            &[JValue::Object(&value)],
+        )? {
+            JValue::Bool(found) => Ok(found != 0),
+            _ => Ok(false),
+        }
+    })
+    .map(|found| i32::from(found))
+    .unwrap_or(0)
+}
+
 // DashStatusNotificationService bridge. The daemon computes deep sleep and
 // battery drain (it owns the privileged reads); these entry points only read
 // the cached snapshot, so they are safe from any thread and never touch the
@@ -414,4 +553,55 @@ pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificat
 pub extern "system" fn Java_io_github_neeschal_dashessential_DashStatusNotificationService_nativeRequestRefresh()
  {
     let _ = super::backend_bridge::dash_backend_refresh();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// These tests share one state slot and one payload buffer, and the
+    /// harness runs them in parallel, so each takes this lock for its whole
+    /// body.
+    fn backup_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static BACKUP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        BACKUP_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    #[test]
+    fn a_result_round_trips_through_the_state_slot() {
+        let _serialized = backup_test_lock();
+        let payload = b"{'schema':1}";
+        super::store_backup_result(3, Some(payload.to_vec()));
+        assert_eq!(super::dash_host_backup_state(), 3);
+        let mut buffer = [0u8; 64];
+        let len = super::dash_host_backup_payload(buffer.as_mut_ptr(), buffer.len() as i32);
+        assert_eq!(len, payload.len() as i32);
+        assert_eq!(&buffer[..len as usize], payload);
+        // A reset returns to idle and drops the payload.
+        assert_eq!(super::dash_host_backup_reset(), 1);
+        assert_eq!(super::dash_host_backup_state(), 0);
+        assert_eq!(super::dash_host_backup_payload(buffer.as_mut_ptr(), 64), 0);
+    }
+
+    #[test]
+    fn a_payload_larger_than_the_capacity_is_refused() {
+        let _serialized = backup_test_lock();
+        super::store_backup_result(1, Some(b"0123456789".to_vec()));
+        let mut buffer = [0u8; 4];
+        assert_eq!(super::dash_host_backup_payload(buffer.as_mut_ptr(), 4), -1);
+    }
+
+    #[test]
+    fn a_null_output_or_nonpositive_capacity_is_refused() {
+        let _serialized = backup_test_lock();
+        super::store_backup_result(3, Some(b"abc".to_vec()));
+        assert_eq!(
+            super::dash_host_backup_payload(std::ptr::null_mut(), 64),
+            -1
+        );
+        let mut buffer = [0u8; 8];
+        assert_eq!(super::dash_host_backup_payload(buffer.as_mut_ptr(), 0), -1);
+    }
 }

@@ -211,6 +211,16 @@ jobs:
       - name: Build module
         run: tools/build-kernelsu-next-module.sh
 
+      # The platform interface must stay exactly the five framework adapter
+      # classes inside one classes.dex under the 40,960-byte cap, because the
+      # daemon loads it as trusted DEX. The script needs only the built APK
+      # and dexdump from the build-tools installed above.
+      - name: Platform DEX invariant
+        run: |
+          set -euo pipefail
+          apk=$(ls out/kernelsu-next/*/application/Dash-Essential.apk | head -1)
+          tools/check-platform-dex.sh "$apk"
+
       - name: Upload module
         uses: actions/upload-artifact@v4
         with:
