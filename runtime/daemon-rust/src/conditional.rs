@@ -336,14 +336,22 @@ mod tests {
         let rejected = stack.replace(&items, &caps).unwrap();
         assert_eq!(rejected, vec!["unsupported".to_string()]);
         assert_eq!(
-            stack.conditionals.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            stack
+                .conditionals
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["kept"]
         );
         // A malformed entry refuses the replace and leaves the stack intact.
         let bad = serde_json::json!([{"name": "not legal", "profile": {}}]);
         assert!(stack.replace(&bad, &caps).is_err());
         assert_eq!(
-            stack.conditionals.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            stack
+                .conditionals
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["kept"]
         );
         // More conditionals than the stack may hold refuses the replace.

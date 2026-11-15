@@ -4391,9 +4391,7 @@ fn import_chunk(raw: &str) -> Result<(), String> {
         });
         return Ok(());
     }
-    let pending = upload
-        .as_mut()
-        .ok_or("import chunk out of order")?;
+    let pending = upload.as_mut().ok_or("import chunk out of order")?;
     if index != pending.next_index {
         *upload = None;
         return Err("import chunk out of order".into());
@@ -4452,8 +4450,8 @@ fn import_apply() -> Result<serde_json::Value, String> {
         app_runtime::apply_config(config)?;
         Ok(serde_json::json!({"ok": true}))
     })();
-    let profiles = profiles
-        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+    let profiles =
+        profiles.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
 
     // The conditional stack: `null` on the exporter means no stack, which
     // replaces with an empty one here.
@@ -4477,9 +4475,7 @@ fn import_apply() -> Result<serde_json::Value, String> {
     // takes and then through the boot-restore path, so both the file and the
     // live device carry the import.
     let state = (|| -> Result<serde_json::Value, String> {
-        let lines = hardware["state"]
-            .as_array()
-            .ok_or("missing state lines")?;
+        let lines = hardware["state"].as_array().ok_or("missing state lines")?;
         let raw: String = lines
             .iter()
             .filter_map(|line| line.as_str())
@@ -4503,19 +4499,13 @@ fn import_apply() -> Result<serde_json::Value, String> {
         }
         Ok(result)
     })();
-    let state = state
-        .unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
+    let state = state.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": error}));
 
     let summary = format!(
         "state={} profiles={} conditionals={} dexopt={}",
         state["ok"], profiles["ok"], conditionals["ok"], dexopt["ok"]
     );
-    diagnostics::record(
-        diagnostics::AREA_BACKUP,
-        "info",
-        "import",
-        &summary,
-    );
+    diagnostics::record(diagnostics::AREA_BACKUP, "info", "import", &summary);
 
     Ok(serde_json::json!({
         "state": state,
@@ -9662,10 +9652,7 @@ mod tests {
     /// `state_dir()` resolves once per process, so every test that needs a
     /// state directory runs as a child process that sees only its own
     /// `DASH_STATE_DIR`, exactly the way the crash tests do.
-    fn state_dir_child(
-        test: &str,
-        directory: &std::path::Path,
-    ) -> std::process::Output {
+    fn state_dir_child(test: &str, directory: &std::path::Path) -> std::process::Output {
         std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test])
             .env(super::STATE_DIR_ENV, directory)
@@ -9695,26 +9682,30 @@ mod tests {
                 .collect();
             assert!(state.iter().any(|line| line == "charging=65"));
             assert!(state.iter().any(|line| line == "touch=2"));
-            let (parsed, rejected) =
-                super::parse_persisted_state_reported(&state.join("\n"));
-            assert!(rejected.is_empty(), "re-exported lines were rejected: {rejected:?}");
+            let (parsed, rejected) = super::parse_persisted_state_reported(&state.join("\n"));
+            assert!(
+                rejected.is_empty(),
+                "re-exported lines were rejected: {rejected:?}"
+            );
             assert_eq!(parsed.charging, 65);
             assert_eq!(parsed.touch, 2);
             assert_eq!(bundle["conditionals"], serde_json::Value::Null);
             assert_eq!(bundle["dexopt"], serde_json::Value::Null);
-            assert_eq!(bundle["profiles"]["enabled"], serde_json::Value::Bool(false));
-            assert_eq!(bundle["profiles"]["profiles"], serde_json::Value::Array(vec![]));
-            let config = super::app_controls::Config::parse(
-                &bundle["profiles"].to_string(),
-            )
-            .unwrap();
+            assert_eq!(
+                bundle["profiles"]["enabled"],
+                serde_json::Value::Bool(false)
+            );
+            assert_eq!(
+                bundle["profiles"]["profiles"],
+                serde_json::Value::Array(vec![])
+            );
+            let config =
+                super::app_controls::Config::parse(&bundle["profiles"].to_string()).unwrap();
             assert_eq!(config.profiles.len(), 0);
             return;
         }
-        let directory = std::env::temp_dir().join(format!(
-            "dash-bundle-{}-round-trip",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("dash-bundle-{}-round-trip", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("state.conf"), "charging=65\ntouch=2\n").unwrap();
         std::fs::write(
@@ -9737,10 +9728,8 @@ mod tests {
             assert_eq!(error, "export bundle too large");
             return;
         }
-        let directory = std::env::temp_dir().join(format!(
-            "dash-bundle-{}-oversized",
-            std::process::id()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("dash-bundle-{}-oversized", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(directory.join("state.conf"), "charging=65\n").unwrap();
         // Valid JSON whose content is only padding, so it is the size budget
@@ -9751,10 +9740,7 @@ mod tests {
             format!("{{\"conditionals\": [{padding}]}}"),
         )
         .unwrap();
-        let output = state_dir_child(
-            "tests::save_bundle_refuses_an_oversized_store",
-            &directory,
-        );
+        let output = state_dir_child("tests::save_bundle_refuses_an_oversized_store", &directory);
         assert_child(&output);
         std::fs::remove_dir_all(&directory).ok();
     }
@@ -9796,7 +9782,9 @@ mod tests {
     /// parallel, so each takes this lock for its whole body.
     fn import_upload_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static IMPORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        IMPORT_TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+        IMPORT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     fn reset_import_upload() {
@@ -9824,8 +9812,8 @@ mod tests {
             assert!(!directory.join("state.conf").exists());
             return;
         }
-        let directory = std::env::temp_dir()
-            .join(format!("dash-import-{}-platform", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-platform", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let output = state_dir_child(
             "tests::import_refuses_a_foreign_platform_before_touching_state",
@@ -9864,8 +9852,8 @@ mod tests {
             assert!(!saved.contains("unknown_key"), "state.conf: {saved}");
             return;
         }
-        let directory = std::env::temp_dir()
-            .join(format!("dash-import-{}-state", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-state", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join("service.json"),
@@ -9896,16 +9884,18 @@ mod tests {
             super::import_chunk(&format!("0 {}", bundle)).unwrap();
             let reply = super::import_apply().unwrap();
             assert_eq!(reply["dexopt"]["ok"], serde_json::Value::Bool(false));
-            assert!(reply["dexopt"]["error"]
-                .as_str()
-                .unwrap()
-                .contains("cadence"));
+            assert!(
+                reply["dexopt"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cadence")
+            );
             assert_eq!(reply["state"]["ok"], serde_json::Value::Bool(true));
             assert_eq!(reply["conditionals"]["ok"], serde_json::Value::Bool(true));
             return;
         }
-        let directory = std::env::temp_dir()
-            .join(format!("dash-import-{}-partial", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("dash-import-{}-partial", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join("service.json"),

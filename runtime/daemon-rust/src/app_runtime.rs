@@ -2300,8 +2300,7 @@ mod tests {
             let raw = "{\"schema\":1,\"enabled\":true,\"notify\":false,\"profiles\":[{\"user\":0,\"package\":\"com.example.game\",\"profile\":{}}]}";
             let config = Config::parse(raw).unwrap();
             super::apply_config(config).unwrap();
-            let reloaded =
-                Config::load(&super::state_dir().join("app-profiles.json")).unwrap();
+            let reloaded = Config::load(&super::state_dir().join("app-profiles.json")).unwrap();
             assert!(reloaded.enabled);
             assert_eq!(reloaded.profiles.len(), 1);
             let runtime = super::runtime().lock().unwrap();
@@ -2309,11 +2308,14 @@ mod tests {
             assert!(runtime.config_error.is_none());
             return;
         }
-        let directory = std::env::temp_dir()
-            .join(format!("dash-apply-config-{}", std::process::id()));
+        let directory =
+            std::env::temp_dir().join(format!("dash-apply-config-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "app_runtime::tests::apply_config_is_durable_and_live"])
+            .args([
+                "--exact",
+                "app_runtime::tests::apply_config_is_durable_and_live",
+            ])
             .env(crate::STATE_DIR_ENV, &directory)
             .env("DASH_APPLY_CONFIG_CHILD", &directory)
             .output()

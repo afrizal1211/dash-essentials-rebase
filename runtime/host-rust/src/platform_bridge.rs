@@ -464,12 +464,7 @@ pub extern "C" fn dash_host_backup_export(data: *const u8, len: i32) -> i32 {
     let bytes = unsafe { std::slice::from_raw_parts(data, len as usize) };
     with_activity(|env, activity| -> jni::errors::Result<()> {
         let array = env.byte_array_from_slice(bytes)?;
-        env.call_method(
-            activity,
-            "saveBackup",
-            "([B)V",
-            &[JValue::Object(&array)],
-        )?;
+        env.call_method(activity, "saveBackup", "([B)V", &[JValue::Object(&array)])?;
         Ok(())
     })
     .is_some() as i32
@@ -602,7 +597,10 @@ mod tests {
     fn a_null_output_or_nonpositive_capacity_is_refused() {
         let _serialized = backup_test_lock();
         super::store_backup_result(3, Some(b"abc".to_vec()));
-        assert_eq!(super::dash_host_backup_payload(std::ptr::null_mut(), 64), -1);
+        assert_eq!(
+            super::dash_host_backup_payload(std::ptr::null_mut(), 64),
+            -1
+        );
         let mut buffer = [0u8; 8];
         assert_eq!(super::dash_host_backup_payload(buffer.as_mut_ptr(), 0), -1);
     }
