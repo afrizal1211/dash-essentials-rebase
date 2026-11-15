@@ -517,7 +517,9 @@ pub extern "C" fn dash_host_backup_path_exists(path: *const u8, len: i32) -> i32
             "(Ljava/lang/String;)Z",
             &[JValue::Object(&value)],
         )? {
-            JValue::Bool(found) => Ok(found != 0),
+            // `call_method` owns the value it returns, so the arm is
+            // JValueOwned (JValueGen<JObject>), not the borrowed JValue.
+            jni::objects::JValueOwned::Bool(found) => Ok(found != 0),
             _ => Ok(false),
         }
     })
