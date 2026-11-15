@@ -4296,6 +4296,66 @@ fn save_persisted_state(state: &PersistedState) -> Result<(), String> {
     Ok(())
 }
 
+/// The export ceiling. The host bridge reads at most 786,432 bytes of a reply
+/// (`backend_bridge.rs`) and Dart allocates 1 MiB, so an export answers this
+/// error instead of letting the host truncate the reply out from under it.
+const EXPORT_BUNDLE_BUDGET: usize = 700_000;
+
+/// The durable half of a settings bundle: the persisted `key=value` lines and
+/// the three JSON stores, each `null` when it has never been written. Every
+/// value leaves through the same parser a manual change or a boot restore
+/// uses, so export can never carry a shape import cannot replay.
+fn save_bundle() -> Result<serde_json::Value, String> {
+    let global = {
+        let state = persisted_state()
+            .lock()
+            .map_err(|_| "persisted state lock poisoned")?;
+        app_runtime::global_preferences(&state)?
+    };
+    let lines = persisted_state_text(&global)
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+
+    let profiles_path = state_dir().join("app-profiles.json");
+    // `Config::load` answers the default config for a missing file, so the
+    // file's existence is what distinguishes "never configured" from "empty".
+    let profiles = if profiles_path.exists() {
+        serde_json::to_value(app_controls::Config::load(&profiles_path)?.json())
+            .map_err(|e| e.to_string())?
+    } else {
+        serde_json::Value::Null
+    };
+
+    let bundle = serde_json::json!({
+        "state": lines,
+        "profiles": profiles,
+        "conditionals": read_store_json("conditionals.json")?,
+        "dexopt": read_store_json("dexopt.json")?,
+    });
+    if serde_json::to_string(&bundle)
+        .map_err(|e| e.to_string())?
+        .len()
+        > EXPORT_BUNDLE_BUDGET
+    {
+        return Err("export bundle too large".into());
+    }
+    Ok(bundle)
+}
+
+/// One JSON store under the state directory as a value, or `null` when the
+/// file has never been written. A file that exists but cannot be parsed is an
+/// error: silently omitting a store the user has would hide a fault as a
+/// clean export.
+fn read_store_json(name: &str) -> Result<serde_json::Value, String> {
+    let path = state_dir().join(name);
+    if !path.exists() {
+        return Ok(serde_json::Value::Null);
+    }
+    let raw = fs::read_to_string(&path).map_err(|e| format!("export {name}: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("export {name}: {e}"))
+}
+
 fn mutate_persisted_state<F>(f: F) -> Result<(), String>
 where
     F: FnOnce(&mut PersistedState),
@@ -8807,6 +8867,12 @@ fn handle_enabled_command(line: &str) -> String {
     if cmd == "GET snapshot" {
         return format!("OK {}", snapshot());
     }
+    if cmd == "GET save.bundle" {
+        return match save_bundle() {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
     if cmd == "GET dexopt.status" {
         return match dexopt::status_json() {
             Ok(value) => format!("OK {value}"),
@@ -9401,6 +9467,106 @@ mod tests {
     fn comments_and_blank_lines_are_not_rejections() {
         let (_state, rejected) = super::parse_persisted_state_reported("# comment\n\n   \n");
         assert!(rejected.is_empty());
+    }
+
+    /// `state_dir()` resolves once per process, so every test that needs a
+    /// state directory runs as a child process that sees only its own
+    /// `DASH_STATE_DIR`, exactly the way the crash tests do.
+    fn state_dir_child(
+        test: &str,
+        directory: &std::path::Path,
+    ) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test])
+            .env(super::STATE_DIR_ENV, directory)
+            .env("DASH_BUNDLE_TEST_CHILD", directory)
+            .output()
+            .expect("spawn the state-directory child")
+    }
+
+    fn assert_child(output: &std::process::Output) {
+        assert!(
+            output.status.success(),
+            "state-directory child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn save_bundle_round_trips_the_durable_state() {
+        if let Some(directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let directory = std::path::PathBuf::from(directory);
+            let bundle = super::save_bundle().unwrap();
+            let state: Vec<String> = bundle["state"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| line.as_str().unwrap().to_string())
+                .collect();
+            assert!(state.iter().any(|line| line == "charging=65"));
+            assert!(state.iter().any(|line| line == "touch=2"));
+            let (parsed, rejected) =
+                super::parse_persisted_state_reported(&state.join("\n"));
+            assert!(rejected.is_empty(), "re-exported lines were rejected: {rejected:?}");
+            assert_eq!(parsed.charging, 65);
+            assert_eq!(parsed.touch, 2);
+            assert_eq!(bundle["conditionals"], serde_json::Value::Null);
+            assert_eq!(bundle["dexopt"], serde_json::Value::Null);
+            assert_eq!(bundle["profiles"]["enabled"], serde_json::Value::Bool(false));
+            assert_eq!(bundle["profiles"]["profiles"], serde_json::Value::Array(vec![]));
+            let config = super::app_controls::Config::parse(
+                &bundle["profiles"].to_string(),
+            )
+            .unwrap();
+            assert_eq!(config.profiles.len(), 0);
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "dash-bundle-{}-round-trip",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("state.conf"), "charging=65\ntouch=2\n").unwrap();
+        std::fs::write(
+            directory.join("app-profiles.json"),
+            "{\"schema\":1,\"enabled\":false,\"notify\":false,\"profiles\":[]}",
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::save_bundle_round_trips_the_durable_state",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn save_bundle_refuses_an_oversized_store() {
+        if let Some(_directory) = std::env::var_os("DASH_BUNDLE_TEST_CHILD") {
+            let error = super::save_bundle().unwrap_err();
+            assert_eq!(error, "export bundle too large");
+            return;
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "dash-bundle-{}-oversized",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("state.conf"), "charging=65\n").unwrap();
+        // Valid JSON whose content is only padding, so it is the size budget
+        // that refuses the export, not the parser.
+        let padding = " ".repeat(super::EXPORT_BUNDLE_BUDGET);
+        std::fs::write(
+            directory.join("conditionals.json"),
+            format!("{{\"conditionals\": [{padding}]}}"),
+        )
+        .unwrap();
+        let output = state_dir_child(
+            "tests::save_bundle_refuses_an_oversized_store",
+            &directory,
+        );
+        assert_child(&output);
+        std::fs::remove_dir_all(&directory).ok();
     }
 
     #[test]
