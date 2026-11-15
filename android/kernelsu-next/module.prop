@@ -1,7 +1,7 @@
 id=nees_dash_essential_backend
 name=Dash Essential
-version=v1.23.11
-versionCode=12311
+version=v1.23.12
+versionCode=12312
 author=NEESCHAL-3
 description=KernelSU Next and Magisk package for Dash Essential. Keeps the Android app non-root and runs hardware controls through an authenticated root daemon.
-codename=Mizar
+codename=Alcor

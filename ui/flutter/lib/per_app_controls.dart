@@ -1092,19 +1092,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                 accent: Color(0xFFFF5252),
               ),
               const SizedBox(height: 14),
-              _choice(
-                'GPU profile',
-                _draft['gpu'],
-                <String, String>{
-                  for (final int v in _numbers('gpu'))
-                    '$v': _dashPerformanceLabel(v),
-                },
-                (String? v) => _set('gpu', v == null ? null : int.parse(v)),
-              ),
-              const Text(
-                'Changes GPU controls only.',
-                style: TextStyle(fontSize: 11, height: 1.4),
-              ),
+              _gpuControls(colors),
             ],
           ),
         ),
@@ -1298,6 +1286,130 @@ class _PerAppEditorState extends State<_PerAppEditor> {
     );
   }
 
+  Widget _gpuControls(ColorScheme colors) {
+    final List<int> frequencies =
+        (widget.capabilities['gpuFrequencies'] as List? ?? <dynamic>[])
+            .map((dynamic v) => (v as num).toInt())
+            .toList();
+    if (frequencies.isEmpty) {
+      return _choice(
+        'GPU profile',
+        _draft['gpu'],
+        <String, String>{
+          for (final int v in _numbers('gpu')) '$v': _dashPerformanceLabel(v),
+        },
+        (String? v) => _set('gpu', v == null ? null : int.parse(v)),
+      );
+    }
+    final Map<String, dynamic>? range =
+        (_draft['gpuRange'] as Map?)?.cast<String, dynamic>();
+    final bool locked = range != null && range['min'] == range['max'];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _choice(
+          'GPU frequency control',
+          range == null ? null : (locked ? 'lock' : 'range'),
+          const <String, String>{
+            'range': 'Frequency range',
+            'lock': 'Exact lock',
+          },
+          (String? v) {
+            final int ceiling =
+                range != null ? (range['max'] as num).toInt() : frequencies.last;
+            _set('gpu', null);
+            if (v == null) {
+              _set('gpuRange', null);
+              return;
+            }
+            _set(
+              'gpuRange',
+              <String, int>{
+                'min': v == 'lock' ? ceiling : frequencies.first,
+                'max': ceiling,
+              },
+            );
+          },
+        ),
+        if (range != null) ...<Widget>[
+          if (locked)
+            _choice(
+              'Lock target',
+              range['min'],
+              <String, String>{
+                for (final int v in frequencies) '$v': '$v MHz',
+              },
+              (String? v) {
+                if (v != null) {
+                  _set('gpuRange', <String, int>{
+                    'min': int.parse(v),
+                    'max': int.parse(v),
+                  });
+                }
+              },
+              followGlobal: false,
+            )
+          else ...<Widget>[
+            _choice(
+              'Minimum frequency',
+              range['min'],
+              <String, String>{
+                for (final int v in frequencies)
+                  if (v <= (range['max'] as num)) '$v': '$v MHz',
+              },
+              (String? v) {
+                if (v != null) {
+                  _set('gpuRange', <String, int>{
+                    'min': int.parse(v),
+                    'max': (range['max'] as num).toInt(),
+                  });
+                }
+              },
+              followGlobal: false,
+            ),
+            _choice(
+              'Maximum frequency',
+              range['max'],
+              <String, String>{
+                for (final int v in frequencies)
+                  if (v >= (range['min'] as num)) '$v': '$v MHz',
+              },
+              (String? v) {
+                if (v != null) {
+                  _set('gpuRange', <String, int>{
+                    'min': (range['min'] as num).toInt(),
+                    'max': int.parse(v),
+                  });
+                }
+              },
+              followGlobal: false,
+            ),
+          ],
+          Text(
+            'A vendor thermal service can still clamp the live clock below this range. The daemon re-arms the bounds every five seconds while this app is in front and stops above 47 C.',
+            style: TextStyle(
+              color: colors.onSurfaceVariant,
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 14),
+        ] else
+          _choice(
+            'GPU profile',
+            _draft['gpu'],
+            <String, String>{
+              for (final int v in _numbers('gpu')) '$v': _dashPerformanceLabel(v),
+            },
+            (String? v) => _set('gpu', v == null ? null : int.parse(v)),
+          ),
+        const Text(
+          'Frequency control takes over from the GPU profile while it is set.',
+          style: TextStyle(fontSize: 11, height: 1.4),
+        ),
+      ],
+    );
+  }
   Widget _cluster(int policy, ColorScheme colors) {
     final Map<dynamic, dynamic> caps =
         (widget.capabilities['cpu'] as Map?)?['$policy'] as Map? ??

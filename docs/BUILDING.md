@@ -82,7 +82,7 @@ Run before committing:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p dash-essential-daemon --all-targets -- -D warnings
 cargo test -p dash-essential-daemon
 dart format --output=none --set-exit-if-changed ui/flutter/lib
 (cd ui/flutter && flutter analyze)

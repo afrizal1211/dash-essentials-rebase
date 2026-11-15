@@ -1,7 +1,7 @@
 name: dash_essential_ui
 description: Dash Essential zero-DEX Flutter AOT interface.
 publish_to: "none"
-version: 1.23.11+12311
+version: 1.23.12+12312
 
 environment:
   sdk: ">=3.12.0 <4.0.0"

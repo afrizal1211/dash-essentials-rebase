@@ -47,6 +47,8 @@ pub(super) enum Control {
     Touch,
     Refresh,
     Gpu,
+    /// GPU operating-point bounds in megahertz, replacing the level profile.
+    GpuRange,
     CpuRange(u8),
     CpuGovernor(u8),
     CpuCores,
@@ -62,6 +64,11 @@ pub(super) enum Target {
     /// Zero means OEM adaptive, not a manufactured fixed refresh rate.
     Refresh(u16),
     Gpu(u8),
+    /// The slowest and fastest GPU operating points, in megahertz.
+    GpuRange {
+        min: u32,
+        max: u32,
+    },
     CpuRange {
         min: u32,
         max: u32,
@@ -96,6 +103,8 @@ pub(super) struct Capabilities {
     pub touch: BTreeSet<u8>,
     pub refresh: BTreeSet<u16>,
     pub gpu: BTreeSet<u8>,
+    /// GPU operating points in megahertz, from the GED working OPP table.
+    pub gpu_frequencies: BTreeSet<u32>,
     pub cpu_frequencies: BTreeMap<u8, BTreeSet<u32>>,
     pub cpu_governors: BTreeMap<u8, BTreeSet<String>>,
     pub manual_cores: bool,
@@ -112,6 +121,11 @@ impl Capabilities {
                 (Control::Touch, Target::Touch(value)) => self.touch.contains(value),
                 (Control::Refresh, Target::Refresh(value)) => self.refresh.contains(value),
                 (Control::Gpu, Target::Gpu(value)) => self.gpu.contains(value),
+                (Control::GpuRange, Target::GpuRange { min, max }) => {
+                    min <= max
+                        && self.gpu_frequencies.contains(min)
+                        && self.gpu_frequencies.contains(max)
+                }
                 (Control::CpuRange(policy), Target::CpuRange { min, max }) => {
                     min <= max
                         && self
@@ -164,7 +178,7 @@ impl Profile {
         fields(
             value,
             &[
-                "enabled", "touch", "refresh", "gpu", "cpu", "cores", "uclamp", "fpsgo",
+                "enabled", "touch", "refresh", "gpu", "gpuRange", "cpu", "cores", "uclamp", "fpsgo",
             ],
         )?;
         let mut profile = Self {
@@ -251,6 +265,17 @@ impl Profile {
                 .controls
                 .insert(Control::FpsGo, Target::FpsGo(enabled));
         }
+        if let Some(gpu) = value.get("gpuRange").filter(|v| !v.is_null()) {
+            fields(gpu, &["min", "max"])?;
+            let min = integer(gpu, "min", 10_000)? as u32;
+            let max = integer(gpu, "max", 10_000)? as u32;
+            if max < min {
+                return Err("GPU range maximum below minimum".into());
+            }
+            profile
+                .controls
+                .insert(Control::GpuRange, Target::GpuRange { min, max });
+        }
         Ok(profile)
     }
 
@@ -261,6 +286,9 @@ impl Profile {
                 (Control::Touch, Target::Touch(v)) => value["touch"] = json!(v),
                 (Control::Refresh, Target::Refresh(v)) => value["refresh"] = json!(v),
                 (Control::Gpu, Target::Gpu(v)) => value["gpu"] = json!(v),
+                (Control::GpuRange, Target::GpuRange { min, max }) => {
+                    value["gpuRange"] = json!({"min": min, "max": max});
+                }
                 (Control::CpuCores, Target::CpuCores(v)) => value["cores"] = json!(v),
                 (Control::CpuRange(policy), Target::CpuRange { min, max }) => {
                     let key = policy.to_string();
@@ -432,6 +460,7 @@ pub(super) fn control_bit(control: &Control) -> u32 {
         Control::CpuGovernor(_) => 1 << 5,
         Control::UClamp => 1 << 6,
         Control::FpsGo => 1 << 7,
+        Control::GpuRange => 1 << 8,
     }
 }
 
@@ -1301,6 +1330,36 @@ mod tests {
             ..Default::default()
         };
         caps.validate(&p).unwrap();
+        assert!(Capabilities::default().validate(&p).is_err());
+    }
+    #[test]
+    fn a_gpu_range_round_trips_and_only_accepts_published_clocks() {
+        let p = Profile::parse(&json!({"enabled":true,"gpuRange":{"min":338,"max":1612}})).unwrap();
+        assert_eq!(
+            p.controls.get(&Control::GpuRange),
+            Some(&Target::GpuRange {
+                min: 338,
+                max: 1612
+            })
+        );
+        assert_eq!(Profile::parse(&p.json()).unwrap(), p);
+        // An exact lock is a range whose floor is its ceiling.
+        let lock = Profile::parse(&json!({"gpuRange":{"min":900,"max":900}})).unwrap();
+        assert_eq!(Profile::parse(&lock.json()).unwrap(), lock);
+        assert!(Profile::parse(&json!({"gpuRange":{"min":1612,"max":338}})).is_err());
+        assert!(Profile::parse(&json!({"gpuRange":{"min":338,"max":99999}})).is_err());
+
+        let caps = Capabilities {
+            gpu_frequencies: BTreeSet::from([338, 598, 900, 1612]),
+            ..Default::default()
+        };
+        caps.validate(&p).unwrap();
+        caps.validate(&lock).unwrap();
+        // A clock the driver does not publish is rejected, never guessed.
+        assert!(
+            caps.validate(&Profile::parse(&json!({"gpuRange":{"min":338,"max":1000}})).unwrap())
+                .is_err()
+        );
         assert!(Capabilities::default().validate(&p).is_err());
     }
 }

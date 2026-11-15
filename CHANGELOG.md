@@ -6,6 +6,27 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.12 — Alcor
+
+### Added
+
+- Per-app GPU frequency control. The Mali GPU card now offers the same
+  Frequency Range / Exact Lock choice the CPU clusters have, picking from
+  the OPP clocks the working OPP table publishes (`gpuFrequencies` in
+  `GET app.capabilities`). The range is written to the devfreq limits and
+  the GED boost ladder without touching the global profile, and user
+  chosen bounds survive a vendor clamp readback as long as the live clock
+  stays inside the requested range. Choosing Frequency Control replaces the
+  GPU profile level for that app; clearing it falls back to the level.
+- A GPU vendor watchdog. While a per-app profile owns the GPU, the daemon
+  re-arms the devfreq and GED bounds every five seconds when the vendor
+  thermal service clamps them below the profile target, and stops above
+  47 °C so the re-arm never fights a real thermal trip.
+
+### Fixed
+
+- `GET app.capabilities` reports the GPU OPP table the device publishes,
+  so the per-app editor only offers clocks the kernel actually has.
 ## 1.23.11 — Mizar
 
 ### Added

@@ -101,6 +101,7 @@ fn key(control: &Control) -> String {
     match control {
         Control::Touch => "touch".into(),
         Control::Gpu => "gpu".into(),
+        Control::GpuRange => "gpuRange".into(),
         Control::Refresh => "refresh".into(),
         Control::CpuCores => "cores".into(),
         Control::CpuRange(p) => format!("range{p}"),
@@ -113,6 +114,7 @@ fn control(key: &str) -> Option<Control> {
     match key {
         "touch" => Some(Control::Touch),
         "gpu" => Some(Control::Gpu),
+        "gpuRange" => Some(Control::GpuRange),
         "refresh" => Some(Control::Refresh),
         "cores" => Some(Control::CpuCores),
         "uclamp" => Some(Control::UClamp),
@@ -154,6 +156,14 @@ fn copy_preference(c: &Control, from: &PersistedState, to: &mut PersistedState) 
             to.perf = from.perf;
             to.gpu = from.gpu.clone();
             to.gpu_profile_cpu_isolated = from.gpu_profile_cpu_isolated;
+            to.gpu_min_freq_mhz = from.gpu_min_freq_mhz;
+            to.gpu_max_freq_mhz = from.gpu_max_freq_mhz;
+            to.gpu_governor = from.gpu_governor.clone();
+            to.gpu_ged_boost = from.gpu_ged_boost;
+            to.gpu_uncap = from.gpu_uncap;
+            to.gpu_power_policy = from.gpu_power_policy.clone();
+        }
+        Control::GpuRange => {
             to.gpu_min_freq_mhz = from.gpu_min_freq_mhz;
             to.gpu_max_freq_mhz = from.gpu_max_freq_mhz;
             to.gpu_governor = from.gpu_governor.clone();
@@ -272,6 +282,10 @@ impl Hardware for Adapter {
             }
             Control::UClamp => read_cpu_uclamp(),
             Control::FpsGo => read_fpsgo(),
+            Control::GpuRange => json!({
+                "min": gpu_get_min_freq_mhz(),
+                "max": gpu_get_max_freq_mhz()
+            }),
             _ => Value::Null,
         };
         let saved = Saved { state, live };
@@ -297,6 +311,9 @@ impl Hardware for Adapter {
         match (c, target) {
             (Control::Touch, Target::Touch(v)) => set_touch_profile(*v as i32),
             (Control::Gpu, Target::Gpu(v)) => apply_performance_profile_borrowed(*v as i32),
+            (Control::GpuRange, Target::GpuRange { min, max }) => {
+                apply_gpu_range_borrowed(*min as i32, *max as i32)
+            }
             (Control::CpuRange(p), Target::CpuRange { min, max }) => {
                 set_cpu_cluster_freq_range(*p as i32, *min as i32, *max as i32)
             }
@@ -330,6 +347,9 @@ impl Hardware for Adapter {
     fn is_live(&mut self, c: &Control, target: &Target) -> Option<bool> {
         match (c, target) {
             (Control::Gpu, Target::Gpu(v)) => Some(gpu_profile_configured(*v as i32)),
+            (Control::GpuRange, Target::GpuRange { min, max }) => {
+                Some(gpu_range_configured(*min as i32, *max as i32))
+            }
             (Control::Touch, Target::Touch(v)) => Some(touch_profile_is_live(*v as i32)),
             _ => None,
         }
@@ -343,6 +363,43 @@ impl Hardware for Adapter {
                     apply_performance_profile(saved.state.perf)?;
                     let min = saved.state.gpu_min_freq_mhz;
                     let max = saved.state.gpu_max_freq_mhz;
+                    if min > 0 && max >= min {
+                        set_gpu_min_freq(338)?;
+                        set_gpu_max_freq(max)?;
+                        set_gpu_min_freq(min)?;
+                    }
+                    let governor = if !saved.state.gpu_governor.is_empty() {
+                        &saved.state.gpu_governor
+                    } else {
+                        &saved.state.gpu
+                    };
+                    if !governor.is_empty() {
+                        set_gpu_governor(governor)?;
+                    }
+                    if !saved.state.gpu_power_policy.is_empty() {
+                        set_gpu_power_policy(&saved.state.gpu_power_policy)?;
+                    }
+                    if saved.state.gpu_uncap == 1 {
+                        set_gpu_uncap(true)?;
+                    }
+                }
+                Control::GpuRange => {
+                    let mut min = saved.state.gpu_min_freq_mhz;
+                    let mut max = saved.state.gpu_max_freq_mhz;
+                    if min <= 0 || max < min {
+                        min = saved
+                            .live
+                            .get("min")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(DASH_GPU_FLOOR_MHZ as i64)
+                            as i32;
+                        max = saved
+                            .live
+                            .get("max")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(DASH_GPU_TOP_MHZ as i64)
+                            as i32;
+                    }
                     if min > 0 && max >= min {
                         set_gpu_min_freq(338)?;
                         set_gpu_max_freq(max)?;
@@ -673,6 +730,10 @@ fn capabilities() -> Result<Capabilities, String> {
     if gpu_get_min_freq_mhz() > 0 && gpu_get_max_freq_mhz() > 0 {
         caps.gpu = BTreeSet::from([0, 1, 2, 3]);
     }
+    let gpu_frequencies = gpu_available_frequencies_mhz();
+    if !gpu_frequencies.is_empty() {
+        caps.gpu_frequencies = gpu_frequencies.into_iter().collect();
+    }
     if let Ok(display) = cli(
         "/system/bin/cmd",
         &["display", "get-displays", "-t", "internal"],
@@ -722,7 +783,7 @@ fn capabilities_json() -> Result<Value, String> {
         cpu[p.to_string()] = json!({"frequencies":caps.cpu_frequencies.get(&p),"governors":caps.cpu_governors.get(&p)});
     }
     Ok(
-        json!({"touch":caps.touch,"gpu":caps.gpu,"refresh":caps.refresh,"cpu":cpu,"cores":caps.manual_cores,
+        json!({"touch":caps.touch,"gpu":caps.gpu,"gpuFrequencies":caps.gpu_frequencies,"refresh":caps.refresh,"cpu":cpu,"cores":caps.manual_cores,
             "uclamp":caps.uclamp,"fpsgo":caps.fpsgo}),
     )
 }
@@ -938,7 +999,7 @@ static PER_APP_OWNED: AtomicU32 = AtomicU32::new(0);
 
 /// Whether a per-app profile is holding the GPU control.
 pub(super) fn owns_gpu() -> bool {
-    PER_APP_OWNED.load(Ordering::Acquire) & (1 << 0) != 0
+    PER_APP_OWNED.load(Ordering::Acquire) & ((1 << 0) | (1 << 8)) != 0
 }
 
 /// Whether a per-app profile is holding the touch control.
@@ -964,6 +1025,37 @@ pub(super) fn owns_cpu_cores() -> bool {
 /// Publish what the per-app profile is holding.
 fn publish_owned(mask: u32) {
     PER_APP_OWNED.store(mask, Ordering::Release);
+}
+
+/// The GPU window the active per-app profile is defending.
+///
+/// The vendor watchdog re-publishes bounds, it never invents them, so it
+/// reads its target from the profile that is actually in front. A
+/// level-based profile is translated into the window that level applies.
+pub(super) fn owned_gpu_target() -> Option<(i32, i32)> {
+    let runtime = runtime().lock().ok()?;
+    let Status::Active(app) = &runtime.owner.status else {
+        return None;
+    };
+    let profile = runtime.config.profiles.get(app)?;
+    if let Some(Target::GpuRange { min, max }) = profile.controls.get(&Control::GpuRange) {
+        return Some((*min as i32, *max as i32));
+    }
+    let level = match profile.controls.get(&Control::Gpu) {
+        Some(Target::Gpu(value)) => *value as i32,
+        _ => return None,
+    };
+    let max = if level == 2 {
+        DASH_GPU_SAVER_CEILING_MHZ
+    } else {
+        DASH_GPU_TOP_MHZ
+    };
+    let min = if level == 3 {
+        DASH_GPU_TOP_MHZ
+    } else {
+        DASH_GPU_FLOOR_MHZ
+    };
+    Some((min, max))
 }
 
 fn reconcile(r: &mut Runtime, hint: Wake) -> Result<(), String> {

@@ -195,6 +195,22 @@ pub fn gpu_thermal_ceiling_hz(lowest_hz: u64) -> Option<u64> {
     Some(ceiling)
 }
 
+/// The GPU temperature the thermal framework publishes, in millicelsius.
+///
+/// The same node that carries the vendor ceiling carries the temperature it
+/// is reacting to, so the watchdog that contests a cap can also tell a
+/// power-management decision from a genuinely hot die.
+pub fn gpu_thermal_temp_mc() -> Option<i64> {
+    let raw = super::read_node_text("/sys/kernel/thermal/gpu_info").ok()?;
+    raw.trim()
+        .split(',')
+        .next()?
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|temp| *temp > 0)
+}
+
 fn parse_limit_table(text: &str) -> Vec<(i32, &'static str)> {
     let mut names = Vec::new();
     for line in text.lines() {

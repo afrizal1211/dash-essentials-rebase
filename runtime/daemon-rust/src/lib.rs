@@ -5646,6 +5646,79 @@ fn cpu_frequency_guard() {
     }
 }
 
+/// The GPU temperature above which the vendor watchdog stops re-arming.
+///
+/// Below this point a vendor ceiling is a power-management decision the
+/// per-app profile is allowed to contest; at or above it the cap is the
+/// silicon protecting itself and the watchdog stands down.
+const GPU_WATCHDOG_TEMP_CEILING_MC: i64 = 47_000;
+
+/// Re-publish the per-app GPU bounds a vendor service has taken back.
+///
+/// While a per-app profile owns the GPU, the vendor thermal service may
+/// narrow the ceiling this daemon published, and the profile's whole point
+/// is that the user's request wins while its app is in front. This thread
+/// only re-publishes bounds the active profile already asked for; it never
+/// invents a target, and it stays silent while no per-app profile holds the
+/// GPU, so the global guards keep their sole authority there. The lock order
+/// is deliberately lock-free on the service gate: the target is read under
+/// the runtime lock alone, and the re-arm writes follow the same writers the
+/// apply path uses.
+fn gpu_vendor_watchdog() {
+    static HOT: AtomicBool = AtomicBool::new(false);
+
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        if !service_control::active() || !app_runtime::owns_gpu() {
+            HOT.store(false, Ordering::Relaxed);
+            continue;
+        }
+        let Some((min_mhz, max_mhz)) = app_runtime::owned_gpu_target() else {
+            continue;
+        };
+        let temp_mc = diagnostics::gpu_thermal_temp_mc().unwrap_or(0);
+        if temp_mc >= GPU_WATCHDOG_TEMP_CEILING_MC {
+            if !HOT.swap(true, Ordering::Relaxed) {
+                diagnostics::record(
+                    diagnostics::AREA_GPU,
+                    "warn",
+                    "watchdog.hot",
+                    &format!("temp={} C target={} MHz", temp_mc / 1000, max_mhz),
+                );
+            }
+            continue;
+        }
+        if HOT.swap(false, Ordering::Relaxed) {
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "watchdog.cool",
+                &format!(
+                    "temp={} C resuming defense of {} MHz",
+                    temp_mc / 1000,
+                    max_mhz
+                ),
+            );
+        }
+        let target_hz = max_mhz as u64 * 1_000_000;
+        if let Some(limiter) = gpu_vendor_ceiling_below(target_hz) {
+            let _ = disable_eb_dvfs_policy();
+            clear_gpu_cooling_cap();
+            let _ = ensure_gpu_thermal_mode();
+            let floor_hz = min_mhz as u64 * 1_000_000;
+            let _ = write_gpu_bounds(floor_hz, target_hz);
+            let _ = gpu_write_devfreq("max_freq", &target_hz.to_string());
+            let _ = gpu_write_devfreq("min_freq", &floor_hz.to_string());
+            diagnostics::record(
+                diagnostics::AREA_GPU,
+                "info",
+                "watchdog.rearmed",
+                &format!("by={limiter} floor={min_mhz} MHz ceiling={max_mhz} MHz"),
+            );
+        }
+    }
+}
+
 fn gaming_dynamic_guard() {
     let mut last_written_opp = -1;
     let mut smoothed_load = 0;
@@ -6325,6 +6398,7 @@ pub fn start_background_services() {
     std::thread::spawn(cpu_frequency_guard);
     std::thread::spawn(dexopt::start);
     std::thread::spawn(gaming_dynamic_guard);
+    std::thread::spawn(gpu_vendor_watchdog);
     #[cfg(target_os = "android")]
     std::thread::spawn(charging_power_supply_event_loop);
     std::thread::spawn(|| {
@@ -7315,6 +7389,70 @@ fn set_gpu_max_freq(mhz: i32) -> Result<(), String> {
         }
     })?;
     Ok(())
+}
+
+/// The GPU operating points the driver publishes, in megahertz.
+///
+/// The GED working OPP table is the authority on MediaTek silicon: every
+/// bound the daemon writes is resolved as an index into it. Duplicate steps
+/// are folded so the per-app picker offers each clock once.
+fn gpu_available_frequencies_mhz() -> Vec<u32> {
+    let Some(ladder) = gpu_ged_ladder_hz() else {
+        return Vec::new();
+    };
+    let mut entries: Vec<u32> = ladder
+        .into_iter()
+        .map(|hz| gpu_hz_to_mhz(hz) as u32)
+        .collect();
+    entries.sort_unstable();
+    entries.dedup();
+    entries
+}
+
+/// Apply a per-app GPU operating-point range without touching preferences.
+///
+/// The per-app profile borrows the GPU: the ladder floor and ceiling are
+/// pinned and the devfreq window is narrowed, but the persisted global
+/// preferences stay untouched, so releasing the profile restores them. The
+/// ceiling is published before the floor so the driver never sees a window
+/// it would consider inverted.
+fn apply_gpu_range_borrowed(min_mhz: i32, max_mhz: i32) -> Result<(), String> {
+    if !(DASH_GPU_FLOOR_MHZ..=DASH_GPU_TOP_MHZ).contains(&min_mhz)
+        || !(DASH_GPU_FLOOR_MHZ..=DASH_GPU_TOP_MHZ).contains(&max_mhz)
+        || min_mhz > max_mhz
+    {
+        return Err(format!(
+            "GPU range must be {DASH_GPU_FLOOR_MHZ}-{DASH_GPU_TOP_MHZ} MHz and ordered"
+        ));
+    }
+    // A vendor power policy that would contest the window is disarmed first,
+    // exactly as any non-saver GPU profile does.
+    disable_eb_dvfs_policy()?;
+    clear_gpu_cooling_cap();
+    let _ = ensure_gpu_thermal_mode();
+
+    let max_hz = gpu_devfreq_ceiling_hz(max_mhz as u64 * 1_000_000).ok_or(format!(
+        "GPU ladder has no operating point at or below {max_mhz} MHz"
+    ))?;
+    let min_hz = gpu_devfreq_floor_hz(min_mhz as u64 * 1_000_000).ok_or(format!(
+        "GPU ladder has no operating point at or above {min_mhz} MHz"
+    ))?;
+    gpu_write_devfreq("max_freq", &max_hz.to_string())?;
+    gpu_write_devfreq("min_freq", &min_hz.to_string())?;
+    write_gpu_bounds(min_hz, max_hz)?;
+    Ok(())
+}
+
+/// Whether the devfreq window still publishes the requested range.
+///
+/// The vendor thermal service may narrow the window from above, which the
+/// clamp tolerance of the apply path already accepts; only a floor that
+/// slipped, or a window the vendor moved outside the request, counts as
+/// drift and is written again.
+fn gpu_range_configured(min_mhz: i32, max_mhz: i32) -> bool {
+    let live_min = gpu_get_min_freq_mhz();
+    let live_max = gpu_get_max_freq_mhz();
+    live_min >= min_mhz && live_max <= max_mhz && live_max >= min_mhz
 }
 
 fn set_gpu_ged_boost(enable: bool) -> Result<(), String> {
