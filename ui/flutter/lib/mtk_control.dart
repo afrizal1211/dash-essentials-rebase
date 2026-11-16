@@ -111,12 +111,17 @@ class _MtkControlScreenState extends State<MtkControlScreen>
     super.dispose();
   }
 
-  Widget _card({required String title, required Widget child}) => SurfaceCard(
+  Widget _card({
+    required BuildContext context,
+    required String featureId,
+    String? title,
+    required Widget child,
+  }) => SurfaceCard(
     padding: const EdgeInsets.all(14),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+        featureCardHeader(context, featureId, title: title),
         const SizedBox(height: 8),
         child,
       ],
@@ -161,7 +166,8 @@ class _MtkControlScreenState extends State<MtkControlScreen>
             .toSet()
             .toList();
         cards.add(_card(
-          title: 'Fixed frequency',
+          context: context,
+          featureId: 'mtk.frequency',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
@@ -228,7 +234,8 @@ class _MtkControlScreenState extends State<MtkControlScreen>
       final thermal = (gpu['thermal_gpt'] as Map?)?.cast<String, dynamic>() ?? {};
       if (thermal['present'] == true) {
         cards.add(_card(
-          title: 'Thermal governor',
+          context: context,
+          featureId: 'mtk.thermal_gpt',
           child: Column(children: <Widget>[
             SwitchListTile(
               key: const ValueKey('mtk-thermal-gpt'),
@@ -249,6 +256,8 @@ class _MtkControlScreenState extends State<MtkControlScreen>
         final item = (switches[name] as Map?)?.cast<String, dynamic>();
         if (item == null || item['present'] != true) continue;
         cards.add(_card(
+          context: context,
+          featureId: 'mtk.$name',
           title: switch (name) {
             'fpsgo' => 'FPSGO',
             'fbt_ceiling' => 'FBT ceiling',
@@ -273,7 +282,8 @@ class _MtkControlScreenState extends State<MtkControlScreen>
         final menu = (dcs['menu'] as List?) ?? const <dynamic>[];
         final code = dcs['code'] as int?;
         cards.add(_card(
-          title: 'DCS',
+          context: context,
+          featureId: 'mtk.dcs',
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
             if (code == null) const Text('Enabled (code not reported)'),
             DropdownButton<int>(
@@ -311,7 +321,8 @@ class _MtkControlScreenState extends State<MtkControlScreen>
       if (ddr['present'] == true) {
         final ddrOpps = (ddr['opps'] as List?) ?? const <dynamic>[];
         cards.add(_card(
-          title: 'Fixed DDR OPP',
+          context: context,
+          featureId: 'mtk.ddr',
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
             const Text('Some kernels expose this node write-only, so the current value cannot be shown. A wrong value can freeze the device; only a reboot recovers it.'),
             if (ddrOpps.isNotEmpty)

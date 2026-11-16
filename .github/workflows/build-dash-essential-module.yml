@@ -206,7 +206,8 @@ jobs:
             test/system_colors_test.dart \
             test/system_colors_preview_test.dart \
             test/system_colors_monitor_test.dart \
-            test/backend_connection_test.dart
+            test/backend_connection_test.dart \
+            test/feature_descriptions_test.dart
 
       - name: Build module
         run: tools/build-kernelsu-next-module.sh

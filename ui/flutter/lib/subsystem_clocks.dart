@@ -101,6 +101,7 @@ class _SubsystemClocksScreenState extends State<SubsystemClocksScreen>
     String subtitle,
     IconData icon,
     Color accent,
+    String featureId,
   ) {
     final item = Map<String, dynamic>.from(
       (_state?[key] as Map?) ?? const <String, dynamic>{},
@@ -121,6 +122,7 @@ class _SubsystemClocksScreenState extends State<SubsystemClocksScreen>
         _SubsystemFrequencyCard(
           key: ValueKey('card-$key'),
           subsystem: key,
+          featureId: featureId,
           title: title,
           accent: accent,
           item: item,
@@ -159,6 +161,7 @@ class _SubsystemClocksScreenState extends State<SubsystemClocksScreen>
         'Memory DVFS · DRAM frequency coordinator',
         Icons.memory_rounded,
         const Color(0xFFB087FF),
+        'clocks.memory',
       ),
       const SizedBox(height: 20),
       _section(
@@ -167,6 +170,7 @@ class _SubsystemClocksScreenState extends State<SubsystemClocksScreen>
         'Storage controller · Clock ranges and exact locks',
         Icons.storage_rounded,
         const Color(0xFF67C2FF),
+        'clocks.storage',
       ),
       const SizedBox(height: 12),
       TextButton.icon(
@@ -271,6 +275,7 @@ class _SubsystemHardwarePainter extends CustomPainter {
 class _SubsystemFrequencyCard extends StatefulWidget {
   const _SubsystemFrequencyCard({
     required this.subsystem,
+    required this.featureId,
     required this.title,
     required this.accent,
     required this.item,
@@ -280,6 +285,7 @@ class _SubsystemFrequencyCard extends StatefulWidget {
     super.key,
   });
   final String subsystem, title;
+  final String featureId;
   final Color accent;
   final Map<String, dynamic> item;
   final bool enabled;
@@ -419,12 +425,10 @@ class _SubsystemFrequencyCardState extends State<_SubsystemFrequencyCard> {
               ),
               const SizedBox(width: 9),
               Expanded(
-                child: Text(
-                  'Frequency control',
-                  style: const TextStyle(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w800,
-                  ),
+                child: featureCardHeader(
+                  context,
+                  widget.featureId,
+                  title: 'Frequency control',
                 ),
               ),
               StatusPill(
