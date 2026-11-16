@@ -1555,7 +1555,7 @@ fn ensure_gpu_thermal_mode_unlocked() -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_gpu_thermal_mode() -> Result<(), String> {
+pub(crate) fn ensure_gpu_thermal_mode() -> Result<(), String> {
     let _guard = cpu_freq_apply_lock()
         .lock()
         .map_err(|_| "CPU frequency apply lock poisoned".to_string())?;
@@ -1960,7 +1960,7 @@ fn gpu_cooling_device_path() -> Option<PathBuf> {
     mali
 }
 
-fn clear_gpu_cooling_cap() {
+pub(crate) fn clear_gpu_cooling_cap() {
     if let Some(path) = gpu_cooling_device_path() {
         let _ = service_control::write(&path, "0");
     }
@@ -2002,7 +2002,7 @@ fn eb_dvfs_enabled() -> bool {
 ///
 /// The mode the policy was in is remembered, so that the vendor's setting
 /// can be put back when the service is released.
-fn disable_eb_dvfs_policy() -> Result<(), String> {
+pub(crate) fn disable_eb_dvfs_policy() -> Result<(), String> {
     if !eb_dvfs_enabled() {
         return Ok(());
     }

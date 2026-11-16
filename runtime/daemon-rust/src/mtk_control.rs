@@ -484,6 +484,12 @@ fn gpu_pin_with(khz: u32, volt: Option<u32>, rows: &[OppRow]) -> Result<(), Stri
         .iter()
         .find(|row| row.index == index)
         .ok_or_else(|| format!("GPU OPP table has no index {index}"))?;
+    // The daemon owns the GPU through GPU profiles and Battery Saver while
+    // the service is enabled; a hard pin must not fight them. Never write
+    // custom_upbound_gpu_freq here — that write clears the pin.
+    crate::disable_eb_dvfs_policy()?;
+    crate::clear_gpu_cooling_cap();
+    crate::ensure_gpu_thermal_mode()?;
     match volt {
         Some(volt) if volt == row.volt => {
             write_node(MTK_FIX_INDEX, "-1")?;
