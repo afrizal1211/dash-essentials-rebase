@@ -56,6 +56,20 @@ pub extern "C" fn dash_host_status_notification(enabled: i32) -> i32 {
 // closing its callback, including when Android delivers a final lifecycle event.
 static BACK_LISTENER: Mutex<Option<extern "C" fn(i32)>> = Mutex::new(None);
 
+/// Called once from `DashActivity.onCreate` so the export/overlay bridges have
+/// a captured activity. Must be paired with `clear_activity` in `onDestroy`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_nativeInitActivity(
+    _: JNIEnv,
+    _: JClass,
+    activity: jlong,
+) {
+    // Activity pointer arrives as a `jlong` from Java; convert back to the
+    // native-activity signature `platform_bridge::init` expects.
+    let ptr = activity as *mut super::ANativeActivity;
+    super::platform_bridge::init(ptr);
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn dash_host_set_back_listener(listener: Option<extern "C" fn(i32)>) {
     *BACK_LISTENER.lock().unwrap_or_else(|e| e.into_inner()) = listener;
@@ -86,6 +100,17 @@ pub fn clear() {
         *activity.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
     BACK_EVENT.store(0, Ordering::Release);
+}
+
+/// Called once from `DashActivity.onDestroy`. `init` may have run on a previous
+/// instance, so this is the only way the export/overlay bridges give up the
+/// stale activity reference they would otherwise keep forever.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_neeschal_dashessential_DashActivity_nativeClearActivity(
+    _: JNIEnv,
+    _: JClass,
+) {
+    super::platform_bridge::clear();
 }
 
 /// Runs one call against the captured activity. The lock is held only for the

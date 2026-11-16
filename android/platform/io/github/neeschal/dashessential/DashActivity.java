@@ -38,6 +38,12 @@ public final class DashActivity extends NativeActivity {
     private static native void nativeBack(int phase, float progress, int edge);
     private static native void nativeOpenBypassSettings();
     private static native void nativeBackupResult(int code, byte[] data);
+    // Activities that call FFI methods must capture the JNI activity reference
+    // through the host bridge. Without this the export/overlay bridges see a
+    // null activity and return 0 before any Java code runs (the "export could
+    // not be saved" path).
+    private static native void nativeInitActivity();
+    private static native void nativeClearActivity();
 
     private static final int BACKUP_REQUEST = 0x100;
     private static final int BACKUP_LIMIT = 4 * 1024 * 1024;
@@ -45,6 +51,9 @@ public final class DashActivity extends NativeActivity {
     @Override protected void onCreate(Bundle state) {
         current = this;
         super.onCreate(state);
+        // The host bridge needs the JNI activity reference before any exported
+        // path (FPS export, overlay toggle, status notification) can reach Java.
+        nativeInitActivity();
         if (Build.VERSION.SDK_INT >= 34) callback = new ProgressCallback();
         else if (Build.VERSION.SDK_INT >= 33) callback = () -> nativeBack(4, 1, 0);
         handleTileIntent(getIntent());
@@ -110,7 +119,7 @@ public final class DashActivity extends NativeActivity {
         try {
             csvPath = writeMedia(resolver,
                 MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                "fps_export.csv", "text/csv", "RedFox/FpsRecord/",
+                "fps_export.csv", "text/csv", "Download/",
                 csv.getBytes(StandardCharsets.UTF_8));
         } catch (Exception ignored) {
             // The PNG may still save even if the CSV does not.
@@ -120,7 +129,7 @@ public final class DashActivity extends NativeActivity {
                 long now = System.currentTimeMillis();
                 pngPath = writeMedia(resolver,
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    "fps_graph_" + now + ".png", "image/png", "RedFox/FPSRecord/",
+                    "fps_graph_" + now + ".png", "image/png", "Download/",
                     png);
             }
         } catch (Exception ignored) {
@@ -172,7 +181,7 @@ public final class DashActivity extends NativeActivity {
             String name = "dash-essential-backup-" + System.currentTimeMillis() + ".json";
             String uri = writeMedia(getContentResolver(),
                     MediaStore.Downloads.EXTERNAL_CONTENT_URI, name,
-                    "application/json", "RedFox/Backup/", data);
+                    "application/json", "Download/", data);
             if (uri != null) {
                 nativeBackupResult(1, uri.getBytes(StandardCharsets.UTF_8));
             } else {
@@ -265,6 +274,7 @@ public final class DashActivity extends NativeActivity {
     @Override protected void onDestroy() {
         main.removeCallbacks(refresh);
         if (current == this) current = null;
+        nativeClearActivity();
         super.onDestroy();
     }
     // Isolated API-34 class: older devices never instantiate progress callbacks.
