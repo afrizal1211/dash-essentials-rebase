@@ -235,6 +235,8 @@ class _DexOptSchedulerScreenState extends State<DexOptSchedulerScreen> {
           'Rebuild app code in the background. Runs only while the screen is off and the device is charging.',
           style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
         ),
+        const SizedBox(height: 14),
+        SurfaceCard(child: featureCardHeader(context, 'dexopt.scheduler')),
         const SizedBox(height: 16),
         Text(
           'Schedule',

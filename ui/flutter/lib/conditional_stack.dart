@@ -348,6 +348,8 @@ class _ConditionalStackScreenState extends State<ConditionalStackScreen> {
           style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
         ),
         const SizedBox(height: 14),
+        SurfaceCard(child: featureCardHeader(context, 'conditionals.stack')),
+        const SizedBox(height: 14),
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
