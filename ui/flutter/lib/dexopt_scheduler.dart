@@ -236,7 +236,9 @@ class _DexOptSchedulerScreenState extends State<DexOptSchedulerScreen> {
           style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
         ),
         const SizedBox(height: 14),
-        SurfaceCard(child: featureCardHeader(context, 'dexopt.scheduler')),
+        SurfaceCard(
+          child: featureCardHeader(context, 'dexopt.scheduler', title: 'How it works'),
+        ),
         const SizedBox(height: 16),
         Text(
           'Schedule',

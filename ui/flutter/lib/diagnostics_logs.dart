@@ -152,7 +152,9 @@ class _DiagnosticsLogsScreenState extends State<DiagnosticsLogsScreen> {
           style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
         ),
         const SizedBox(height: 14),
-        SurfaceCard(child: featureCardHeader(context, 'diagnostics.logs')),
+        SurfaceCard(
+          child: featureCardHeader(context, 'diagnostics.logs', title: 'How it works'),
+        ),
         const SizedBox(height: 14),
         Row(
           children: <Widget>[

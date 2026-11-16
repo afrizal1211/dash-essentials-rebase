@@ -171,7 +171,9 @@ class _MtkControlScreenState extends State<MtkControlScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              const Text('Fixed frequency outranks the maximum frequency and cannot be combined with it.'),
+              const Text(
+          'A fixed GPU frequency outranks the maximum-frequency limit and cannot be combined with it.',
+        ),
               DropdownButton<int>(
                 key: const ValueKey('mtk-gpu-frequency'),
                 isExpanded: true,

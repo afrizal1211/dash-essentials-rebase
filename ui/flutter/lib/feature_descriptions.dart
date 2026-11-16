@@ -94,12 +94,12 @@ const Map<String, FeatureDescription> kFeatureDescriptions = <String, FeatureDes
     'DEX optimization compiles apps to native code; stock devices do it at random times and steal performance from what you are doing. This scheduler runs the same work under your control (time window, cadence, per-package opt-out) so compilation happens while the phone idles instead of while you use it.',
   ),
   'conditionals.stack': FeatureDescription(
-    'Conditional stack',
+    'Conditional profiles',
     'Rules that switch profiles automatically, like "when charging" or "when this app is in front".',
     'Conditionals sit on top of per-app profiles: when a rule matches, its profile takes over until the rule stops matching. The daemon keeps exactly one active profile and reverts the previous one on every switch.',
   ),
   'diagnostics.logs': FeatureDescription(
-    'Diagnostics',
+    'Health & Logs',
     'Captures daemon and system logs into one bundle for bug reports.',
     'Collects the daemon\'s own log, kernel messages and selected system dumps into exportable files. Export the bundle before filing a bug — it shows which node failed and why.',
   ),
