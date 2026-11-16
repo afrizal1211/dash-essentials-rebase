@@ -6,6 +6,24 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.14 — Vega
+
+### Fixed
+
+- FPS history export now saves instead of reporting "The export could not be
+  saved." The CSV and graph PNG were written with `RedFox/FpsRecord/` and
+  `RedFox/FPSRecord/` as their MediaStore relative path, which is not a
+  writable root on Android 10 and later; the insert returned null and the
+  export gave up before writing anything. Both now land in `Download/`.
+- The settings backup export had the same path defect and is fixed with it.
+
+### Note
+
+- 1.23.13 could force close on launch: a JNI method had a signature its Java
+  declaration did not match, so the native side read a garbage pointer. That
+  method is removed and the bridge it duplicated already initializes from
+  `ANativeActivity_onCreate`. Do not install 1.23.13; use this build.
+
 ## 1.23.13 — Polaris
 
 ### Added
