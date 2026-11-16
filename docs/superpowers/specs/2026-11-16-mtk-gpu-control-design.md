@@ -187,7 +187,14 @@ user chose them explicitly, and the UI must say so.
 - **Voltage and fixed DDR OPP can hang or hard-lock the GPU/SoC.** Recovery is
   a reboot. The confirmation dialog must state this in plain language.
 - `fix_target_opp_index` semantics on `mt6989` differ (index written twice).
-  On `mt6991` write once, then verify.
+  On `mt6991` write once. Verified on device: the write registers
+  (`fix GPU/STACK OPP index: 39/39` readback) but `gpufreq_status` keeps its
+  old index while the GPU idles, so verification must accept the fix-node
+  readback, not only the live index.
+- `fix_custom_freq_volt` rejects every write on `mt6991` (`598000 55000`,
+  four-field and six-field forms; Scene's exact format also rejected; the
+  readback stays `is disabled`). The `<freq> <volt>` pin path fails loudly
+  there; only the index pin works.
 - `thermal/gpt` accepts `disable`; the enabled form is the original scalar
   string, which `service_control::write` journals. Do not invent an `enable`
   token.
@@ -295,12 +302,12 @@ then a scan of `/sys/devices/platform/*.dvfsrc`.
    `grep "$state,"` behaves the same way.
 3. Write `0 0` to `fix_custom_freq_volt` for a plain pin.
 4. Write the table's own index to `fix_target_opp_index`.
-5. Poll `gpufreq_status` for up to 300 ms and require
-   `[GPU OPP] Index:` to equal the written index. Fall back to comparing
-   `Freq:` (kilohertz) to the requested kHz only when the index cannot be
-   parsed. Do not compare frequencies alone: an idle GPU reports values below
-   the table (the probe showed `Freq: 26000` at index 51), so a frequency-only
-   check fails during the settle window.
+5. Poll for up to 300 ms and accept either confirmation: `gpufreq_status`
+   `[GPU OPP] Index:` equal to the written index (frequency never compared
+   alone), or the fix node's own readback `fix GPU/STACK OPP index: N/N` with
+   both halves equal to the written index. The readback is required on
+   `mt6991`, where an idle GPU never transitions and the status index stays
+   at its old value even though the fix registered.
 6. On mismatch, restore the journaled original for `fix_target_opp_index` and
    `fix_custom_freq_volt` when present, otherwise write the off pair
    (`-1` and `0 0`), call `service_control::forget` for both keys, and return
