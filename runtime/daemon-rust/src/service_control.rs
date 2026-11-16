@@ -285,6 +285,10 @@ fn reversible_path(path: &Path) -> bool {
     (raw.starts_with("/sys/")
         || raw.starts_with("/proc/sys/")
         || raw.starts_with("/proc/touch_boost/")
+        // MediaTek's gpufreqv2 pins and the DDR force nodes look alike at the
+        // path level, but only the gpufreqv2 nodes can be read back before a
+        // write. The write-only force nodes are excluded below.
+        || raw.starts_with("/proc/gpufreqv2/")
         // Dash's high touch sampling rate knob. The stock ROM drives it too,
         // so the value it had before the daemon touched it is what the
         // release path has to put back.
@@ -299,6 +303,8 @@ fn reversible_path(path: &Path) -> bool {
                     | "comp_algorithm"
                     | "bypass_charging"
                     | "bypass_charge"
+                    | "dvfsrc_force_vcore_dvfs_opp"
+                    | "dvfsrc_force_ddr_opp"
             )
         )
         && raw.as_ref() != super::MI_THERMAL_CPU_LIMITS
@@ -311,6 +317,32 @@ pub(super) fn normalized_original(path: &Path, raw: &str) -> String {
         Some("custom_boost_gpu_freq" | "custom_upbound_gpu_freq")
     ) {
         return raw.lines().next().unwrap_or("").trim().to_string();
+    }
+    if matches!(
+        path.file_name().and_then(|v| v.to_str()),
+        Some("fix_target_opp_index" | "fix_custom_freq_volt")
+    ) {
+        // Verified on device (mt6991): these nodes read back as a debug
+        // dump but accept only the bare scalar. Journal the scalar, or the
+        // release replay would write the dump back and be rejected while a
+        // pin stays in place.
+        if let Some(at) = raw.find("OPP index") {
+            let tail = raw[at + "OPP index".len()..].trim();
+            if let Some(rest) = tail.strip_prefix(':')
+                && let Some(slash) = rest.find('/')
+                && let Ok(index) = rest[..slash].trim().parse::<u32>()
+            {
+                return index.to_string();
+            }
+            return "-1".into();
+        }
+        return "0 0".into();
+    }
+    if path.file_name().and_then(|v| v.to_str()) == Some("dcs_mode") {
+        // The node answers with its multi-line menu but only accepts a bare
+        // code; there is no way to recover the pre-write code from the
+        // dump, so the journaled original is the disable value.
+        return "0".into();
     }
     if matches!(
         path.file_name().and_then(|v| v.to_str()),
@@ -405,6 +437,46 @@ mod tests {
         );
     }
     #[test]
+    fn gpufreq_fix_nodes_journal_the_bare_scalar_not_the_debug_dump() {
+        // Verified on device (mt6991): the nodes read back as a debug dump
+        // but only accept the bare scalar, so the journal must store the
+        // scalar or the release replay would write the dump back and be
+        // rejected, leaving a pin in place after release.
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_target_opp_index"),
+                "[GPUFREQ-DEBUG] fix GPU/STACK OPP index is disabled"
+            ),
+            "-1"
+        );
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_target_opp_index"),
+                "[GPUFREQ-DEBUG] fix GPU/STACK OPP index: 39/39\n[GPUFREQ-DEBUG] fix GPU F/V, STACK F/V is disabled"
+            ),
+            "39"
+        );
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_custom_freq_volt"),
+                "[GPUFREQ-DEBUG] fix GPU F/V, STACK F/V is disabled"
+            ),
+            "0 0"
+        );
+    }
+    #[test]
+    fn dcs_mode_journals_disable_not_the_menu_dump() {
+        // The node answers with its multi-line menu; it only accepts a bare
+        // code, so the journaled original is the disable value.
+        assert_eq!(
+            normalized_original(
+                Path::new("/sys/kernel/ged/hal/dcs_mode"),
+                "DCS Policy is enable\nT enable: 0 (0:disable 1:enable)\n[1] Achieve 6/11 Freq --> 64\n"
+            ),
+            "0"
+        );
+    }
+    #[test]
     fn never_journals_one_shot_or_write_only_controls() {
         for path in [
             "/sys/block/zram0/reset",
@@ -416,6 +488,21 @@ mod tests {
         }
         assert!(reversible_path(Path::new(
             "/sys/module/ged/parameters/gpu_dvfs_enable"
+        )));
+    }
+    #[test]
+    fn gpufreqv2_nodes_are_reversible_but_dvfsrc_force_nodes_are_not() {
+        assert!(reversible_path(Path::new(
+            "/proc/gpufreqv2/fix_target_opp_index"
+        )));
+        assert!(reversible_path(Path::new(
+            "/proc/gpufreqv2/fix_custom_freq_volt"
+        )));
+        assert!(!reversible_path(Path::new(
+            "/sys/devices/platform/1c013000.dvfsrc/1c013000.dvfsrc:dvfsrc-helper/dvfsrc_force_vcore_dvfs_opp"
+        )));
+        assert!(!reversible_path(Path::new(
+            "/sys/devices/platform/1c013000.dvfsrc/1c013000.dvfsrc:dvfsrc-helper/dvfsrc_force_ddr_opp"
         )));
     }
 }

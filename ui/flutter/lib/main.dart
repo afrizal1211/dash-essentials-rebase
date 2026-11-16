@@ -40,6 +40,7 @@ part 'fps_history.dart';
 part 'easter_eggs.dart';
 part 'aurora_drift.dart';
 part 'subsystem_clocks.dart';
+part 'mtk_control.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -82,6 +83,7 @@ enum DashScreen {
   dexopt,
   conditional,
   subsystemClocks,
+  mtkControl,
   healthLogs,
 }
 
@@ -124,6 +126,8 @@ extension DashScreenName on DashScreen {
         return 'Conditional Profiles';
       case DashScreen.subsystemClocks:
         return 'Memory DVFS & UFS';
+      case DashScreen.mtkControl:
+        return 'MediaTek Control';
       case DashScreen.healthLogs:
         return 'Health & Logs';
     }
@@ -1088,6 +1092,8 @@ class _DashShellState extends State<DashShell>
         return ConditionalStackScreen(onBack: _back);
       case DashScreen.subsystemClocks:
         return SubsystemClocksScreen(onBack: _back);
+      case DashScreen.mtkControl:
+        return MtkControlScreen(onBack: _back);
       case DashScreen.healthLogs:
         return DiagnosticsLogsScreen(onBack: _back);
       default:
@@ -5670,6 +5676,14 @@ class HubsScreen extends StatelessWidget {
                       icon: Icons.storage_rounded,
                       accent: const Color(0xFFB087FF),
                       onTap: () => onOpen(DashScreen.subsystemClocks),
+                    ),
+                    const _HubControlDivider(),
+                    _HubControlRow(
+                      title: 'MediaTek Control',
+                      subtitle: 'GPU core pin, voltage, thermal and DDR',
+                      icon: Icons.developer_board_rounded,
+                      accent: const Color(0xFFFFB84D),
+                      onTap: () => onOpen(DashScreen.mtkControl),
                     ),
                     const _HubControlDivider(),
                     _HubControlRow(

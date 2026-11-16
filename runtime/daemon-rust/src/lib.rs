@@ -23,6 +23,7 @@ mod diagnostics;
 mod foreground_app;
 mod foreground_fps;
 mod fps_record;
+mod mtk_control;
 mod profile_manager;
 mod service_control;
 mod subsystem_clocks;
@@ -1554,7 +1555,7 @@ fn ensure_gpu_thermal_mode_unlocked() -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_gpu_thermal_mode() -> Result<(), String> {
+pub(crate) fn ensure_gpu_thermal_mode() -> Result<(), String> {
     let _guard = cpu_freq_apply_lock()
         .lock()
         .map_err(|_| "CPU frequency apply lock poisoned".to_string())?;
@@ -1959,7 +1960,7 @@ fn gpu_cooling_device_path() -> Option<PathBuf> {
     mali
 }
 
-fn clear_gpu_cooling_cap() {
+pub(crate) fn clear_gpu_cooling_cap() {
     if let Some(path) = gpu_cooling_device_path() {
         let _ = service_control::write(&path, "0");
     }
@@ -2001,7 +2002,7 @@ fn eb_dvfs_enabled() -> bool {
 ///
 /// The mode the policy was in is remembered, so that the vendor's setting
 /// can be put back when the service is released.
-fn disable_eb_dvfs_policy() -> Result<(), String> {
+pub(crate) fn disable_eb_dvfs_policy() -> Result<(), String> {
     if !eb_dvfs_enabled() {
         return Ok(());
     }
@@ -8652,6 +8653,7 @@ fn clear_released_control_status() {
 fn transition_service(cmd: &str) -> Result<(), String> {
     if cmd != "SET service.enabled 1" {
         subsystem_clocks::restore_all()?;
+        mtk_control::restore_all()?;
         app_runtime::release()?;
         if cmd == "ACTION service.reset" {
             app_runtime::reset_all()?;
@@ -8969,6 +8971,16 @@ fn handle_command_inner(line: &str) -> String {
             Err(_) => return "ERR service transition lock poisoned".into(),
         };
         return match subsystem_clocks::command(cmd) {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
+    if mtk_control::is_command(cmd) {
+        let _gate = match service_control::GATE.write() {
+            Ok(gate) => gate,
+            Err(_) => return "ERR service transition lock poisoned".into(),
+        };
+        return match mtk_control::command(cmd) {
             Ok(value) => format!("OK {value}"),
             Err(error) => format!("ERR {error}"),
         };
