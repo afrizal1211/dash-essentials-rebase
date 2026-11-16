@@ -140,6 +140,11 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Fixed DDR OPP'), findsOneWidget);
+    await Scrollable.ensureVisible(
+      tester.element(find.byKey(const ValueKey('mtk-ddr-opp'))),
+      alignment: 0.5,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('mtk-ddr-opp')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('OPP 86 · 3094 Mbps').last);

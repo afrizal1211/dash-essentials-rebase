@@ -954,8 +954,38 @@ mod tests {
 
     #[test]
     fn actions_require_the_service_to_be_enabled() {
-        // A fresh test process starts with the service disabled; the gate
-        // must fire before any node write is attempted.
+        // `state_dir()` resolves once per process, so the gate is exercised
+        // in a child that sees only its own state directory holding an
+        // explicit `{"enabled": false}` intent. A fresh directory alone
+        // would report enabled (a missing intent file is not a lockout).
+        let directory = std::env::temp_dir().join(format!("dash-mtk-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("service.json"), "{\"enabled\": false}").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mtk_control::tests::actions_require_the_service_to_be_enabled_child",
+            ])
+            .env("DASH_STATE_DIR", &directory)
+            .env("DASH_MTK_GATE_CHILD", "1")
+            .output()
+            .expect("spawn the gate child");
+        std::fs::remove_dir_all(&directory).ok();
+        assert!(
+            output.status.success(),
+            "gate child failed: {} | stdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn actions_require_the_service_to_be_enabled_child() {
+        if std::env::var_os("DASH_MTK_GATE_CHILD").is_none() {
+            // Parent run: the real assertions live in the child process.
+            return;
+        }
+        // The gate must fire before any node write is attempted.
         assert_eq!(
             command("ACTION mtk.switch fpsgo 1").unwrap_err(),
             "Dash Essential is disabled"
