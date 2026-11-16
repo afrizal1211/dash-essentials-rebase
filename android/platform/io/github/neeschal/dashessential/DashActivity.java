@@ -38,12 +38,6 @@ public final class DashActivity extends NativeActivity {
     private static native void nativeBack(int phase, float progress, int edge);
     private static native void nativeOpenBypassSettings();
     private static native void nativeBackupResult(int code, byte[] data);
-    // Activities that call FFI methods must capture the JNI activity reference
-    // through the host bridge. Without this the export/overlay bridges see a
-    // null activity and return 0 before any Java code runs (the "export could
-    // not be saved" path).
-    private static native void nativeInitActivity();
-    private static native void nativeClearActivity();
 
     private static final int BACKUP_REQUEST = 0x100;
     private static final int BACKUP_LIMIT = 4 * 1024 * 1024;
@@ -51,9 +45,6 @@ public final class DashActivity extends NativeActivity {
     @Override protected void onCreate(Bundle state) {
         current = this;
         super.onCreate(state);
-        // The host bridge needs the JNI activity reference before any exported
-        // path (FPS export, overlay toggle, status notification) can reach Java.
-        nativeInitActivity();
         if (Build.VERSION.SDK_INT >= 34) callback = new ProgressCallback();
         else if (Build.VERSION.SDK_INT >= 33) callback = () -> nativeBack(4, 1, 0);
         handleTileIntent(getIntent());
@@ -274,7 +265,6 @@ public final class DashActivity extends NativeActivity {
     @Override protected void onDestroy() {
         main.removeCallbacks(refresh);
         if (current == this) current = null;
-        nativeClearActivity();
         super.onDestroy();
     }
     // Isolated API-34 class: older devices never instantiate progress callbacks.
