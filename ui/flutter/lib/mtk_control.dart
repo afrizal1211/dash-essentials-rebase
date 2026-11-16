@@ -62,7 +62,6 @@ class _MtkControlScreenState extends State<MtkControlScreen>
           _state = Map<String, dynamic>.from(data as Map);
           _error = null;
           final gpu = _state!['gpu'] as Map?;
-          final opps = (gpu?['opps'] as List?) ?? const [];
           final pin = gpu?['pin'] as Map?;
           final pinnedKhz = pin?['khz'] as int?;
           // Only a driver-reported pin selects a frequency. Never default to
