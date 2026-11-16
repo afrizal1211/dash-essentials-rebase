@@ -8653,6 +8653,7 @@ fn clear_released_control_status() {
 fn transition_service(cmd: &str) -> Result<(), String> {
     if cmd != "SET service.enabled 1" {
         subsystem_clocks::restore_all()?;
+        mtk_control::restore_all()?;
         app_runtime::release()?;
         if cmd == "ACTION service.reset" {
             app_runtime::reset_all()?;

@@ -39,6 +39,7 @@ const DVFSRC_HELPER_SUFFIX: &str = ":dvfsrc-helper";
 const DVFSRC_DDR_TABLE: &str = "dvfsrc_ddr_opp_table";
 #[allow(dead_code)] // used by the pin and force flows added in later tasks
 const DVFSRC_FORCE_VCORE: &str = "dvfsrc_force_vcore_dvfs_opp";
+const DVFSRC_FORCE_DDR: &str = "dvfsrc_force_ddr_opp";
 
 /// One row of the driver's own operating-point table.
 ///
@@ -327,6 +328,8 @@ pub(super) fn is_command(cmd: &str) -> bool {
         || cmd.starts_with("ACTION mtk.switch ")
         || cmd.starts_with("ACTION mtk.thermal_gpt ")
         || cmd.starts_with("ACTION mtk.dcs ")
+        || cmd.starts_with("ACTION mtk.ddr.force_opp ")
+        || cmd.starts_with("ACTION mtk.reset ")
 }
 
 fn ensure_enabled() -> Result<(), String> {
@@ -476,6 +479,117 @@ fn set_dcs(code: u32) -> Result<(), String> {
     write_node(DCS_MODE, &dcs_write_value(code))
 }
 
+/// How one control is released.
+pub(super) struct ResetTarget {
+    /// The value that turns the control off when nothing was journaled. An
+    /// empty value means the control can only be released from its journal,
+    /// because the kernel offers no off token to write.
+    pub off: &'static str,
+}
+
+pub(super) fn reset_target(name: &str) -> Option<ResetTarget> {
+    let off = match name {
+        "gpu" => "-1",
+        "thermal_gpt" => "",
+        "fpsgo" | "fbt_ceiling" | "perfmgr" | "ged_kpi" | "dcs" | "ddr" => "0",
+        _ => return None,
+    };
+    Some(ResetTarget { off })
+}
+
+/// The DDR force node can be indexed only against the table the driver
+/// publishes; the devfreq frequency list is a different index space.
+pub(super) fn ddr_index_valid(index: u32, table: &[u64]) -> bool {
+    (index as usize) < table.len()
+}
+
+fn force_node_path(node: &str) -> Result<PathBuf, String> {
+    let dir =
+        dvfsrc_helper_dir().ok_or_else(|| "MediaTek dvfsrc helper is not available".to_string())?;
+    Ok(dir.join(node))
+}
+
+/// Write a dvfsrc force node.
+///
+/// These nodes are write-only (`--w-------`), so the journal cannot read an
+/// original and cannot replay it; release writes the off value explicitly.
+fn write_force_node(node: &str, value: &str) -> Result<(), String> {
+    let path = force_node_path(node)?;
+    std::fs::write(&path, value).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn ddr_force(index: Option<u32>) -> Result<(), String> {
+    let dir =
+        dvfsrc_helper_dir().ok_or_else(|| "MediaTek dvfsrc helper is not available".to_string())?;
+    let value = match index {
+        Some(index) => {
+            let table_path = dir.join(DVFSRC_DDR_TABLE);
+            let raw = read_node_text(&table_path)
+                .map_err(|error| format!("{}: {error}", table_path.display()))?;
+            if !ddr_index_valid(index, &parse_dvfsrc_opp_table(&raw)) {
+                return Err(format!("DDR OPP table has no index {index}"));
+            }
+            index.to_string()
+        }
+        None => "0".to_string(),
+    };
+    write_force_node(DVFSRC_FORCE_VCORE, &value)
+}
+
+fn restore_node(path: &str, off: &str) -> Result<(), String> {
+    match service_control::original(path) {
+        Some(Value::String(value)) => {
+            service_control::write(path, &value).map_err(|error| format!("{path}: {error}"))?
+        }
+        _ if off.is_empty() => {
+            return Err(format!("no journaled value to restore for {path}"));
+        }
+        _ => {
+            service_control::write(path, off).map_err(|error| format!("{path}: {error}"))?;
+        }
+    }
+    let _ = service_control::forget(&[path.to_string()]);
+    Ok(())
+}
+
+fn reset_control(name: &str) -> Result<(), String> {
+    let target = reset_target(name).ok_or_else(|| format!("unknown mtk control {name}"))?;
+    if name == "gpu" {
+        restore_node(MTK_FIX_INDEX, "-1")?;
+        restore_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+        return Ok(());
+    }
+    if name == "ddr" {
+        for node in [DVFSRC_FORCE_VCORE, DVFSRC_FORCE_DDR] {
+            write_force_node(node, target.off)?;
+        }
+        return Ok(());
+    }
+    let path = match name {
+        "thermal_gpt" => MTK_THERMAL_GPT,
+        "dcs" => DCS_MODE,
+        switch => switch_path(switch).ok_or_else(|| format!("{switch} is not available"))?,
+    };
+    restore_node(path, target.off)
+}
+
+/// Release every write the daemon made to the dvfsrc force nodes.
+///
+/// The journaled nodes need no work here; the generic replay owns them.
+pub(super) fn restore_all() -> Result<(), String> {
+    let Some(dir) = dvfsrc_helper_dir() else {
+        return Ok(());
+    };
+    for node in [DVFSRC_FORCE_VCORE, DVFSRC_FORCE_DDR] {
+        let path = dir.join(node);
+        if !path.exists() {
+            continue;
+        }
+        std::fs::write(&path, "0").map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if cmd == "GET mtk.control" {
         return Ok(render_control(collect_input()));
@@ -539,6 +653,23 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
             .parse::<u32>()
             .map_err(|_| "bad DCS code".to_string())?;
         set_dcs(code)?;
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.ddr.force_opp ") {
+        ensure_enabled()?;
+        let index = match arg.trim() {
+            "off" => None,
+            raw => Some(
+                raw.parse::<u32>()
+                    .map_err(|_| "bad DDR OPP index".to_string())?,
+            ),
+        };
+        ddr_force(index)?;
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.reset ") {
+        ensure_enabled()?;
+        reset_control(arg.trim())?;
         return Ok(render_control(collect_input()));
     }
     Err("unsupported mtk command".into())
@@ -668,5 +799,32 @@ mod tests {
     fn dcs_zero_disables_and_any_code_enables() {
         assert_eq!(dcs_write_value(0), "0");
         assert_eq!(dcs_write_value(64), "64");
+    }
+
+    #[test]
+    fn ddr_force_rejects_an_index_past_the_table() {
+        let table = parse_dvfsrc_opp_table("1532000000 2067000000 9594000000");
+        assert_eq!(table.len(), 3);
+        assert!(ddr_index_valid(2, &table));
+        assert!(!ddr_index_valid(3, &table));
+    }
+
+    #[test]
+    fn reset_names_are_the_ones_the_ui_sends() {
+        for name in [
+            "gpu",
+            "thermal_gpt",
+            "fpsgo",
+            "fbt_ceiling",
+            "perfmgr",
+            "ged_kpi",
+            "dcs",
+            "ddr",
+        ] {
+            assert!(reset_target(name).is_some(), "{name}");
+        }
+        assert!(reset_target("nonsense").is_none());
+        assert_eq!(reset_target("ddr").unwrap().off, "0");
+        assert_eq!(reset_target("gpu").unwrap().off, "-1");
     }
 }
