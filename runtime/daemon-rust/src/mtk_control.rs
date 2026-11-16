@@ -401,16 +401,37 @@ fn write_node(path: &str, value: &str) -> Result<(), String> {
 ///
 /// The comparison is on the index alone. The GPU idles below the table, so a
 /// frequency check would fail while a correct pin settles.
-pub(super) fn pin_verified(expected_index: u32, status: &str) -> bool {
-    parse_gpufreq_status(status).is_some_and(|(index, _)| index == expected_index)
+pub(super) fn pin_verified(expected_index: u32, raw: &str) -> bool {
+    if parse_gpufreq_status(raw).is_some_and(|(index, _)| index == expected_index) {
+        return true;
+    }
+    // The fix node echoes the driver's registered pair, e.g.
+    // `fix GPU/STACK OPP index: 39/39`, which stays correct even when the
+    // idle GPU never transitions and `gpufreq_status` keeps its old index.
+    raw.lines().any(|line| {
+        let Some(at) = line.find("fix GPU/STACK OPP index:") else {
+            return false;
+        };
+        let tail = line[at + "fix GPU/STACK OPP index:".len()..].trim();
+        let Some(slash) = tail.find('/') else {
+            return false;
+        };
+        let (gpu, stack) = tail.split_at(slash);
+        gpu.trim().parse::<u32>() == Ok(expected_index)
+            && stack[1..].trim().parse::<u32>() == Ok(expected_index)
+    })
 }
 
 fn verify_pin(index: u32) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_millis(300);
     loop {
-        if read_node_text(MTK_STATUS)
-            .ok()
-            .is_some_and(|raw| pin_verified(index, &raw))
+        // gpufreq_status confirms the live index only once the GPU actually
+        // transitions; the fix node's readback confirms registration at
+        // write time. Accept either.
+        let status = read_node_text(MTK_STATUS).ok();
+        let fix = read_node_text(MTK_FIX_INDEX).ok();
+        if status.is_some_and(|raw| pin_verified(index, &raw))
+            || fix.is_some_and(|raw| pin_verified(index, &raw))
         {
             return Ok(());
         }
@@ -820,6 +841,22 @@ mod tests {
         let status = "[GPU   OPP]      Index: 51, Freq:   26000, Volt:  49375, Vsram:  75000";
         assert!(pin_verified(51, status));
         assert!(!pin_verified(50, status));
+    }
+
+    #[test]
+    fn pin_verification_accepts_the_driver_fix_readback_when_the_gpu_idles() {
+        // Verified on device (mt6991): after `echo 39 > fix_target_opp_index`
+        // the node reads back `fix GPU/STACK OPP index: 39/39` while
+        // `gpufreq_status` keeps `Index: 51` because the idle GPU never
+        // transitions. The readback is the driver's own confirmation.
+        let readback = "[GPUFREQ-DEBUG] fix GPU/STACK OPP index: 39/39\n\
+                        [GPUFREQ-DEBUG] fix GPU F/V, STACK F/V is disabled";
+        assert!(pin_verified(39, readback));
+        assert!(!pin_verified(40, readback));
+        assert!(!pin_verified(
+            39,
+            "[GPUFREQ-DEBUG] fix GPU/STACK OPP index is disabled"
+        ));
     }
 
     #[test]
