@@ -265,11 +265,10 @@ fn collect_input() -> Option<ControlInput> {
     }
     let pin = read_node_text(MTK_FIX_INDEX)
         .ok()
-        .and_then(|raw| raw.trim().parse::<i64>().ok())
-        .filter(|index| *index >= 0)
+        .and_then(|raw| parse_fix_index(&raw))
         .and_then(|index| {
             opps.iter()
-                .find(|row| row.index == index as u32)
+                .find(|row| row.index == index)
                 .map(|row| (row.index, row.khz))
         });
     let thermal_gpt = read_node_text(MTK_THERMAL_GPT)
@@ -401,25 +400,24 @@ fn write_node(path: &str, value: &str) -> Result<(), String> {
 ///
 /// The comparison is on the index alone. The GPU idles below the table, so a
 /// frequency check would fail while a correct pin settles.
+/// The index the driver registered on the fix node, if any.
+///
+/// The node answers with a debug dump: `fix GPU/STACK OPP index: 39/39`
+/// while a pin is registered, `... is disabled` otherwise. It never prints a
+/// bare integer, so `trim().parse()` alone never sees the pin.
+pub(super) fn parse_fix_index(raw: &str) -> Option<u32> {
+    let line = raw.lines().find(|line| line.contains("OPP index"))?;
+    let rest = line[line.find("OPP index")? + "OPP index".len()..].trim();
+    let tail = rest.strip_prefix(':')?;
+    let slash = tail.find('/')?;
+    let gpu = tail[..slash].trim().parse::<u32>().ok()?;
+    let stack = tail[slash + 1..].trim().parse::<u32>().ok()?;
+    (gpu == stack).then_some(gpu)
+}
+
 pub(super) fn pin_verified(expected_index: u32, raw: &str) -> bool {
-    if parse_gpufreq_status(raw).is_some_and(|(index, _)| index == expected_index) {
-        return true;
-    }
-    // The fix node echoes the driver's registered pair, e.g.
-    // `fix GPU/STACK OPP index: 39/39`, which stays correct even when the
-    // idle GPU never transitions and `gpufreq_status` keeps its old index.
-    raw.lines().any(|line| {
-        let Some(at) = line.find("fix GPU/STACK OPP index:") else {
-            return false;
-        };
-        let tail = line[at + "fix GPU/STACK OPP index:".len()..].trim();
-        let Some(slash) = tail.find('/') else {
-            return false;
-        };
-        let (gpu, stack) = tail.split_at(slash);
-        gpu.trim().parse::<u32>() == Ok(expected_index)
-            && stack[1..].trim().parse::<u32>() == Ok(expected_index)
-    })
+    parse_gpufreq_status(raw).is_some_and(|(index, _)| index == expected_index)
+        || parse_fix_index(raw).is_some_and(|index| index == expected_index)
 }
 
 fn verify_pin(index: u32) -> Result<(), String> {
@@ -484,6 +482,16 @@ fn gpu_pin_with(khz: u32, volt: Option<u32>, rows: &[OppRow]) -> Result<(), Stri
         .iter()
         .find(|row| row.index == index)
         .ok_or_else(|| format!("GPU OPP table has no index {index}"))?;
+    // Reject a bad voltage before disarming anything, so a user typo never
+    // leaves the EB DVFS policy and cooling cap off with no pin in place.
+    if let Some(volt) = volt
+        && volt != row.volt
+    {
+        return Err(format!(
+            "GPU OPP {khz} kHz lists voltage {}, not {volt}",
+            row.volt
+        ));
+    }
     // The daemon owns the GPU through GPU profiles and Battery Saver while
     // the service is enabled; a hard pin must not fight them. Never write
     // custom_upbound_gpu_freq here — that write clears the pin.
@@ -491,15 +499,9 @@ fn gpu_pin_with(khz: u32, volt: Option<u32>, rows: &[OppRow]) -> Result<(), Stri
     crate::clear_gpu_cooling_cap();
     crate::ensure_gpu_thermal_mode()?;
     match volt {
-        Some(volt) if volt == row.volt => {
+        Some(volt) => {
             write_node(MTK_FIX_INDEX, "-1")?;
             write_node(MTK_FIX_FREQ_VOLT, &format!("{khz} {volt}"))?;
-        }
-        Some(volt) => {
-            return Err(format!(
-                "GPU OPP {khz} kHz lists voltage {}, not {volt}",
-                row.volt
-            ));
         }
         None => {
             write_node(MTK_FIX_FREQ_VOLT, "0 0")?;
@@ -661,19 +663,27 @@ fn reset_control(name: &str) -> Result<(), String> {
 ///
 /// The journaled nodes need no work here; the generic replay owns them. The
 /// force nodes are write-only, so release writes the driver's `255` sentinel.
+/// Every node is attempted even when one fails, so one stuck node cannot
+/// leave the other forced.
 pub(super) fn restore_all() -> Result<(), String> {
     let Some(dir) = dvfsrc_helper_dir() else {
         return Ok(());
     };
+    let mut errors = Vec::new();
     for node in [DVFSRC_FORCE_VCORE, DVFSRC_FORCE_DDR] {
         let path = dir.join(node);
         if !path.exists() {
             continue;
         }
-        std::fs::write(&path, DVFSRC_RELEASE)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if let Err(error) = std::fs::write(&path, DVFSRC_RELEASE) {
+            errors.push(format!("{}: {error}", path.display()));
+        }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
@@ -866,6 +876,20 @@ mod tests {
     }
 
     #[test]
+    fn the_fix_node_readback_reports_the_current_pin() {
+        // GET mtk.control must show the active pin; the node prints a dump,
+        // never a bare integer (verified on device).
+        let readback = "[GPUFREQ-DEBUG] fix GPU/STACK OPP index: 39/39";
+        assert_eq!(parse_fix_index(readback), Some(39));
+        assert_eq!(
+            parse_fix_index("[GPUFREQ-DEBUG] fix GPU/STACK OPP index is disabled"),
+            None
+        );
+        assert_eq!(parse_fix_index("fix GPU/STACK OPP index: 39/40"), None);
+        assert_eq!(parse_fix_index(""), None);
+    }
+
+    #[test]
     fn pin_rejects_an_unknown_frequency_without_writing() {
         let rows = parse_stack_opps(STACK);
         assert_eq!(pin_index_for_khz(&rows, 999000), None);
@@ -926,6 +950,24 @@ mod tests {
         assert!(!ddr_index_valid(2, &table));
         // 255 is the driver's release sentinel, never an OPP index.
         assert!(!ddr_index_valid(255, &table));
+    }
+
+    #[test]
+    fn actions_require_the_service_to_be_enabled() {
+        // A fresh test process starts with the service disabled; the gate
+        // must fire before any node write is attempted.
+        assert_eq!(
+            command("ACTION mtk.switch fpsgo 1").unwrap_err(),
+            "Dash Essential is disabled"
+        );
+        assert_eq!(
+            command("ACTION mtk.gpu.pin 598000").unwrap_err(),
+            "Dash Essential is disabled"
+        );
+        assert_eq!(
+            command("ACTION mtk.reset ddr").unwrap_err(),
+            "Dash Essential is disabled"
+        );
     }
 
     #[test]

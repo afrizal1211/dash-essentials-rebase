@@ -65,10 +65,9 @@ class _MtkControlScreenState extends State<MtkControlScreen>
           final opps = (gpu?['opps'] as List?) ?? const [];
           final pin = gpu?['pin'] as Map?;
           final pinnedKhz = pin?['khz'] as int?;
+          // Only a driver-reported pin selects a frequency. Never default to
+          // the table head: one stray Apply tap would pin the highest OPP.
           if (_gpuKhz == null && pinnedKhz != null) _gpuKhz = pinnedKhz;
-          if (_gpuKhz == null && opps.isNotEmpty) {
-            _gpuKhz = (opps.first as Map)['khz'] as int?;
-          }
         });
       }
     } catch (e) {
@@ -172,6 +171,7 @@ class _MtkControlScreenState extends State<MtkControlScreen>
                 key: const ValueKey('mtk-gpu-frequency'),
                 isExpanded: true,
                 value: _gpuKhz,
+                hint: const Text('Select frequency'),
                 items: frequencies.map((khz) {
                   return DropdownMenuItem<int>(value: khz, child: Text('$khz kHz'));
                 }).toList(),

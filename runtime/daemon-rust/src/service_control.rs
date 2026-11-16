@@ -320,6 +320,32 @@ pub(super) fn normalized_original(path: &Path, raw: &str) -> String {
     }
     if matches!(
         path.file_name().and_then(|v| v.to_str()),
+        Some("fix_target_opp_index" | "fix_custom_freq_volt")
+    ) {
+        // Verified on device (mt6991): these nodes read back as a debug
+        // dump but accept only the bare scalar. Journal the scalar, or the
+        // release replay would write the dump back and be rejected while a
+        // pin stays in place.
+        if let Some(at) = raw.find("OPP index") {
+            let tail = raw[at + "OPP index".len()..].trim();
+            if let Some(rest) = tail.strip_prefix(':')
+                && let Some(slash) = rest.find('/')
+                && let Ok(index) = rest[..slash].trim().parse::<u32>()
+            {
+                return index.to_string();
+            }
+            return "-1".into();
+        }
+        return "0 0".into();
+    }
+    if path.file_name().and_then(|v| v.to_str()) == Some("dcs_mode") {
+        // The node answers with its multi-line menu but only accepts a bare
+        // code; there is no way to recover the pre-write code from the
+        // dump, so the journaled original is the disable value.
+        return "0".into();
+    }
+    if matches!(
+        path.file_name().and_then(|v| v.to_str()),
         Some("scheduler" | "power_policy")
     ) && let Some(selected) = raw
         .split_whitespace()
@@ -408,6 +434,46 @@ mod tests {
                 "40\n123:pid:1 value:40"
             ),
             "40"
+        );
+    }
+    #[test]
+    fn gpufreq_fix_nodes_journal_the_bare_scalar_not_the_debug_dump() {
+        // Verified on device (mt6991): the nodes read back as a debug dump
+        // but only accept the bare scalar, so the journal must store the
+        // scalar or the release replay would write the dump back and be
+        // rejected, leaving a pin in place after release.
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_target_opp_index"),
+                "[GPUFREQ-DEBUG] fix GPU/STACK OPP index is disabled"
+            ),
+            "-1"
+        );
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_target_opp_index"),
+                "[GPUFREQ-DEBUG] fix GPU/STACK OPP index: 39/39\n[GPUFREQ-DEBUG] fix GPU F/V, STACK F/V is disabled"
+            ),
+            "39"
+        );
+        assert_eq!(
+            normalized_original(
+                Path::new("/proc/gpufreqv2/fix_custom_freq_volt"),
+                "[GPUFREQ-DEBUG] fix GPU F/V, STACK F/V is disabled"
+            ),
+            "0 0"
+        );
+    }
+    #[test]
+    fn dcs_mode_journals_disable_not_the_menu_dump() {
+        // The node answers with its multi-line menu; it only accepts a bare
+        // code, so the journaled original is the disable value.
+        assert_eq!(
+            normalized_original(
+                Path::new("/sys/kernel/ged/hal/dcs_mode"),
+                "DCS Policy is enable\nT enable: 0 (0:disable 1:enable)\n[1] Achieve 6/11 Freq --> 64\n"
+            ),
+            "0"
         );
     }
     #[test]
