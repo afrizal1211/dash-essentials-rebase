@@ -6,6 +6,20 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## Unreleased
+
+### Added
+
+- MediaTek Control: fixed GPU frequency with the OPP table's own voltage,
+  `thermal/gpt` disable, FPSGO / FBT ceiling / Perfmgr / GED KPI / DCS
+  switches, and a fixed DDR OPP. Every readable write is journaled and
+  restored; the two dvfsrc force nodes are write-only and are reset to `0` on
+  release.
+
+### Note
+
+- A wrong GPU voltage or DDR OPP can freeze the device. Recovery is a reboot.
+
 ## 1.23.14 — Vega
 
 ### Fixed
