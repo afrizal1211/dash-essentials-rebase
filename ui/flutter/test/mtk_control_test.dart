@@ -49,7 +49,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('GED KPI'), findsNothing);
     expect(find.text('Fixed DDR OPP'), findsNothing);
-    expect(find.text('Fixed frequency'), findsOneWidget);
+    expect(find.text('Fixed GPU frequency'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 
@@ -70,6 +70,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     final finder = find.byKey(const ValueKey('mtk-switch-fpsgo'));
+    await tester.scrollUntilVisible(finder, 200);
     await Scrollable.ensureVisible(tester.element(finder), alignment: 0.5);
     await tester.pumpAndSettle();
     await tester.tap(finder);

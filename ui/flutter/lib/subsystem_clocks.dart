@@ -425,12 +425,10 @@ class _SubsystemFrequencyCardState extends State<_SubsystemFrequencyCard> {
               ),
               const SizedBox(width: 9),
               Expanded(
-                child: Text(
-                  'Frequency control',
-                  style: const TextStyle(
-                    fontSize: 14.5,
-                    fontWeight: FontWeight.w800,
-                  ),
+                child: featureCardHeader(
+                  context,
+                  widget.featureId,
+                  title: 'Frequency control',
                 ),
               ),
               StatusPill(
@@ -447,8 +445,6 @@ class _SubsystemFrequencyCardState extends State<_SubsystemFrequencyCard> {
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          featureCardHeader(context, widget.featureId),
           const SizedBox(height: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
