@@ -41,6 +41,7 @@ part 'easter_eggs.dart';
 part 'aurora_drift.dart';
 part 'subsystem_clocks.dart';
 part 'mtk_control.dart';
+part 'feature_descriptions.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
