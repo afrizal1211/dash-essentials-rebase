@@ -36,8 +36,13 @@ const DVFSRC_ROOTS: [&str; 4] = [
     "/sys/devices/platform/soc/1c100000.dvfsrc",
 ];
 const DVFSRC_HELPER_SUFFIX: &str = ":dvfsrc-helper";
-const DVFSRC_DDR_TABLE: &str = "dvfsrc_ddr_opp_table";
-#[allow(dead_code)] // used by the pin and force flows added in later tasks
+/// The combined (vcore, DDR) operating-point table. `dvfsrc_force_vcore_dvfs_opp`
+/// is indexed against this table, never the DDR-only `dvfsrc_ddr_opp_table`.
+const DVFSRC_OPP_TABLE: &str = "dvfsrc_opp_table";
+/// Verified on device: `FORCE_OPP_IDX` reads `255, 255` when nothing is forced
+/// and writing 255 to a force node clears the force. `0` is a real OPP index
+/// (the lowest pair) and would pin it instead of releasing.
+const DVFSRC_RELEASE: &str = "255";
 const DVFSRC_FORCE_VCORE: &str = "dvfsrc_force_vcore_dvfs_opp";
 const DVFSRC_FORCE_DDR: &str = "dvfsrc_force_ddr_opp";
 
@@ -68,7 +73,7 @@ pub(super) struct ControlInput {
     pub gpu: Option<GpuInput>,
     pub switches: [Option<bool>; 4],
     pub dcs: Option<DcsMenu>,
-    pub ddr: Option<Vec<u64>>,
+    pub ddr: Option<Vec<DvfsrcOpp>>,
 }
 
 fn field_u32(line: &str, key: &str) -> Option<u32> {
@@ -156,10 +161,51 @@ pub(super) fn parse_dcs_menu(raw: &str) -> DcsMenu {
     menu
 }
 
-pub(super) fn parse_dvfsrc_opp_table(raw: &str) -> Vec<u64> {
-    raw.split_whitespace()
-        .filter_map(|value| value.parse().ok())
-        .collect()
+/// One row of the combined DVFSRC operating-point table.
+///
+/// The kernel prints one row per (vcore, DDR) pair, for example
+/// `[44 ]:760000, 8528  Mbps [4]`. `index` is the printed label, `vcore` is
+/// microvolts and `mbps` is the DDR rate of that row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DvfsrcOpp {
+    pub index: u32,
+    pub vcore: u32,
+    pub mbps: u32,
+}
+
+/// Parse the combined DVFSRC operating-point table.
+///
+/// Header lines such as `NUM_DVFSRC_OPP : 87` carry no `[NN]` label and are
+/// skipped.
+pub(super) fn parse_dvfsrc_opps(raw: &str) -> Vec<DvfsrcOpp> {
+    let mut rows = Vec::new();
+    for line in raw.lines() {
+        let (Some(start), Some(end)) = (line.find('['), line.find(']')) else {
+            continue;
+        };
+        let Ok(index) = line[start + 1..end].trim().parse::<u32>() else {
+            continue;
+        };
+        let body = &line[end + 1..];
+        let mut parts = body.split(',');
+        let vcore = parts.next().and_then(|part| {
+            part.trim()
+                .trim_start_matches(':')
+                .trim()
+                .parse::<u32>()
+                .ok()
+        });
+        let mbps = parts.next().and_then(|part| {
+            part.split_whitespace()
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+        });
+        let (Some(vcore), Some(mbps)) = (vcore, mbps) else {
+            continue;
+        };
+        rows.push(DvfsrcOpp { index, vcore, mbps });
+    }
+    rows
 }
 
 /// The dvfsrc helper device directory, whose nodes take the force write.
@@ -233,8 +279,8 @@ fn collect_input() -> Option<ControlInput> {
         .ok()
         .map(|raw| parse_dcs_menu(&raw));
     let ddr = dvfsrc_helper_dir()
-        .and_then(|dir| read_node_text(dir.join(DVFSRC_DDR_TABLE)).ok())
-        .map(|raw| parse_dvfsrc_opp_table(&raw))
+        .and_then(|dir| read_node_text(dir.join(DVFSRC_OPP_TABLE)).ok())
+        .map(|raw| parse_dvfsrc_opps(&raw))
         .filter(|table| !table.is_empty());
     Some(ControlInput {
         gpu: Some(GpuInput {
@@ -296,7 +342,14 @@ pub(super) fn render_control(input: Option<ControlInput>) -> Value {
         None => json!({"present": false}),
     };
     let ddr = match input.ddr {
-        Some(table) => json!({"present": true, "readable": false, "opps": table}),
+        Some(table) => json!({
+            "present": true,
+            "readable": false,
+            "opps": table
+                .iter()
+                .map(|row| json!({"index": row.index, "vcore": row.vcore, "mbps": row.mbps}))
+                .collect::<Vec<_>>(),
+        }),
         None => json!({"present": false}),
     };
     json!({
@@ -491,7 +544,8 @@ pub(super) fn reset_target(name: &str) -> Option<ResetTarget> {
     let off = match name {
         "gpu" => "-1",
         "thermal_gpt" => "",
-        "fpsgo" | "fbt_ceiling" | "perfmgr" | "ged_kpi" | "dcs" | "ddr" => "0",
+        "fpsgo" | "fbt_ceiling" | "perfmgr" | "ged_kpi" | "dcs" => "0",
+        "ddr" => DVFSRC_RELEASE,
         _ => return None,
     };
     Some(ResetTarget { off })
@@ -499,7 +553,7 @@ pub(super) fn reset_target(name: &str) -> Option<ResetTarget> {
 
 /// The DDR force node can be indexed only against the table the driver
 /// publishes; the devfreq frequency list is a different index space.
-pub(super) fn ddr_index_valid(index: u32, table: &[u64]) -> bool {
+pub(super) fn ddr_index_valid(index: u32, table: &[DvfsrcOpp]) -> bool {
     (index as usize) < table.len()
 }
 
@@ -523,15 +577,18 @@ fn ddr_force(index: Option<u32>) -> Result<(), String> {
         dvfsrc_helper_dir().ok_or_else(|| "MediaTek dvfsrc helper is not available".to_string())?;
     let value = match index {
         Some(index) => {
-            let table_path = dir.join(DVFSRC_DDR_TABLE);
+            // The force node is indexed against the combined (vcore, DDR)
+            // table, so the selection is validated there, never against the
+            // DDR-only table.
+            let table_path = dir.join(DVFSRC_OPP_TABLE);
             let raw = read_node_text(&table_path)
                 .map_err(|error| format!("{}: {error}", table_path.display()))?;
-            if !ddr_index_valid(index, &parse_dvfsrc_opp_table(&raw)) {
+            if !ddr_index_valid(index, &parse_dvfsrc_opps(&raw)) {
                 return Err(format!("DDR OPP table has no index {index}"));
             }
             index.to_string()
         }
-        None => "0".to_string(),
+        None => DVFSRC_RELEASE.to_string(),
     };
     write_force_node(DVFSRC_FORCE_VCORE, &value)
 }
@@ -575,7 +632,8 @@ fn reset_control(name: &str) -> Result<(), String> {
 
 /// Release every write the daemon made to the dvfsrc force nodes.
 ///
-/// The journaled nodes need no work here; the generic replay owns them.
+/// The journaled nodes need no work here; the generic replay owns them. The
+/// force nodes are write-only, so release writes the driver's `255` sentinel.
 pub(super) fn restore_all() -> Result<(), String> {
     let Some(dir) = dvfsrc_helper_dir() else {
         return Ok(());
@@ -585,7 +643,8 @@ pub(super) fn restore_all() -> Result<(), String> {
         if !path.exists() {
             continue;
         }
-        std::fs::write(&path, "0").map_err(|error| format!("{}: {error}", path.display()))?;
+        std::fs::write(&path, DVFSRC_RELEASE)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
     }
     Ok(())
 }
@@ -731,14 +790,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_dvfsrc_opp_table() {
-        assert_eq!(
-            parse_dvfsrc_opp_table("1532000000 2067000000 9594000000 9594000000 "),
-            vec![1532000000, 2067000000, 9594000000, 9594000000]
-        );
-    }
-
-    #[test]
     fn absent_kernel_reports_unsupported_with_a_reason() {
         let payload = render_control(None);
         assert_eq!(payload["supported"], false);
@@ -802,11 +853,36 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_dvfsrc_combined_opp_table() {
+        let rows = parse_dvfsrc_opps(
+            "NUM_VCORE_OPP : 6\nNUM_DDR_OPP : 11\nNUM_DVFSRC_OPP : 87\n\n\
+             [0  ]:875000, 9594  Mbps [5]\n\
+             [44 ]:760000, 8528  Mbps [4]\n\
+             [86 ]:685000, 3094  Mbps [1]",
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            (rows[0].index, rows[0].vcore, rows[0].mbps),
+            (0, 875000, 9594)
+        );
+        assert_eq!(
+            (rows[1].index, rows[1].vcore, rows[1].mbps),
+            (44, 760000, 8528)
+        );
+        assert_eq!(
+            (rows[2].index, rows[2].vcore, rows[2].mbps),
+            (86, 685000, 3094)
+        );
+    }
+
+    #[test]
     fn ddr_force_rejects_an_index_past_the_table() {
-        let table = parse_dvfsrc_opp_table("1532000000 2067000000 9594000000");
-        assert_eq!(table.len(), 3);
-        assert!(ddr_index_valid(2, &table));
-        assert!(!ddr_index_valid(3, &table));
+        let table = parse_dvfsrc_opps("[0  ]:875000, 9594  Mbps [5]\n[86 ]:685000, 3094  Mbps [1]");
+        assert_eq!(table.len(), 2);
+        assert!(ddr_index_valid(1, &table));
+        assert!(!ddr_index_valid(2, &table));
+        // 255 is the driver's release sentinel, never an OPP index.
+        assert!(!ddr_index_valid(255, &table));
     }
 
     #[test]
@@ -824,7 +900,10 @@ mod tests {
             assert!(reset_target(name).is_some(), "{name}");
         }
         assert!(reset_target("nonsense").is_none());
-        assert_eq!(reset_target("ddr").unwrap().off, "0");
+        // Verified on device: FORCE_OPP_IDX reads `255, 255` when unset, and
+        // writing 255 to the force node clears a force. `0` would pin the
+        // lowest OPP instead of releasing it.
+        assert_eq!(reset_target("ddr").unwrap().off, "255");
         assert_eq!(reset_target("gpu").unwrap().off, "-1");
     }
 }

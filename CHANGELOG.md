@@ -13,8 +13,8 @@ The port's own changes are at the top.
 - MediaTek Control: fixed GPU frequency with the OPP table's own voltage,
   `thermal/gpt` disable, FPSGO / FBT ceiling / Perfmgr / GED KPI / DCS
   switches, and a fixed DDR OPP. Every readable write is journaled and
-  restored; the two dvfsrc force nodes are write-only and are reset to `0` on
-  release.
+  restored; the two dvfsrc force nodes are write-only and are released with
+  the driver's `255` sentinel on release.
 
 ### Note
 

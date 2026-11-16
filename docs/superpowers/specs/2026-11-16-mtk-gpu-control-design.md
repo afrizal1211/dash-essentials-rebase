@@ -127,9 +127,14 @@ below.
 (`--w-------`, unreadable even as root). `service_control::write` cannot
 journal them, so their release path must write the explicit "off" value.
 
-`dvfsrc_ddr_opp_table` publishes 10 raw values (`1532000000 … 9594000000`)
-that are **not** index-aligned with the devfreq `available_frequencies` list
-(which starts at `754000000`). Never mix the two.
+The force node takes an index into the **combined** `dvfsrc_opp_table`
+(mt6991: 87 rows, `[44 ]:760000, 8528  Mbps [4]`), never the DDR-only
+`dvfsrc_ddr_opp_table` (10 raw values). Verified on device (mt6991):
+`FORCE_OPP_IDX` reads `255, 255` when nothing is forced; writing `N` to
+`dvfsrc_force_vcore_dvfs_opp` pins combined OPP `N`; writing `255` clears it.
+`0` is a real OPP index and would pin the lowest pair. Release sentinel is
+`255` (Scene uses `-1`/`999`; both are wrong for this driver). Writing to
+`dvfsrc_force_ddr_opp` has no observable effect on mt6991 and is not written.
 
 ## Already covered by Dash — do not rebuild
 
@@ -271,8 +276,8 @@ Three mounting rules:
 | Perfmgr | `/sys/module/mtk_fpsgo/parameters/perfmgr_enable`, else `perfmgr_mtk` | `0` / `1` |
 | GED KPI | `/sys/module/sspm_v3/holders/ged/parameters/is_GED_KPI_enabled` | `0` / `1` |
 | DCS | `/sys/kernel/ged/hal/dcs_mode` | `0` or menu code |
-| DDR fixed | `<dvfsrc>/<name>:dvfsrc-helper/dvfsrc_force_vcore_dvfs_opp` | index |
-| DDR table | same dir `dvfsrc_ddr_opp_table` | read only |
+| DDR fixed | `<dvfsrc>/<name>:dvfsrc-helper/dvfsrc_force_vcore_dvfs_opp` | combined DVFSRC OPP index |
+| DDR table | same dir `dvfsrc_opp_table` (combined vcore+DDR rows) | read only |
 
 `<dvfsrc>` is probed in Scene's order, extended with the path this device
 actually uses:

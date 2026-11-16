@@ -310,7 +310,7 @@ class _MtkControlScreenState extends State<MtkControlScreen>
       }
 
       if (ddr['present'] == true) {
-        final ddrOpps = (ddr['opps'] as List?)?.cast<int>() ?? const <int>[];
+        final ddrOpps = (ddr['opps'] as List?) ?? const <dynamic>[];
         cards.add(_card(
           title: 'Fixed DDR OPP',
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
@@ -323,10 +323,14 @@ class _MtkControlScreenState extends State<MtkControlScreen>
                 hint: const Text('Select DDR OPP'),
                 items: List<DropdownMenuItem<int>>.generate(
                   ddrOpps.length,
-                  (index) => DropdownMenuItem<int>(
-                    value: index,
-                    child: Text('OPP $index · ${ddrOpps[index]}'),
-                  ),
+                  (position) {
+                    final row = ddrOpps[position] as Map;
+                    final index = row['index'] as int;
+                    return DropdownMenuItem<int>(
+                      value: index,
+                      child: Text('OPP $index · ${row['mbps']} Mbps'),
+                    );
+                  },
                 ),
                 onChanged: _busy != null ? null : (index) {
                   if (index == null) return;
