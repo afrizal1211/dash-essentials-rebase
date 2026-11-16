@@ -478,19 +478,17 @@ fn verify_pin(index: u32) -> Result<(), String> {
 /// The journal owns the pre-pin value when the node was readable; otherwise
 /// the driver's own off value is the only safe state.
 fn rollback_pin() {
-    for (path, off) in [(MTK_FIX_INDEX, "-1")] {
-        let restored = match service_control::original(path) {
-            Some(Value::String(value)) => service_control::write(path, &value),
-            _ => service_control::write(path, off),
-        };
-        if let Err(error) = restored {
-            crate::diagnostics::record(
-                crate::diagnostics::AREA_GPU,
-                "error",
-                "mtk.pin.rollback",
-                &format!("{path}: {error}"),
-            );
-        }
+    let restored = match service_control::original(MTK_FIX_INDEX) {
+        Some(Value::String(value)) => service_control::write(MTK_FIX_INDEX, &value),
+        _ => service_control::write(MTK_FIX_INDEX, "-1"),
+    };
+    if let Err(error) = restored {
+        crate::diagnostics::record(
+            crate::diagnostics::AREA_GPU,
+            "error",
+            "mtk.pin.rollback",
+            &format!("{MTK_FIX_INDEX}: {error}"),
+        );
     }
     if custom_fv_supported() {
         let restored = match service_control::original(MTK_FIX_FREQ_VOLT) {
