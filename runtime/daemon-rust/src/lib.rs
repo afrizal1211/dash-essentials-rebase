@@ -23,6 +23,7 @@ mod diagnostics;
 mod foreground_app;
 mod foreground_fps;
 mod fps_record;
+mod mtk_control;
 mod profile_manager;
 mod service_control;
 mod subsystem_clocks;
@@ -8969,6 +8970,16 @@ fn handle_command_inner(line: &str) -> String {
             Err(_) => return "ERR service transition lock poisoned".into(),
         };
         return match subsystem_clocks::command(cmd) {
+            Ok(value) => format!("OK {value}"),
+            Err(error) => format!("ERR {error}"),
+        };
+    }
+    if mtk_control::is_command(cmd) {
+        let _gate = match service_control::GATE.write() {
+            Ok(gate) => gate,
+            Err(_) => return "ERR service transition lock poisoned".into(),
+        };
+        return match mtk_control::command(cmd) {
             Ok(value) => format!("OK {value}"),
             Err(error) => format!("ERR {error}"),
         };

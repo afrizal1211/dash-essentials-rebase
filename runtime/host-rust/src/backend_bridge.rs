@@ -527,6 +527,7 @@ pub unsafe extern "C" fn dash_backend_app_controls_exchange(
         || command == "ACTION logs.export"
         || command == "ACTION logs.clear"
         || command == "GET subsystem.clocks"
+        || command == "GET mtk.control"
         || command == "ACTION subsystem.clocks.reset"
         || command == "ACTION subsystem.clocks.trial memory"
         || command == "ACTION subsystem.clocks.oem memory"
