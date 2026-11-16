@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 const MTK_STACK_OPPS: &str = "/proc/gpufreqv2/stack_signed_opp_table";
 const MTK_STATUS: &str = "/proc/gpufreqv2/gpufreq_status";
 const MTK_FIX_INDEX: &str = "/proc/gpufreqv2/fix_target_opp_index";
-const MTK_FIX_FREQ_VOLT: &str = "/proc/gpufreqv2/fix_custom_freq_volt";
+/// The frequency+volt fix node, published for the service release replay.
+pub(crate) const MTK_FIX_FREQ_VOLT: &str = "/proc/gpufreqv2/fix_custom_freq_volt";
 const MTK_THERMAL_GPT: &str = "/sys/kernel/thermal/gpt";
 const MTK_SOC: &str = "/sys/devices/soc0/machine";
 
@@ -400,31 +401,48 @@ fn write_node(path: &str, value: &str) -> Result<(), String> {
 ///
 /// Verified on device (mt6991): the node rejects every write with EPERM
 /// (`Operation not permitted (os error 1)`), in every format, including
-/// Scene's. There the plain index pin is the only working path, so the
-/// probe writes the node's own off value once and remembers the verdict.
-/// A rejected probe also forgets any journal entry an earlier failed pin
-/// attempt left behind, so the service release replay cannot keep failing
-/// on a node the kernel refuses.
+/// Scene's. The verdict starts optimistic and only an observed EPERM write
+/// marks the node unsupported: a probe cannot decide this up front, because
+/// the node answers to the boot-time GPU state and later refuses what it
+/// once accepted.
+static FV_UNSUPPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn custom_fv_supported() -> bool {
-    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SUPPORTED.get_or_init(|| match service_control::write(MTK_FIX_FREQ_VOLT, "0 0") {
-        Ok(()) => true,
-        Err(error) => {
-            let rejected = error.kind() == std::io::ErrorKind::PermissionDenied;
-            if rejected {
-                let _ = service_control::forget(&[MTK_FIX_FREQ_VOLT.to_string()]);
-            }
-            rejected
-        }
-    })
+    !FV_UNSUPPORTED.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Write the frequency+volt fix node when the kernel supports it.
+/// Whether the service release replay must skip the F/V fix node: a kernel
+/// that refuses it (mt6991) fails every write, so replaying its journal
+/// entry can only error.
+pub(crate) fn fix_freq_volt_unsupported() -> bool {
+    !custom_fv_supported()
+}
+
+/// Record one EPERM on the F/V node and forget the stale journal entry, so
+/// the service release replay cannot keep failing on a node the kernel
+/// refuses.
+fn note_fv_denied() {
+    FV_UNSUPPORTED.store(true, std::sync::atomic::Ordering::Release);
+    let _ = service_control::forget(&[MTK_FIX_FREQ_VOLT.to_string()]);
+}
+
+/// Best-effort write of the frequency+volt fix node.
+///
+/// Scene pins the index the same way: clear the F/V node, ignore the write
+/// when the kernel refuses it, then write `fix_target_opp_index`. A kernel
+/// that rejects the node (mt6991) pins by index alone.
 fn write_custom_freq_volt(value: &str) -> Result<(), String> {
     if !custom_fv_supported() {
         return Ok(());
     }
-    write_node(MTK_FIX_FREQ_VOLT, value)
+    match service_control::write(MTK_FIX_FREQ_VOLT, value) {
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            note_fv_denied();
+            Ok(())
+        }
+        Err(error) => Err(format!("{MTK_FIX_FREQ_VOLT}: {error}")),
+        Ok(()) => Ok(()),
+    }
 }
 
 /// The pinned index is live.
@@ -490,20 +508,11 @@ fn rollback_pin() {
             &format!("{MTK_FIX_INDEX}: {error}"),
         );
     }
-    if custom_fv_supported() {
-        let restored = match service_control::original(MTK_FIX_FREQ_VOLT) {
-            Some(Value::String(value)) => service_control::write(MTK_FIX_FREQ_VOLT, &value),
-            _ => service_control::write(MTK_FIX_FREQ_VOLT, "0 0"),
-        };
-        if let Err(error) = restored {
-            crate::diagnostics::record(
-                crate::diagnostics::AREA_GPU,
-                "error",
-                "mtk.pin.rollback",
-                &format!("{MTK_FIX_FREQ_VOLT}: {error}"),
-            );
-        }
-    }
+    // The F/V journal entry is always the node's own off value (the node
+    // reads back a debug dump, so the journal stores "0 0"), which makes a
+    // best-effort clear the restore. A kernel refusing the node (mt6991)
+    // is ignored here, exactly like Scene.
+    let _ = write_custom_freq_volt("0 0");
     let _ = service_control::forget(&[MTK_FIX_INDEX.to_string(), MTK_FIX_FREQ_VOLT.to_string()]);
 }
 
@@ -692,9 +701,10 @@ fn reset_control(name: &str) -> Result<(), String> {
     let target = reset_target(name).ok_or_else(|| format!("unknown mtk control {name}"))?;
     if name == "gpu" {
         restore_node(MTK_FIX_INDEX, "-1")?;
-        if custom_fv_supported() {
-            restore_node(MTK_FIX_FREQ_VOLT, "0 0")?;
-        }
+        // Same best-effort clear as the rollback: the journaled F/V
+        // original is always the off value, and a kernel refusing the node
+        // must not fail the reset.
+        let _ = write_custom_freq_volt("0 0");
         return Ok(());
     }
     if name == "ddr" {

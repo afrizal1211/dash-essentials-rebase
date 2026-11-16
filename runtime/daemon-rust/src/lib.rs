@@ -8547,6 +8547,11 @@ fn restore_released_controls() -> Result<(), String> {
         let Some(value) = value.as_str() else {
             continue;
         };
+        // A kernel that refuses the F/V fix node fails every write to it;
+        // replaying its journal entry would fail the whole release.
+        if path == mtk_control::MTK_FIX_FREQ_VOLT && mtk_control::fix_freq_volt_unsupported() {
+            continue;
+        }
         run(
             &path,
             (|| {
