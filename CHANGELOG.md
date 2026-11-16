@@ -6,6 +6,15 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.16
+
+### Added
+
+- Every control screen now explains itself: a short description sits under
+  each card title, and an info button opens a fuller explanation of what
+  the setting does, what the app remembers and restores, and when a wrong
+  step can only be undone by a reboot.
+
 ## 1.23.15 — Sirius
 
 ### Added
