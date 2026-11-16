@@ -285,6 +285,10 @@ fn reversible_path(path: &Path) -> bool {
     (raw.starts_with("/sys/")
         || raw.starts_with("/proc/sys/")
         || raw.starts_with("/proc/touch_boost/")
+        // MediaTek's gpufreqv2 pins and the DDR force nodes look alike at the
+        // path level, but only the gpufreqv2 nodes can be read back before a
+        // write. The write-only force nodes are excluded below.
+        || raw.starts_with("/proc/gpufreqv2/")
         // Dash's high touch sampling rate knob. The stock ROM drives it too,
         // so the value it had before the daemon touched it is what the
         // release path has to put back.
@@ -299,6 +303,8 @@ fn reversible_path(path: &Path) -> bool {
                     | "comp_algorithm"
                     | "bypass_charging"
                     | "bypass_charge"
+                    | "dvfsrc_force_vcore_dvfs_opp"
+                    | "dvfsrc_force_ddr_opp"
             )
         )
         && raw.as_ref() != super::MI_THERMAL_CPU_LIMITS
@@ -416,6 +422,21 @@ mod tests {
         }
         assert!(reversible_path(Path::new(
             "/sys/module/ged/parameters/gpu_dvfs_enable"
+        )));
+    }
+    #[test]
+    fn gpufreqv2_nodes_are_reversible_but_dvfsrc_force_nodes_are_not() {
+        assert!(reversible_path(Path::new(
+            "/proc/gpufreqv2/fix_target_opp_index"
+        )));
+        assert!(reversible_path(Path::new(
+            "/proc/gpufreqv2/fix_custom_freq_volt"
+        )));
+        assert!(!reversible_path(Path::new(
+            "/sys/devices/platform/1c013000.dvfsrc/1c013000.dvfsrc:dvfsrc-helper/dvfsrc_force_vcore_dvfs_opp"
+        )));
+        assert!(!reversible_path(Path::new(
+            "/sys/devices/platform/1c013000.dvfsrc/1c013000.dvfsrc:dvfsrc-helper/dvfsrc_force_ddr_opp"
         )));
     }
 }
