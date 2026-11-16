@@ -10,15 +10,32 @@ The port's own changes are at the top.
 
 ### Added
 
-- MediaTek Control: fixed GPU frequency with the OPP table's own voltage,
-  `thermal/gpt` disable, FPSGO / FBT ceiling / Perfmgr / GED KPI / DCS
-  switches, and a fixed DDR OPP. Every readable write is journaled and
-  restored; the two dvfsrc force nodes are write-only and are released with
-  the driver's `255` sentinel on release.
+- MediaTek GPU and memory controls for Dimensity phones: pin the GPU to a
+  fixed frequency, disable the kernel's GPU thermal limiter
+  (`thermal/gpt`), flip the game-boost switches (FPSGO, FBT ceiling,
+  Perfmgr, GED KPI, DCS), and force the memory (DDR) to a fixed speed
+  step. Anything you switch is remembered and restored when you release
+  it, so none of this needs a reboot to undo.
+
+### Fixed
+
+- Pinning a fixed GPU frequency failed on the Dimensity 9400 with
+  "Operation not permitted". This chip's kernel refuses one helper node
+  (`fix_custom_freq_volt`) for every app — Scene fails on it too and
+  simply ignores the failure, then pins the frequency through a different
+  node. The app now does exactly that: it picks your frequency's row from
+  the GPU's OPP table and pins through `fix_target_opp_index`, and only
+  reports a problem if that write fails. Leftovers from earlier failed
+  attempts are cleaned up automatically on the first try.
+- On this phone the voltage-locked pin variant is refused by the kernel
+  itself, so the app now says so and asks for the plain frequency pin
+  instead of failing with a raw error.
 
 ### Note
 
-- A wrong GPU voltage or DDR OPP can freeze the device. Recovery is a reboot.
+- A wrong GPU voltage or DDR step can freeze the phone until reboot. The
+  lists only offer steps the hardware itself declares, but combine these
+  controls carefully.
 
 ## 1.23.14 — Vega
 
