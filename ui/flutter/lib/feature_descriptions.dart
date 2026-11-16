@@ -116,22 +116,26 @@ void showFeatureDescriptionSheet(BuildContext context, String id) {
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(22, 8, 22, 22),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                entry.title,
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                entry.short,
-                style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
-              ),
-              const SizedBox(height: 14),
-              Text(entry.long, style: const TextStyle(fontSize: 14, height: 1.45)),
-            ],
+          // Scrollable: the longest copy overflows a half-screen sheet on
+          // small devices.
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  entry.title,
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  entry.short,
+                  style: TextStyle(fontSize: 13.5, color: colors.onSurfaceVariant),
+                ),
+                const SizedBox(height: 14),
+                Text(entry.long, style: const TextStyle(fontSize: 14, height: 1.45)),
+              ],
+            ),
           ),
         ),
       );
