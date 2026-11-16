@@ -8,14 +8,14 @@
 //! reported as applied.
 
 use super::read_node_text;
+use super::service_control;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const MTK_STACK_OPPS: &str = "/proc/gpufreqv2/stack_signed_opp_table";
-#[allow(dead_code)] // used by the pin and force flows added in later tasks
 const MTK_STATUS: &str = "/proc/gpufreqv2/gpufreq_status";
 const MTK_FIX_INDEX: &str = "/proc/gpufreqv2/fix_target_opp_index";
-#[allow(dead_code)] // used by the pin and force flows added in later tasks
 const MTK_FIX_FREQ_VOLT: &str = "/proc/gpufreqv2/fix_custom_freq_volt";
 const MTK_THERMAL_GPT: &str = "/sys/kernel/thermal/gpt";
 const MTK_SOC: &str = "/sys/devices/soc0/machine";
@@ -110,7 +110,6 @@ pub(super) fn parse_stack_opps(raw: &str) -> Vec<OppRow> {
 ///
 /// The table lists a few frequencies in more than one row, so a request is
 /// resolved the way the vendor tooling resolves it: first row wins.
-#[allow(dead_code)] // used by the pin and force flows added in later tasks
 pub(super) fn pin_index_for_khz(opps: &[OppRow], khz: u32) -> Option<u32> {
     opps.iter().find(|row| row.khz == khz).map(|row| row.index)
 }
@@ -119,7 +118,6 @@ pub(super) fn pin_index_for_khz(opps: &[OppRow], khz: u32) -> Option<u32> {
 ///
 /// The GPU idles below the table, so this is only used to confirm an index
 /// that was just written, never to learn the table.
-#[allow(dead_code)] // used by the pin verification added in a later task
 pub(super) fn parse_gpufreq_status(raw: &str) -> Option<(u32, u32)> {
     let line = raw
         .lines()
@@ -308,10 +306,147 @@ pub(super) fn render_control(input: Option<ControlInput>) -> Value {
 
 pub(super) fn is_command(cmd: &str) -> bool {
     cmd == "GET mtk.control"
+        || cmd.starts_with("ACTION mtk.gpu.pin ")
+        || cmd.starts_with("ACTION mtk.gpu.pin_volt ")
+}
+
+fn ensure_enabled() -> Result<(), String> {
+    if service_control::enabled() {
+        Ok(())
+    } else {
+        Err("Dash Essential is disabled".into())
+    }
+}
+
+fn write_node(path: &str, value: &str) -> Result<(), String> {
+    service_control::write(path, value).map_err(|error| format!("{path}: {error}"))
+}
+
+/// The pinned index is live.
+///
+/// The comparison is on the index alone. The GPU idles below the table, so a
+/// frequency check would fail while a correct pin settles.
+pub(super) fn pin_verified(expected_index: u32, status: &str) -> bool {
+    parse_gpufreq_status(status).is_some_and(|(index, _)| index == expected_index)
+}
+
+fn verify_pin(index: u32) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_millis(300);
+    loop {
+        if read_node_text(MTK_STATUS)
+            .ok()
+            .is_some_and(|raw| pin_verified(index, &raw))
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    rollback_pin();
+    Err(format!("GPU pin verify failed: index {index} not live"))
+}
+
+/// Put back what the pin replaced.
+///
+/// The journal owns the pre-pin value when the node was readable; otherwise
+/// the driver's own off value is the only safe state.
+fn rollback_pin() {
+    for (path, off) in [(MTK_FIX_INDEX, "-1"), (MTK_FIX_FREQ_VOLT, "0 0")] {
+        let restored = match service_control::original(path) {
+            Some(Value::String(value)) => service_control::write(path, &value),
+            _ => service_control::write(path, off),
+        };
+        if let Err(error) = restored {
+            crate::diagnostics::record(
+                crate::diagnostics::AREA_GPU,
+                "error",
+                "mtk.pin.rollback",
+                &format!("{path}: {error}"),
+            );
+        }
+    }
+    let _ = service_control::forget(&[MTK_FIX_INDEX.to_string(), MTK_FIX_FREQ_VOLT.to_string()]);
+}
+
+fn release_pin() -> Result<(), String> {
+    write_node(MTK_FIX_INDEX, "-1")?;
+    write_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+    let _ = service_control::forget(&[MTK_FIX_INDEX.to_string(), MTK_FIX_FREQ_VOLT.to_string()]);
+    Ok(())
+}
+
+/// Pin one operating point, optionally at the table's own voltage.
+///
+/// A frequency the table does not list is an error, never a nearest match:
+/// a wrong row pins an unrelated clock.
+fn gpu_pin_with(khz: u32, volt: Option<u32>, rows: &[OppRow]) -> Result<(), String> {
+    let index = pin_index_for_khz(rows, khz)
+        .ok_or_else(|| format!("GPU OPP table has no {khz} kHz row"))?;
+    let row = rows
+        .iter()
+        .find(|row| row.index == index)
+        .ok_or_else(|| format!("GPU OPP table has no index {index}"))?;
+    match volt {
+        Some(volt) if volt == row.volt => {
+            write_node(MTK_FIX_INDEX, "-1")?;
+            write_node(MTK_FIX_FREQ_VOLT, &format!("{khz} {volt}"))?;
+        }
+        Some(volt) => {
+            return Err(format!(
+                "GPU OPP {khz} kHz lists voltage {}, not {volt}",
+                row.volt
+            ));
+        }
+        None => {
+            write_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+            write_node(MTK_FIX_INDEX, &index.to_string())?;
+        }
+    }
+    verify_pin(index)
+}
+
+fn gpu_pin(khz: u32, volt: Option<u32>) -> Result<(), String> {
+    let stack =
+        read_node_text(MTK_STACK_OPPS).map_err(|error| format!("{MTK_STACK_OPPS}: {error}"))?;
+    let rows = parse_stack_opps(&stack);
+    if rows.is_empty() {
+        return Err("MediaTek OPP table is empty".into());
+    }
+    gpu_pin_with(khz, volt, &rows)
 }
 
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if cmd == "GET mtk.control" {
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.gpu.pin ") {
+        ensure_enabled()?;
+        let khz = arg
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "bad GPU pin frequency".to_string())?;
+        if khz == 0 {
+            release_pin()?;
+        } else {
+            gpu_pin(khz, None)?;
+        }
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.gpu.pin_volt ") {
+        ensure_enabled()?;
+        let parts = arg.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 2 {
+            return Err("expected frequency and voltage".into());
+        }
+        let khz = parts[0]
+            .parse::<u32>()
+            .map_err(|_| "bad GPU pin frequency".to_string())?;
+        let volt = parts[1]
+            .parse::<u32>()
+            .map_err(|_| "bad GPU pin voltage".to_string())?;
+        gpu_pin(khz, Some(volt))?;
         return Ok(render_control(collect_input()));
     }
     Err("unsupported mtk command".into())
@@ -404,5 +539,20 @@ mod tests {
         assert_eq!(payload["gpu"]["thermal_gpt"]["present"], false);
         assert_eq!(payload["ddr"]["present"], false);
         assert_eq!(payload["gpu"]["opps"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn pin_verification_accepts_the_written_index_while_the_gpu_idles() {
+        let status = "[GPU   OPP]      Index: 51, Freq:   26000, Volt:  49375, Vsram:  75000";
+        assert!(pin_verified(51, status));
+        assert!(!pin_verified(50, status));
+    }
+
+    #[test]
+    fn pin_rejects_an_unknown_frequency_without_writing() {
+        let rows = parse_stack_opps(STACK);
+        assert_eq!(pin_index_for_khz(&rows, 999000), None);
+        assert!(gpu_pin_with(999000, None, &rows).is_err());
+        assert!(gpu_pin_with(1612000, Some(1), &rows).is_err());
     }
 }
