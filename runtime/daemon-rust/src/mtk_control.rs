@@ -10,7 +10,7 @@
 use super::read_node_text;
 use super::service_control;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const MTK_STACK_OPPS: &str = "/proc/gpufreqv2/stack_signed_opp_table";
@@ -194,6 +194,22 @@ fn read_switch(name: &str) -> Option<bool> {
         .find_map(|path| read_node_text(path).ok().map(|raw| raw.trim() == "1"))
 }
 
+/// The node this kernel exposes for a switch, in preference order.
+pub(super) fn switch_path_in(name: &str, exists: impl Fn(&Path) -> bool) -> Option<&'static str> {
+    switch_candidates(name)
+        .iter()
+        .copied()
+        .find(|path| exists(Path::new(path)))
+}
+
+pub(super) fn switch_path(name: &str) -> Option<&'static str> {
+    switch_path_in(name, |path| path.is_file())
+}
+
+pub(super) fn dcs_write_value(code: u32) -> String {
+    code.to_string()
+}
+
 fn collect_input() -> Option<ControlInput> {
     let stack = read_node_text(MTK_STACK_OPPS).ok()?;
     let opps = parse_stack_opps(&stack);
@@ -308,6 +324,9 @@ pub(super) fn is_command(cmd: &str) -> bool {
     cmd == "GET mtk.control"
         || cmd.starts_with("ACTION mtk.gpu.pin ")
         || cmd.starts_with("ACTION mtk.gpu.pin_volt ")
+        || cmd.starts_with("ACTION mtk.switch ")
+        || cmd.starts_with("ACTION mtk.thermal_gpt ")
+        || cmd.starts_with("ACTION mtk.dcs ")
 }
 
 fn ensure_enabled() -> Result<(), String> {
@@ -417,6 +436,46 @@ fn gpu_pin(khz: u32, volt: Option<u32>) -> Result<(), String> {
     gpu_pin_with(khz, volt, &rows)
 }
 
+fn set_switch(name: &str, on: bool) -> Result<(), String> {
+    let path = switch_path(name).ok_or_else(|| format!("{name} is not available"))?;
+    write_node(path, if on { "1" } else { "0" })?;
+    let live = read_node_text(path).map_err(|error| format!("{path}: {error}"))?;
+    if (live.trim() == "1") != on {
+        return Err(format!("{name} did not retain {}", if on { 1 } else { 0 }));
+    }
+    Ok(())
+}
+
+/// Disable `thermal/gpt`, or put back the configuration it replaced.
+///
+/// The enabled form is the driver's own scalar string, which the journal
+/// captured before the disable; there is no `enable` token to invent.
+fn set_thermal_gpt(disable: bool) -> Result<(), String> {
+    if disable {
+        return write_node(MTK_THERMAL_GPT, "disable");
+    }
+    let Some(Value::String(original)) = service_control::original(MTK_THERMAL_GPT) else {
+        return Err("no journaled thermal configuration to restore".into());
+    };
+    write_node(MTK_THERMAL_GPT, &original)?;
+    let _ = service_control::forget(&[MTK_THERMAL_GPT.to_string()]);
+    Ok(())
+}
+
+fn set_dcs(code: u32) -> Result<(), String> {
+    if code != 0 {
+        let raw = read_node_text(DCS_MODE).map_err(|error| format!("{DCS_MODE}: {error}"))?;
+        if !parse_dcs_menu(&raw)
+            .entries
+            .iter()
+            .any(|(entry, _)| *entry == code)
+        {
+            return Err(format!("DCS menu does not offer code {code}"));
+        }
+    }
+    write_node(DCS_MODE, &dcs_write_value(code))
+}
+
 pub(super) fn command(cmd: &str) -> Result<Value, String> {
     if cmd == "GET mtk.control" {
         return Ok(render_control(collect_input()));
@@ -447,6 +506,39 @@ pub(super) fn command(cmd: &str) -> Result<Value, String> {
             .parse::<u32>()
             .map_err(|_| "bad GPU pin voltage".to_string())?;
         gpu_pin(khz, Some(volt))?;
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.switch ") {
+        ensure_enabled()?;
+        let parts = arg.split_whitespace().collect::<Vec<_>>();
+        if parts.len() != 2 {
+            return Err("expected switch name and 0 or 1".into());
+        }
+        let on = match parts[1] {
+            "0" => false,
+            "1" => true,
+            _ => return Err("switch value must be 0 or 1".into()),
+        };
+        set_switch(parts[0], on)?;
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.thermal_gpt ") {
+        ensure_enabled()?;
+        let disable = match arg.trim() {
+            "disable" => true,
+            "restore" => false,
+            _ => return Err("expected disable or restore".into()),
+        };
+        set_thermal_gpt(disable)?;
+        return Ok(render_control(collect_input()));
+    }
+    if let Some(arg) = cmd.strip_prefix("ACTION mtk.dcs ") {
+        ensure_enabled()?;
+        let code = arg
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "bad DCS code".to_string())?;
+        set_dcs(code)?;
         return Ok(render_control(collect_input()));
     }
     Err("unsupported mtk command".into())
@@ -554,5 +646,27 @@ mod tests {
         assert_eq!(pin_index_for_khz(&rows, 999000), None);
         assert!(gpu_pin_with(999000, None, &rows).is_err());
         assert!(gpu_pin_with(1612000, Some(1), &rows).is_err());
+    }
+
+    #[test]
+    fn perfmgr_prefers_the_node_this_kernel_exposes() {
+        let mtk = Path::new(SWITCH_PERFMGR[0]);
+        assert_eq!(
+            switch_path_in("perfmgr", |path| path == mtk),
+            Some(SWITCH_PERFMGR[0])
+        );
+        let pandora = Path::new(SWITCH_PERFMGR[1]);
+        assert_eq!(
+            switch_path_in("perfmgr", |path| path == pandora),
+            Some(SWITCH_PERFMGR[1])
+        );
+        assert_eq!(switch_path_in("perfmgr", |_| false), None);
+        assert_eq!(switch_path_in("nonsense", |_| true), None);
+    }
+
+    #[test]
+    fn dcs_zero_disables_and_any_code_enables() {
+        assert_eq!(dcs_write_value(0), "0");
+        assert_eq!(dcs_write_value(64), "64");
     }
 }
