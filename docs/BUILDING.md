@@ -93,6 +93,7 @@ bash -n tools/export-aosp-bundle.sh
 bash -n tools/integrate-aosp-rom.sh
 ./tools/test-kernelsu-watchdog-lock.sh
 ./tools/test-root-module-contract.sh
+./tools/test-release-sync.sh
 ./tools/test-aosp-integration.sh
 git diff --check
 ```
@@ -122,6 +123,35 @@ Build verification additionally checks:
 - Daemon and control binaries target ARM64 Android.
 - The packaged runtime stamp covers every Flutter asset and `icudtl.dat`, so
   application updates cannot reuse an incompatible extraction cache.
+
+## Versioning a release
+
+The version number lives in six places, and the release build fails unless all
+of them agree. Bump every one:
+
+1. `Cargo.toml` — `[workspace.package]` `version` (the semantic source of truth;
+   `tools/test-release-sync.sh` compares everything else against it).
+2. `CHANGELOG.md` — a new `## X.Y.Z` section at the top (the Telegram
+   announcement parses this section).
+3. `android/kernelsu-next/module.prop` — `version=vX.Y.Z` and
+   `versionCode=<M.m.p>` (no dots, e.g. `1.23.16` → `12316`).
+4. `android/package/AndroidManifest.xml` — `android:versionCode` and
+   `android:versionName`.
+5. `ui/flutter/pubspec.yaml` — `version: X.Y.Z+<versionCode>`.
+6. `ui/flutter/lib/release_identity.dart` — `dashVersionName` and
+   `dashVersionCode` (the in-app release label).
+
+`versionCode` must equal `major*10000 + minor*100 + patch`. Verify locally
+before tagging:
+
+```bash
+./tools/test-release-sync.sh
+./tools/test-root-module-contract.sh
+```
+
+Then tag `vX.Y.Z-dash`: the tag build packages the module, creates the GitHub
+release from the changelog, and posts the Telegram announcement when the
+`TELEGRAM_ANNOUNCE` repository variable is not `0`.
 
 ## AOSP export
 
