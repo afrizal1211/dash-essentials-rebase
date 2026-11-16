@@ -396,6 +396,37 @@ fn write_node(path: &str, value: &str) -> Result<(), String> {
     service_control::write(path, value).map_err(|error| format!("{path}: {error}"))
 }
 
+/// Whether the kernel accepts writes to `fix_custom_freq_volt`.
+///
+/// Verified on device (mt6991): the node rejects every write with EPERM
+/// (`Operation not permitted (os error 1)`), in every format, including
+/// Scene's. There the plain index pin is the only working path, so the
+/// probe writes the node's own off value once and remembers the verdict.
+/// A rejected probe also forgets any journal entry an earlier failed pin
+/// attempt left behind, so the service release replay cannot keep failing
+/// on a node the kernel refuses.
+fn custom_fv_supported() -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| match service_control::write(MTK_FIX_FREQ_VOLT, "0 0") {
+        Ok(()) => true,
+        Err(error) => {
+            let rejected = error.kind() == std::io::ErrorKind::PermissionDenied;
+            if rejected {
+                let _ = service_control::forget(&[MTK_FIX_FREQ_VOLT.to_string()]);
+            }
+            rejected
+        }
+    })
+}
+
+/// Write the frequency+volt fix node when the kernel supports it.
+fn write_custom_freq_volt(value: &str) -> Result<(), String> {
+    if !custom_fv_supported() {
+        return Ok(());
+    }
+    write_node(MTK_FIX_FREQ_VOLT, value)
+}
+
 /// The pinned index is live.
 ///
 /// The comparison is on the index alone. The GPU idles below the table, so a
@@ -447,7 +478,7 @@ fn verify_pin(index: u32) -> Result<(), String> {
 /// The journal owns the pre-pin value when the node was readable; otherwise
 /// the driver's own off value is the only safe state.
 fn rollback_pin() {
-    for (path, off) in [(MTK_FIX_INDEX, "-1"), (MTK_FIX_FREQ_VOLT, "0 0")] {
+    for (path, off) in [(MTK_FIX_INDEX, "-1")] {
         let restored = match service_control::original(path) {
             Some(Value::String(value)) => service_control::write(path, &value),
             _ => service_control::write(path, off),
@@ -461,12 +492,26 @@ fn rollback_pin() {
             );
         }
     }
+    if custom_fv_supported() {
+        let restored = match service_control::original(MTK_FIX_FREQ_VOLT) {
+            Some(Value::String(value)) => service_control::write(MTK_FIX_FREQ_VOLT, &value),
+            _ => service_control::write(MTK_FIX_FREQ_VOLT, "0 0"),
+        };
+        if let Err(error) = restored {
+            crate::diagnostics::record(
+                crate::diagnostics::AREA_GPU,
+                "error",
+                "mtk.pin.rollback",
+                &format!("{MTK_FIX_FREQ_VOLT}: {error}"),
+            );
+        }
+    }
     let _ = service_control::forget(&[MTK_FIX_INDEX.to_string(), MTK_FIX_FREQ_VOLT.to_string()]);
 }
 
 fn release_pin() -> Result<(), String> {
     write_node(MTK_FIX_INDEX, "-1")?;
-    write_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+    write_custom_freq_volt("0 0")?;
     let _ = service_control::forget(&[MTK_FIX_INDEX.to_string(), MTK_FIX_FREQ_VOLT.to_string()]);
     Ok(())
 }
@@ -500,11 +545,18 @@ fn gpu_pin_with(khz: u32, volt: Option<u32>, rows: &[OppRow]) -> Result<(), Stri
     crate::ensure_gpu_thermal_mode()?;
     match volt {
         Some(volt) => {
+            // Fail before any write: mt6991 rejects this node outright and
+            // a half-applied volt pin would release the index with no pin.
+            if !custom_fv_supported() {
+                return Err(
+                    "this kernel does not accept fix_custom_freq_volt; use the plain pin".into(),
+                );
+            }
             write_node(MTK_FIX_INDEX, "-1")?;
             write_node(MTK_FIX_FREQ_VOLT, &format!("{khz} {volt}"))?;
         }
         None => {
-            write_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+            write_custom_freq_volt("0 0")?;
             write_node(MTK_FIX_INDEX, &index.to_string())?;
         }
     }
@@ -642,7 +694,9 @@ fn reset_control(name: &str) -> Result<(), String> {
     let target = reset_target(name).ok_or_else(|| format!("unknown mtk control {name}"))?;
     if name == "gpu" {
         restore_node(MTK_FIX_INDEX, "-1")?;
-        restore_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+        if custom_fv_supported() {
+            restore_node(MTK_FIX_FREQ_VOLT, "0 0")?;
+        }
         return Ok(());
     }
     if name == "ddr" {
