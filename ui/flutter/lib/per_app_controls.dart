@@ -1024,6 +1024,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                 title: 'Profile preferences',
                 icon: Icons.tune_rounded,
                 accent: Color(0xFFB087FF),
+                featureId: 'perapp.preferences',
               ),
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
@@ -1050,6 +1051,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                 title: 'Touch & display',
                 icon: Icons.touch_app_rounded,
                 accent: Color(0xFF4CC79E),
+                featureId: 'perapp.touch_display',
               ),
               const SizedBox(height: 14),
               _choice(
@@ -1090,6 +1092,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                 title: 'Mali GPU',
                 icon: Icons.sports_esports_rounded,
                 accent: Color(0xFFFF5252),
+                featureId: 'perapp.mali_gpu',
               ),
               const SizedBox(height: 14),
               _gpuControls(colors),
@@ -1107,6 +1110,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                   title: 'CPU cores',
                   icon: Icons.memory_rounded,
                   accent: Color(0xFF59BDFC),
+                  featureId: 'perapp.cpu_cores',
                 ),
                 const SizedBox(height: 14),
                 _choice(
@@ -1154,6 +1158,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                     title: 'Scheduler clamps',
                     icon: Icons.tune_rounded,
                     accent: Color(0xFFFFB74D),
+                    featureId: 'perapp.scheduler_clamps',
                   ),
                   const SizedBox(height: 14),
                   _choice(
@@ -1221,6 +1226,7 @@ class _PerAppEditorState extends State<_PerAppEditor> {
                     title: 'Frame scheduler',
                     icon: Icons.speed_rounded,
                     accent: Color(0xFF4FC3F7),
+                    featureId: 'perapp.frame_scheduler',
                   ),
                   const SizedBox(height: 14),
                   Row(
@@ -1547,33 +1553,63 @@ class _PerAppSectionTitle extends StatelessWidget {
     required this.title,
     required this.icon,
     required this.accent,
+    this.featureId,
   });
   final String title;
   final IconData icon;
   final Color accent;
+  final String? featureId;
   @override
-  Widget build(BuildContext context) => Row(
-    children: <Widget>[
-      Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          color: accent.withValues(alpha: 0.065),
-          borderRadius: BorderRadius.circular(9),
+  Widget build(BuildContext context) {
+    final String? id = featureId;
+    final FeatureDescription? entry =
+        id == null ? null : kFeatureDescriptions[id];
+    final Row row = Row(
+      children: <Widget>[
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.065),
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Icon(icon, color: accent, size: 18),
         ),
-        child: Icon(icon, color: accent, size: 18),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Text(
-          title,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -0.2,
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.2,
+            ),
           ),
         ),
-      ),
-    ],
-  );
+        if (entry != null)
+          IconButton(
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.info_outline_rounded, size: 18),
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+            tooltip: 'About ${entry.title}',
+            onPressed: () => showFeatureDescriptionSheet(context, id!),
+          ),
+      ],
+    );
+    if (entry == null) return row;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        row,
+        const SizedBox(height: 2),
+        Text(
+          entry.short,
+          style: TextStyle(
+            fontSize: 11.5,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
 }
