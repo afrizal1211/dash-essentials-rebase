@@ -94,6 +94,14 @@ public final class DashActivity extends NativeActivity {
         FpsOverlayService.applyConfig(this, scaleMilli, opacity, radiusMilli, accent, perGame != 0);
         return true;
     }
+
+    /**
+     * Pushes the auto-show gate from native FFI.
+     */
+    public boolean configFpsOverlayAuto(String packagesCsv, int autoOnly) {
+        FpsOverlayService.applyAutoConfig(this, packagesCsv, autoOnly != 0);
+        return true;
+    }
     public boolean hasFpsOverlayPermission() {
         return FpsOverlayService.canDraw(this);
     }

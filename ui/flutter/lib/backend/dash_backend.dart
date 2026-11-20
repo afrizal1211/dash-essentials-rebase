@@ -24,6 +24,9 @@ typedef _BackListenerDart =
 typedef _BackupBytesNative =
     ffi.Int32 Function(ffi.Pointer<ffi.Uint8>, ffi.Int32);
 typedef _BackupBytesDart = int Function(ffi.Pointer<ffi.Uint8>, int);
+typedef _OverlayAutoNative =
+    ffi.Int32 Function(ffi.Pointer<ffi.Uint8>, ffi.Int32, ffi.Int32);
+typedef _OverlayAutoDart = int Function(ffi.Pointer<ffi.Uint8>, int, int);
 typedef _MallocNative = ffi.Pointer<ffi.Void> Function(ffi.IntPtr);
 typedef _Malloc = ffi.Pointer<ffi.Void> Function(int);
 typedef _FreeNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
@@ -261,6 +264,7 @@ final class DashBackend {
   _BackupBytesDart? _backupExportNative;
   _BackupBytesDart? _backupShareNative;
   _BackupBytesDart? _backupPathExistsNative;
+  _OverlayAutoDart? _fpsOverlayAutoNative;
   ffi.NativeCallable<_BackEventNative>? _backListener;
 
   DashBackendSnapshot _latest = const DashBackendSnapshot(
@@ -552,6 +556,12 @@ final class DashBackend {
         _fpsOverlayConfigNative = lib
             .lookupFunction<_OverlayConfigNative, _OverlayConfigDart>(
               'dash_host_fps_overlay_config',
+            );
+      }
+      if (lib.providesSymbol('dash_host_fps_overlay_auto')) {
+        _fpsOverlayAutoNative = lib
+            .lookupFunction<_OverlayAutoNative, _OverlayAutoDart>(
+              'dash_host_fps_overlay_auto',
             );
       }
 
@@ -1162,6 +1172,28 @@ final class DashBackend {
           perGame ? 1 : 0,
         ) ==
         1;
+  }
+
+  /// Persists the auto-show gate for the overlay service. The empty case
+  /// passes a null buffer with length zero; the native side reads it as "".
+  bool setFpsOverlayAuto({
+    required bool autoOnly,
+    required List<String> packages,
+  }) {
+    if (!_started) return false;
+    final Uint8List bytes = Uint8List.fromList(utf8.encode(packages.join(',')));
+    final ffi.Pointer<ffi.Uint8> buffer =
+        bytes.isEmpty ? ffi.nullptr : _backupCopyOut(bytes);
+    try {
+      return _fpsOverlayAutoNative?.call(
+            buffer,
+            bytes.length,
+            autoOnly ? 1 : 0,
+          ) ==
+          1;
+    } finally {
+      if (buffer != ffi.nullptr) _backupRelease(buffer);
+    }
   }
 
   void refresh() {

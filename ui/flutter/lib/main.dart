@@ -624,6 +624,14 @@ class _DashShellState extends State<DashShell>
       accent: config.activeAccent.toARGB32(),
       perGame: config.fpsOverlayPerGamePosition,
     );
+    _pushFpsOverlayAuto(config);
+  }
+
+  void _pushFpsOverlayAuto(DashAppearanceConfig config) {
+    DashBackend.instance.setFpsOverlayAuto(
+      autoOnly: config.fpsOverlayAutoOnly,
+      packages: config.fpsOverlayAutoPackages,
+    );
   }
 
   void _setFpsOverlayScale(double value) {

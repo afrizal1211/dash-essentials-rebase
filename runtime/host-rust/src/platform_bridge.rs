@@ -480,6 +480,37 @@ pub extern "C" fn dash_host_backup_import() -> i32 {
     .is_some() as i32
 }
 
+/// Pushes the overlay auto-show gate (comma-separated packages, flag) into the
+/// service prefs. A UTF-8 buffer keeps the selection opaque to this bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn dash_host_fps_overlay_auto(
+    packages: *const u8,
+    len: i32,
+    auto_only: i32,
+) -> i32 {
+    if len < 0 || len as usize > MAX_BACKUP_LEN || (len > 0 && packages.is_null()) {
+        return 0;
+    }
+    let text = if len == 0 {
+        std::borrow::Cow::Borrowed("")
+    } else {
+        String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(packages, len as usize) })
+    };
+    i32::from(
+        with_activity(|env, activity| {
+            let csv = env.new_string(text.as_ref())?;
+            env.call_method(
+                activity,
+                "configFpsOverlayAuto",
+                "(Ljava/lang/String;I)Z",
+                &[JValue::Object(&csv), JValue::Int(auto_only)],
+            )?
+            .z()
+        })
+        .unwrap_or(false),
+    )
+}
+
 /// Shares the exported file through `DashActivity.shareBackup`.
 #[unsafe(no_mangle)]
 pub extern "C" fn dash_host_backup_share(path: *const u8, len: i32) -> i32 {
