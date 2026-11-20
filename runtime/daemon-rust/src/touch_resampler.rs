@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Once;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::Duration;
 
 static TARGET_HZ: AtomicI32 = AtomicI32::new(0);
