@@ -1,5 +1,5 @@
-use std::sync::Once;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Once;
 use std::time::Duration;
 
 static TARGET_HZ: AtomicI32 = AtomicI32::new(0);
@@ -377,9 +377,11 @@ mod android {
             return direct_output_handle().map(|(file, path)| (file, path, 2, None));
         }
 
-        if let Some(pid) = touch_service_pid()
-            && let Ok((file, path)) = service_output_handle(pid)
-        {
+        let pid = match touch_service_pid() {
+            Some(pid) => pid,
+            None => return Err(-1),
+        };
+        if let Ok((file, path)) = service_output_handle(pid) {
             return Ok((file, path, 1, Some(pid)));
         }
 
@@ -492,7 +494,9 @@ mod android {
 
     fn parse_events(bytes: &[u8]) -> impl Iterator<Item = InputEvent> + '_ {
         bytes
-            .chunks_exact(size_of::<InputEvent>())
+            .as_chunks::<{ size_of::<InputEvent>() }>()
+            .0
+            .iter()
             .map(|chunk| unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<InputEvent>()) })
     }
 
@@ -639,9 +643,8 @@ mod android {
             }
 
             if now >= service_check {
-                if let Some(pid) = service_pid
-                    && touch_service_pid() != Some(pid)
-                {
+                let stale = service_pid.is_none() || touch_service_pid() != service_pid;
+                if stale {
                     return Err(-9);
                 }
                 if !Path::new(&path).exists() {

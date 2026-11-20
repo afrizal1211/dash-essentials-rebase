@@ -483,11 +483,7 @@ pub extern "C" fn dash_host_backup_import() -> i32 {
 /// Pushes the overlay auto-show gate (comma-separated packages, flag) into the
 /// service prefs. A UTF-8 buffer keeps the selection opaque to this bridge.
 #[unsafe(no_mangle)]
-pub extern "C" fn dash_host_fps_overlay_auto(
-    packages: *const u8,
-    len: i32,
-    auto_only: i32,
-) -> i32 {
+pub extern "C" fn dash_host_fps_overlay_auto(packages: *const u8, len: i32, auto_only: i32) -> i32 {
     if len < 0 || len as usize > MAX_BACKUP_LEN || (len > 0 && packages.is_null()) {
         return 0;
     }
