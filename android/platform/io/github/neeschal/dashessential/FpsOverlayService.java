@@ -487,27 +487,27 @@ public final class FpsOverlayService extends Service {
      */
     private static void render(TextView view, String payload) {
         long scaled = 0;
-        String pkg = "";
+        int cpuLoad = 0;
         int gpu = 0;
-        int gpuMhz = 0;
-        int cpuMhz = 0;
-        int tempDeciC = 0;
+        int ramUsedMb = 0;
+        int ramTotalMb = 0;
+        int batteryLevel = 0;
+        boolean hasCpuLoad = false;
         boolean hasGpu = false;
-        boolean hasGpuMhz = false;
-        boolean hasCpuMhz = false;
-        boolean hasTemp = false;
+        boolean hasRam = false;
+        boolean hasBattery = false;
         try {
             JSONObject snapshot = new JSONObject(payload == null ? "{}" : payload);
             scaled = Math.round(snapshot.optDouble("fps", 0.0) * 100.0);
-            pkg = packageOf(payload);
+            hasCpuLoad = snapshot.has("cpuLoad");
             hasGpu = snapshot.has("gpuUtil");
-            hasGpuMhz = snapshot.has("gpuMHz");
-            hasCpuMhz = snapshot.has("cpuMHz");
-            hasTemp = snapshot.has("tempDeciC");
+            hasRam = snapshot.has("ramUsedMb") && snapshot.has("ramTotalMb");
+            hasBattery = snapshot.has("batteryLevel");
+            cpuLoad = snapshot.optInt("cpuLoad", 0);
             gpu = snapshot.optInt("gpuUtil", 0);
-            gpuMhz = snapshot.optInt("gpuMHz", 0);
-            cpuMhz = snapshot.optInt("cpuMHz", 0);
-            tempDeciC = snapshot.optInt("tempDeciC", 0);
+            ramUsedMb = snapshot.optInt("ramUsedMb", 0);
+            ramTotalMb = snapshot.optInt("ramTotalMb", 0);
+            batteryLevel = snapshot.optInt("batteryLevel", 0);
         } catch (JSONException malformed) {
             // A daemon that is away answers "{}"; the chip shows a dash.
         }
@@ -518,36 +518,31 @@ public final class FpsOverlayService extends Service {
             ? Math.round(scaled / 100.0) + " FPS" : "FPS \u2014");
         text.setSpan(new RelativeSizeSpan(1.35f), start, text.length(), SPAN);
         text.setSpan(new StyleSpan(Typeface.BOLD), start, text.length(), SPAN);
-        if (hasTemp && tempDeciC > 0) {
-            text.append("  ");
-            int tempStart = text.length();
-            text.append(Math.round(tempDeciC / 10.0) + "\u00b0C");
-            text.setSpan(new RelativeSizeSpan(0.8f), tempStart, text.length(), SPAN);
+        StringBuilder metrics = new StringBuilder();
+        if (hasCpuLoad) {
+            metrics.append("CPU ").append(cpuLoad).append('%');
         }
-        if ((hasGpu && gpu > 0) || (hasGpuMhz && gpuMhz > 0)
-                || (hasCpuMhz && cpuMhz > 0)) {
-            text.append('\n');
+        if (hasGpu) {
+            if (metrics.length() > 0) metrics.append(" \u00b7 ");
+            metrics.append("GPU ").append(gpu).append('%');
+        }
+        if (hasRam && ramTotalMb > 0) {
+            if (metrics.length() > 0) metrics.append(" \u00b7 ");
+            metrics.append("RAM ")
+                .append(Math.round(ramUsedMb * 100f / ramTotalMb))
+                .append('%');
+        }
+        if (hasBattery) {
+            if (metrics.length() > 0) metrics.append(" \u00b7 ");
+            metrics.append("BAT ").append(batteryLevel).append('%');
+        }
+        if (metrics.length() > 0) {
+            text.append(" \u00b7 ");
             int detailStart = text.length();
-            if (hasGpu) text.append("GPU ").append(Integer.toString(gpu)).append('%');
-            if (hasGpuMhz && gpuMhz > 0) {
-                if (text.length() > detailStart) text.append(' ');
-                text.append(Integer.toString(gpuMhz)).append(" MHz");
-            }
-            if (hasCpuMhz && cpuMhz > 0) {
-                if (text.length() > detailStart) text.append(" \u00b7");
-                text.append(" CPU ").append(Integer.toString(cpuMhz)).append(" MHz");
-            }
+            text.append(metrics);
             text.setSpan(new RelativeSizeSpan(0.68f), detailStart, text.length(), SPAN);
             text.setSpan(
                 new ForegroundColorSpan(0xFFA8B8C4), detailStart, text.length(), SPAN);
-        }
-        if (!pkg.isEmpty()) {
-            text.append('\n');
-            int pkgStart = text.length();
-            text.append(pkg);
-            text.setSpan(new RelativeSizeSpan(0.62f), pkgStart, text.length(), SPAN);
-            text.setSpan(
-                new ForegroundColorSpan(0xFF7E8E9A), pkgStart, text.length(), SPAN);
         }
         view.setText(text);
     }
