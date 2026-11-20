@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use crate::telemetry::Telemetry;
+
 /// Nodes that carry an aggregate FPS for the current scene, best first.
 const AGGREGATE_NODES: &[&str] = &[
     "/sys/kernel/fpsgo/fps_info",
@@ -473,33 +475,6 @@ fn foreground_package() -> Option<String> {
         .or_else(crate::app_runtime::foreground_package)
 }
 
-/// The fastest online CPU in MHz. The overlay shows one clock, not eight; the
-/// prime core is the one that moves when a game starts or throttles.
-fn cpu_mhz() -> i32 {
-    // Probe /sys/devices/system/cpu/present instead of assuming 8 cores:
-    // the MT6991 topology differs from the Rodin's and the count changes
-    // with core_ctl hotplug.
-    let count = std::fs::read_to_string("/sys/devices/system/cpu/present")
-        .ok()
-        .and_then(|s| {
-            s.trim()
-                .split('-')
-                .next_back()
-                .and_then(|last| last.trim().parse::<u32>().ok().map(|n| n + 1))
-        })
-        .unwrap_or(8);
-    (0..count as usize)
-        .filter_map(|cpu| crate::cpu_freq(cpu).trim().parse::<i32>().ok())
-        .max()
-        .map(|khz| khz / 1000)
-        .unwrap_or(0)
-}
-
-/// Battery temperature in tenths of a degree, `0` when the ROM hides it.
-fn battery_temp_deci_c() -> i32 {
-    crate::battery("temp").trim().parse().unwrap_or(0)
-}
-
 /// Reads the foreground FPS once, together with the package it belongs to.
 /// Never blocks on the runtime lock and never invents a value when no node
 /// answers.
@@ -533,22 +508,41 @@ fn read_for(foreground: Option<&str>) -> FpsReading {
 /// `valid`.
 pub(super) fn overlay_json() -> serde_json::Value {
     let (reading, package) = read_with_package();
-    let mut object = match serde_json::to_value(&reading) {
+    // No package argument: the chip shows the device RAM share, and a package
+    // would run `pidof` on the IPC thread for a value nobody reads.
+    let telemetry = crate::telemetry::sample(None);
+    overlay_json_with(&reading, package.as_deref(), telemetry)
+}
+
+/// Merges one sample's sensors into the frame reading. Taking the sample as a
+/// value keeps the key contract testable without sysfs.
+fn overlay_json_with(
+    reading: &FpsReading,
+    package: Option<&str>,
+    telemetry: Telemetry,
+) -> serde_json::Value {
+    let mut object = match serde_json::to_value(reading) {
         Ok(serde_json::Value::Object(object)) => object,
         _ => serde_json::Map::new(),
     };
     object.insert(
         "package".into(),
-        package.map_or(serde_json::Value::Null, serde_json::Value::String),
+        package.map_or(serde_json::Value::Null, |name| {
+            serde_json::Value::String(name.to_string())
+        }),
     );
-    // Zero is "the node said zero" for the GPU load, but a missing node also
-    // reads as zero. The sensors are omitted in that case; the FPS reading
-    // itself is never hidden because `valid` already carries that signal.
+    // Zero is "the node said zero" for loads, but a missing node also reads as
+    // zero. The sensors are omitted in that case; `valid` already carries the
+    // frame-reading signal.
     for (key, value) in [
-        ("gpuUtil", crate::gpu_get_loading()),
-        ("gpuMHz", crate::gpu_get_cur_freq_mhz()),
-        ("cpuMHz", cpu_mhz()),
-        ("tempDeciC", battery_temp_deci_c()),
+        ("gpuUtil", telemetry.gpu_load),
+        ("gpuMHz", telemetry.gpu_mhz),
+        ("cpuMHz", telemetry.cpu_mhz),
+        ("tempDeciC", telemetry.battery_temp_dc),
+        ("cpuLoad", telemetry.cpu_load),
+        ("ramUsedMb", telemetry.ram_used_mb),
+        ("ramTotalMb", telemetry.ram_total_mb),
+        ("batteryLevel", telemetry.battery_level),
     ] {
         if value > 0 {
             object.insert(key.into(), serde_json::json!(value));
@@ -560,6 +554,52 @@ pub(super) fn overlay_json() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_overlay_carries_every_sensor_the_sample_has() {
+        let telemetry = Telemetry {
+            cpu_load: 42,
+            gpu_load: 55,
+            gpu_mhz: 890,
+            cpu_mhz: 2200,
+            battery_temp_dc: 430,
+            battery_level: 85,
+            ram_used_mb: 6144,
+            ram_total_mb: 12288,
+            ..Default::default()
+        };
+        let value = overlay_json_with(&FpsReading::unavailable(), Some("com.game"), telemetry);
+        assert_eq!(value["package"], "com.game");
+        assert_eq!(value["cpuLoad"], 42);
+        assert_eq!(value["gpuUtil"], 55);
+        assert_eq!(value["gpuMHz"], 890);
+        assert_eq!(value["cpuMHz"], 2200);
+        assert_eq!(value["tempDeciC"], 430);
+        assert_eq!(value["ramUsedMb"], 6144);
+        assert_eq!(value["ramTotalMb"], 12288);
+        assert_eq!(value["batteryLevel"], 85);
+        // The frame reading keys still travel with the sensors.
+        assert!(value.get("valid").is_some());
+        assert!(value.get("fps").is_some());
+    }
+
+    #[test]
+    fn a_sensor_that_did_not_answer_is_omitted_not_zero() {
+        let value = overlay_json_with(&FpsReading::unavailable(), None, Telemetry::default());
+        for key in [
+            "gpuUtil",
+            "gpuMHz",
+            "cpuMHz",
+            "tempDeciC",
+            "cpuLoad",
+            "ramUsedMb",
+            "ramTotalMb",
+            "batteryLevel",
+        ] {
+            assert!(value.get(key).is_none(), "{key} must be omitted");
+        }
+        assert!(value.get("package").is_some_and(serde_json::Value::is_null));
+    }
 
     #[test]
     fn reads_key_value_aggregate() {

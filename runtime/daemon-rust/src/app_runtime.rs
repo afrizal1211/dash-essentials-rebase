@@ -2256,7 +2256,16 @@ mod tests {
         // (possibly null); a sensor the ROM hides is omitted rather than
         // reported as a fake zero.
         assert!(value.get("package").is_some());
-        for key in ["gpuUtil", "gpuMHz", "cpuMHz", "tempDeciC"] {
+        for key in [
+            "gpuUtil",
+            "gpuMHz",
+            "cpuMHz",
+            "tempDeciC",
+            "cpuLoad",
+            "ramUsedMb",
+            "ramTotalMb",
+            "batteryLevel",
+        ] {
             if let Some(field) = value.get(key) {
                 assert!(field.as_i64().is_some(), "{key} must stay numeric");
             }
