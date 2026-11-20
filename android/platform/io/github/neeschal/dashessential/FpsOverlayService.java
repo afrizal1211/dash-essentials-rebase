@@ -98,6 +98,12 @@ public final class FpsOverlayService extends Service {
     /** Whether each game gets its own remembered position. */
     private boolean perGame = true;
 
+    /** Whether the chip is limited to the selected apps. */
+    private boolean autoOnly;
+    private final java.util.Set<String> autoPackages = new java.util.HashSet<>();
+    /** The package the last tick saw in front. */
+    private String livePackage = "";
+
     private final Map<String, int[]> perGamePositions = new HashMap<>();
 
     static int setEnabled(Context context, boolean enabled) {
@@ -132,9 +138,13 @@ public final class FpsOverlayService extends Service {
             }
             final String payload = nativeSnapshot();
             main.post(() -> {
-                if (chip != null) {
-                    render(chip, payload);
-                    followForeground(packageOf(payload));
+                livePackage = packageOf(payload);
+                if (shouldShow(livePackage)) {
+                    attachWindow(livePackage);
+                    if (chip != null) render(chip, payload);
+                    if (attached) followForeground(livePackage);
+                } else {
+                    detachWindow();
                 }
             });
             Handler handler = workerHandler;
@@ -191,6 +201,15 @@ public final class FpsOverlayService extends Service {
             .build();
     }
 
+    /**
+     * Limits the overlay to the selected apps. When armed, the chip is visible
+     * only while the foreground package is in the chosen set; an empty
+     * selection hides the chip. The selection survives the service being
+     * stopped.
+     */
+    private static final String KEY_AUTO_ONLY = "auto_only";
+    private static final String KEY_AUTO_PACKAGES = "auto_packages";
+
     // The platform dex is compiled without an R class (aapt2 owns resource
     // ids), so the icon is resolved by name.
     private int icon() {
@@ -225,10 +244,33 @@ public final class FpsOverlayService extends Service {
         if (live != null) live.main.post(live::reloadStyle);
     }
 
+    /**
+     * Stores the auto-show gate. The selection is a comma-separated package
+     * list: package names cannot contain commas, and the service and the wire
+     * format then use the same string.
+     */
+    static void applyAutoConfig(Context context, String packagesCsv, boolean autoOnly) {
+        java.util.LinkedHashSet<String> clean = new java.util.LinkedHashSet<>();
+        if (packagesCsv != null) {
+            for (String pkg : packagesCsv.split(",")) {
+                if (!pkg.trim().isEmpty()) clean.add(pkg.trim());
+            }
+        }
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_AUTO_ONLY, autoOnly)
+            .putString(KEY_AUTO_PACKAGES, String.join(",", clean))
+            .apply();
+        FpsOverlayService live = current;
+        if (live != null) live.main.post(live::reloadStyle);
+    }
+
     /** Drains a changed config into the visible chip without restarting it. */
     private void reloadStyle() {
         loadConfig();
         applyStyle();
+        if (shouldShow(livePackage)) attachWindow(livePackage);
+        else detachWindow();
     }
 
     private void loadConfig() {
@@ -238,6 +280,11 @@ public final class FpsOverlayService extends Service {
         radius = p.getFloat(KEY_RADIUS, DEFAULT_RADIUS);
         accentColor = p.getInt(KEY_ACCENT, DEFAULT_ACCENT);
         perGame = p.getBoolean(KEY_PER_GAME, true);
+        autoOnly = p.getBoolean(KEY_AUTO_ONLY, false);
+        autoPackages.clear();
+        for (String pkg : p.getString(KEY_AUTO_PACKAGES, "").split(",")) {
+            if (!pkg.trim().isEmpty()) autoPackages.add(pkg.trim());
+        }
         perGamePositions.clear();
         try {
             JSONObject positions = new JSONObject(p.getString(KEY_POSITIONS, "{}"));
@@ -258,19 +305,8 @@ public final class FpsOverlayService extends Service {
             stopSelf();
             return;
         }
-        if (chip == null) chip = buildChip();
-        if (!attached) {
-            try {
-                params = buildParams();
-                windowManager.addView(chip, params);
-                attached = true;
-                installDragListener();
-            } catch (RuntimeException refused) {
-                stopSelf();
-                return;
-            }
-        } else {
-            applyStyle();
+        if (!autoOnly) {
+            attachWindow(prefs().getString(KEY_POS_PACKAGE, ""));
         }
         if (worker == null) {
             worker = new HandlerThread("fps-overlay");
@@ -280,20 +316,44 @@ public final class FpsOverlayService extends Service {
         }
     }
 
+    private void attachWindow(String pkg) {
+        if (attached || windowManager == null) return;
+        if (chip == null) {
+            chip = buildChip();
+            installDragListener();
+        }
+        if (!pkg.equals(positionedPackage)) {
+            positionedPackage = pkg;
+            prefs().edit().putString(KEY_POS_PACKAGE, pkg).apply();
+        }
+        params = buildParams();
+        try {
+            windowManager.addView(chip, params);
+            attached = true;
+        } catch (RuntimeException refused) {
+            stopSelf();
+        }
+    }
+
+    /** Removes only the window; the sampler keeps answering 500 ms ticks. */
+    private void detachWindow() {
+        if (!attached || chip == null || windowManager == null) return;
+        try {
+            windowManager.removeView(chip);
+        } catch (IllegalArgumentException alreadyGone) {
+            // The window manager can drop the view first on process death.
+        }
+        attached = false;
+        params = null;
+    }
+
     private void hide() {
         if (worker != null) {
             worker.quitSafely();
             worker = null;
             workerHandler = null;
         }
-        if (attached && chip != null && windowManager != null) {
-            try {
-                windowManager.removeView(chip);
-            } catch (IllegalArgumentException alreadyGone) {
-                // The window manager can drop the view first on process death.
-            }
-            attached = false;
-        }
+        detachWindow();
     }
 
     private WindowManager.LayoutParams buildParams() {
@@ -312,8 +372,7 @@ public final class FpsOverlayService extends Service {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-        positionedPackage = prefs().getString(KEY_POS_PACKAGE, "");
-        int[] saved = (!perGame || positionedPackage.isEmpty())
+        positionedPackage = prefs().getString(KEY_POS_PACKAGE, "");        int[] saved = (!perGame || positionedPackage.isEmpty())
             ? null : perGamePositions.get(positionedPackage);
         if (saved != null) {
             lp.x = saved[0];
