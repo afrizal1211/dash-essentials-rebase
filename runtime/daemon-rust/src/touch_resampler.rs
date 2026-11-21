@@ -377,11 +377,9 @@ mod android {
             return direct_output_handle().map(|(file, path)| (file, path, 2, None));
         }
 
-        let pid = match touch_service_pid() {
-            Some(pid) => pid,
-            None => return Err(-1),
-        };
-        if let Ok((file, path)) = service_output_handle(pid) {
+        if let Some((pid, Ok((file, path)))) =
+            touch_service_pid().map(|pid| (pid, service_output_handle(pid)))
+        {
             return Ok((file, path, 1, Some(pid)));
         }
 
@@ -643,8 +641,7 @@ mod android {
             }
 
             if now >= service_check {
-                let stale = service_pid.is_none() || touch_service_pid() != service_pid;
-                if stale {
+                if service_pid.is_some() && touch_service_pid() != service_pid {
                     return Err(-9);
                 }
                 if !Path::new(&path).exists() {

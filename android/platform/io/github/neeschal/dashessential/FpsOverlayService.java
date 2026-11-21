@@ -300,6 +300,12 @@ public final class FpsOverlayService extends Service {
 
     // ─── Window ─────────────────────────────────────────────────────────────
 
+    /** Auto mode narrows visibility; an empty selection hides the chip. */
+    private boolean shouldShow(String pkg) {
+        return !autoOnly || (pkg != null
+            && !pkg.isEmpty() && autoPackages.contains(pkg));
+    }
+
     private void show() {
         if (!canDraw(this) || windowManager == null) {
             stopSelf();
