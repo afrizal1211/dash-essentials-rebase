@@ -6,6 +6,15 @@ The sections below `## 1.18.5` are the upstream Rodin Essential release
 history, kept verbatim as the record of the project this tree is a port of.
 The port's own changes are at the top.
 
+## 1.23.17
+### Added
+- FPS overlay: the chip now shows FPS, CPU, GPU, RAM and battery on one
+  compact line. Temperature and package name leave the chip but stay in
+  FPS history.
+- FPS overlay can follow selected apps. Turn on "Only selected apps" in
+  appearance settings, pick the games, and the overlay shows itself only
+  while one of them is in front.
+
 ## 1.23.16
 
 ### Added
