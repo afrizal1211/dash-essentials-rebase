@@ -660,6 +660,101 @@ class _DashShellState extends State<DashShell>
     _persistAppearance();
   }
 
+  void _setFpsOverlayAutoOnly(bool value) {
+    _appearance.value = _appearance.value.copyWith(fpsOverlayAutoOnly: value);
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  void _setFpsOverlayAutoPackages(List<String> packages) {
+    _appearance.value = _appearance.value.copyWith(
+      fpsOverlayAutoPackages: List<String>.unmodifiable(packages),
+    );
+    _pushFpsOverlayStyle(_appearance.value);
+    _persistAppearance();
+  }
+
+  Future<void> _pickFpsOverlayApps() async {
+    final List<Map<String, dynamic>> apps;
+    try {
+      final dynamic reply = await PerAppBackend.instance.command('GET app.list');
+      apps = (reply as List)
+          .map((dynamic app) => Map<String, dynamic>.from(app as Map))
+          .where((Map<String, dynamic> app) => app['launchable'] != false)
+          .toList()
+        ..sort(
+          (Map<String, dynamic> a, Map<String, dynamic> b) =>
+              '${a['label'] ?? a['package']}'.toLowerCase().compareTo(
+                '${b['label'] ?? b['package']}'.toLowerCase(),
+              ),
+        );
+    } catch (_) {
+      _fpsOverlayNotice(
+        'The installed-app list is unavailable. Is the daemon running?',
+      );
+      return;
+    }
+    if (!mounted) return;
+    final Set<String> selected = <String>{
+      ..._appearance.value.fpsOverlayAutoPackages,
+    };
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => StatefulBuilder(
+        builder: (BuildContext context, StateSetter setDialogState) {
+          return AlertDialog(
+            title: const Text('Overlay apps'),
+            content: SizedBox(
+              width: double.maxFinite,
+              height: 420,
+              child: ListView.builder(
+                itemCount: apps.length,
+                itemBuilder: (BuildContext context, int index) {
+                  final Map<String, dynamic> app = apps[index];
+                  final String package = '${app['package']}';
+                  return CheckboxListTile(
+                    dense: true,
+                    value: selected.contains(package),
+                    title: Text(
+                      '${app['label'] ?? package}',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    subtitle: Text(
+                      package,
+                      style: const TextStyle(fontSize: 10.5),
+                    ),
+                    onChanged: (bool? checked) {
+                      setDialogState(() {
+                        if (checked == true) {
+                          selected.add(package);
+                        } else {
+                          selected.remove(package);
+                        }
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _setFpsOverlayAutoPackages(selected.toList()..sort());
+                },
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
   void _setFpsRecord(bool value) {
     _appearance.value = _appearance.value.copyWith(fpsRecord: value);
     _persistAppearance();
@@ -1024,6 +1119,9 @@ class _DashShellState extends State<DashShell>
                   onFpsOverlayRadiusChanged: _setFpsOverlayRadius,
                   onFpsOverlayPerGamePositionChanged:
                       _setFpsOverlayPerGamePosition,
+                  onFpsOverlayAutoOnlyChanged: _setFpsOverlayAutoOnly,
+                  onFpsOverlayAutoPackagesChanged: _setFpsOverlayAutoPackages,
+                  onPickFpsOverlayApps: _pickFpsOverlayApps,
                   onFpsRecordChanged: _setFpsRecord,
                   onFpsAutoChanged: _setFpsAuto,
                   onOpenFpsHistory: _openFpsHistory,
@@ -1281,6 +1379,8 @@ class DashAppearanceConfig {
     this.fpsOverlayOpacity = 0.85,
     this.fpsOverlayRadius = 10.0,
     this.fpsOverlayPerGamePosition = true,
+    this.fpsOverlayAutoOnly = false,
+    this.fpsOverlayAutoPackages = const <String>[],
     this.fpsRecord = false,
     this.fpsAuto = false,
     this.statusNotification = false,
@@ -1302,6 +1402,8 @@ class DashAppearanceConfig {
       fpsOverlayOpacity = 0.85,
       fpsOverlayRadius = 10.0,
       fpsOverlayPerGamePosition = true,
+      fpsOverlayAutoOnly = false,
+      fpsOverlayAutoPackages = const <String>[],
       fpsRecord = false,
       fpsAuto = false,
       statusNotification = false;
@@ -1321,6 +1423,9 @@ class DashAppearanceConfig {
   final double fpsOverlayOpacity;
   final double fpsOverlayRadius;
   final bool fpsOverlayPerGamePosition;
+  /// When true the overlay is visible only while a selected app is in front.
+  final bool fpsOverlayAutoOnly;
+  final List<String> fpsOverlayAutoPackages;
   final bool fpsRecord;
 
   /// Automatic recording follows the foreground app instead of the switch.
@@ -1367,6 +1472,8 @@ class DashAppearanceConfig {
     double? fpsOverlayOpacity,
     double? fpsOverlayRadius,
     bool? fpsOverlayPerGamePosition,
+    bool? fpsOverlayAutoOnly,
+    List<String>? fpsOverlayAutoPackages,
     bool? fpsRecord,
     bool? fpsAuto,
     bool? statusNotification,
@@ -1388,6 +1495,9 @@ class DashAppearanceConfig {
       fpsOverlayRadius: fpsOverlayRadius ?? this.fpsOverlayRadius,
       fpsOverlayPerGamePosition:
           fpsOverlayPerGamePosition ?? this.fpsOverlayPerGamePosition,
+      fpsOverlayAutoOnly: fpsOverlayAutoOnly ?? this.fpsOverlayAutoOnly,
+      fpsOverlayAutoPackages:
+          fpsOverlayAutoPackages ?? this.fpsOverlayAutoPackages,
       fpsRecord: fpsRecord ?? this.fpsRecord,
       fpsAuto: fpsAuto ?? this.fpsAuto,
       statusNotification: statusNotification ?? this.statusNotification,
@@ -1411,6 +1521,8 @@ class DashAppearanceConfig {
       'fpsOverlayOpacity': fpsOverlayOpacity,
       'fpsOverlayRadius': fpsOverlayRadius,
       'fpsOverlayPerGamePosition': fpsOverlayPerGamePosition,
+      'fpsOverlayAutoOnly': fpsOverlayAutoOnly,
+      'fpsOverlayAutoPackages': fpsOverlayAutoPackages,
       'fpsRecord': fpsRecord,
       'fpsAuto': fpsAuto,
       'statusNotification': statusNotification,
@@ -1457,6 +1569,13 @@ class DashAppearanceConfig {
         );
     final bool fpsOverlayPerGamePosition =
         raw['fpsOverlayPerGamePosition'] as bool? ?? true;
+    final bool fpsOverlayAutoOnly =
+        raw['fpsOverlayAutoOnly'] as bool? ?? false;
+    final List<String> fpsOverlayAutoPackages =
+        (raw['fpsOverlayAutoPackages'] as List?)
+            ?.whereType<String>()
+            .toList(growable: false) ??
+        const <String>[];
     final bool fpsRecord = raw['fpsRecord'] as bool? ?? false;
     final bool fpsAuto = raw['fpsAuto'] as bool? ?? false;
     final bool statusNotification = raw['statusNotification'] as bool? ?? false;
@@ -1477,6 +1596,8 @@ class DashAppearanceConfig {
       fpsOverlayOpacity: fpsOverlayOpacity,
       fpsOverlayRadius: fpsOverlayRadius,
       fpsOverlayPerGamePosition: fpsOverlayPerGamePosition,
+      fpsOverlayAutoOnly: fpsOverlayAutoOnly,
+      fpsOverlayAutoPackages: fpsOverlayAutoPackages,
       fpsRecord: fpsRecord,
       fpsAuto: fpsAuto,
       statusNotification: statusNotification,
@@ -2165,6 +2286,9 @@ class SettingsScreen extends StatefulWidget {
     required this.onFpsOverlayOpacityChanged,
     required this.onFpsOverlayRadiusChanged,
     required this.onFpsOverlayPerGamePositionChanged,
+    required this.onFpsOverlayAutoOnlyChanged,
+    required this.onFpsOverlayAutoPackagesChanged,
+    required this.onPickFpsOverlayApps,
     required this.onFpsRecordChanged,
     required this.onFpsAutoChanged,
     required this.onOpenFpsHistory,
@@ -2192,6 +2316,9 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<double> onFpsOverlayOpacityChanged;
   final ValueChanged<double> onFpsOverlayRadiusChanged;
   final ValueChanged<bool> onFpsOverlayPerGamePositionChanged;
+  final ValueChanged<bool> onFpsOverlayAutoOnlyChanged;
+  final ValueChanged<List<String>> onFpsOverlayAutoPackagesChanged;
+  final VoidCallback onPickFpsOverlayApps;
   final ValueChanged<bool> onFpsRecordChanged;
   final ValueChanged<bool> onFpsAutoChanged;
   final VoidCallback onOpenFpsHistory;
@@ -3209,6 +3336,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: config.fpsOverlayPerGamePosition,
                 onChanged: widget.onFpsOverlayPerGamePositionChanged,
               ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Only selected apps'),
+                subtitle: const Text(
+                  'Show the overlay only while one of these apps is in front.',
+                ),
+                value: config.fpsOverlayAutoOnly,
+                onChanged: config.fpsOverlay
+                    ? (bool enabled) {
+                        widget.onFpsOverlayAutoOnlyChanged(enabled);
+                        DashHaptics.tap();
+                      }
+                    : null,
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                enabled: config.fpsOverlay && config.fpsOverlayAutoOnly,
+                title: const Text('Overlay apps'),
+                subtitle: Text(
+                  config.fpsOverlayAutoPackages.isEmpty
+                      ? 'No apps selected'
+                      : '${config.fpsOverlayAutoPackages.length} selected',
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded, size: 20),
+                onTap: config.fpsOverlay && config.fpsOverlayAutoOnly
+                    ? widget.onPickFpsOverlayApps
+                    : null,
+              ),
+              if (config.fpsOverlay &&
+                  config.fpsOverlayAutoOnly &&
+                  config.fpsOverlayAutoPackages.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    'The overlay stays hidden until at least one app is '
+                    'selected.',
+                    style: TextStyle(
+                      fontSize: 11.2,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
               const Divider(height: 20),
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
