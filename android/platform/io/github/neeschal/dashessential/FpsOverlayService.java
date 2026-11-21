@@ -21,7 +21,6 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
-import android.text.style.ForegroundColorSpan;
 import android.text.style.RelativeSizeSpan;
 import android.text.style.StyleSpan;
 import android.util.TypedValue;
@@ -100,9 +99,7 @@ public final class FpsOverlayService extends Service {
 
     /** Whether the chip is limited to the selected apps. */
     private boolean autoOnly;
-    private final java.util.Set<String> autoPackages = new java.util.HashSet<>();
-    /** The package the last tick saw in front. */
-    private String livePackage = "";
+    private String autoPackages = "";
 
     private final Map<String, int[]> perGamePositions = new HashMap<>();
 
@@ -138,11 +135,11 @@ public final class FpsOverlayService extends Service {
             }
             final String payload = nativeSnapshot();
             main.post(() -> {
-                livePackage = packageOf(payload);
-                if (shouldShow(livePackage)) {
-                    attachWindow(livePackage);
+                String pkg = packageOf(payload);
+                if (!autoOnly || autoPackages.contains("," + pkg + ",")) {
+                    attachWindow(pkg);
                     if (chip != null) render(chip, payload);
-                    if (attached) followForeground(livePackage);
+                    if (attached) followForeground(pkg);
                 } else {
                     detachWindow();
                 }
@@ -179,7 +176,8 @@ public final class FpsOverlayService extends Service {
 
     @Override public void onDestroy() {
         if (current == this) current = null;
-        hide();
+        if (worker != null) { worker.quitSafely(); worker = null; workerHandler = null; }
+        detachWindow();
         main.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -250,27 +248,17 @@ public final class FpsOverlayService extends Service {
      * format then use the same string.
      */
     static void applyAutoConfig(Context context, String packagesCsv, boolean autoOnly) {
-        java.util.LinkedHashSet<String> clean = new java.util.LinkedHashSet<>();
-        if (packagesCsv != null) {
-            for (String pkg : packagesCsv.split(",")) {
-                if (!pkg.trim().isEmpty()) clean.add(pkg.trim());
-            }
-        }
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_AUTO_ONLY, autoOnly)
-            .putString(KEY_AUTO_PACKAGES, String.join(",", clean))
+            .putString(KEY_AUTO_PACKAGES, packagesCsv == null ? "" : packagesCsv)
             .apply();
-        FpsOverlayService live = current;
-        if (live != null) live.main.post(live::reloadStyle);
     }
 
     /** Drains a changed config into the visible chip without restarting it. */
     private void reloadStyle() {
         loadConfig();
         applyStyle();
-        if (shouldShow(livePackage)) attachWindow(livePackage);
-        else detachWindow();
     }
 
     private void loadConfig() {
@@ -281,10 +269,7 @@ public final class FpsOverlayService extends Service {
         accentColor = p.getInt(KEY_ACCENT, DEFAULT_ACCENT);
         perGame = p.getBoolean(KEY_PER_GAME, true);
         autoOnly = p.getBoolean(KEY_AUTO_ONLY, false);
-        autoPackages.clear();
-        for (String pkg : p.getString(KEY_AUTO_PACKAGES, "").split(",")) {
-            if (!pkg.trim().isEmpty()) autoPackages.add(pkg.trim());
-        }
+        autoPackages = "," + p.getString(KEY_AUTO_PACKAGES, "") + ",";
         perGamePositions.clear();
         try {
             JSONObject positions = new JSONObject(p.getString(KEY_POSITIONS, "{}"));
@@ -300,20 +285,10 @@ public final class FpsOverlayService extends Service {
 
     // ─── Window ─────────────────────────────────────────────────────────────
 
-    /** Auto mode narrows visibility; an empty selection hides the chip. */
-    private boolean shouldShow(String pkg) {
-        return !autoOnly || (pkg != null
-            && !pkg.isEmpty() && autoPackages.contains(pkg));
-    }
 
     private void show() {
-        if (!canDraw(this) || windowManager == null) {
-            stopSelf();
-            return;
-        }
-        if (!autoOnly) {
-            attachWindow(prefs().getString(KEY_POS_PACKAGE, ""));
-        }
+        if (!canDraw(this) || windowManager == null) { stopSelf(); return; }
+        if (!autoOnly) attachWindow(prefs().getString(KEY_POS_PACKAGE, ""));
         if (worker == null) {
             worker = new HandlerThread("fps-overlay");
             worker.start();
@@ -321,47 +296,24 @@ public final class FpsOverlayService extends Service {
             workerHandler.post(sample);
         }
     }
-
+    /** Attaches or removes the chip; the sampler keeps its 500 ms ticks. */
     private void attachWindow(String pkg) {
         if (attached || windowManager == null) return;
-        if (chip == null) {
-            chip = buildChip();
-            installDragListener();
-        }
-        if (!pkg.equals(positionedPackage)) {
-            positionedPackage = pkg;
-            prefs().edit().putString(KEY_POS_PACKAGE, pkg).apply();
-        }
+        if (chip == null) { chip = buildChip(); installDragListener(); }
+        positionedPackage = pkg;
         params = buildParams();
         try {
             windowManager.addView(chip, params);
             attached = true;
-        } catch (RuntimeException refused) {
-            stopSelf();
-        }
+        } catch (RuntimeException refused) { stopSelf(); }
     }
-
-    /** Removes only the window; the sampler keeps answering 500 ms ticks. */
     private void detachWindow() {
         if (!attached || chip == null || windowManager == null) return;
-        try {
-            windowManager.removeView(chip);
-        } catch (IllegalArgumentException alreadyGone) {
-            // The window manager can drop the view first on process death.
-        }
+        try { windowManager.removeView(chip); }
+        catch (IllegalArgumentException alreadyGone) { }
         attached = false;
         params = null;
     }
-
-    private void hide() {
-        if (worker != null) {
-            worker.quitSafely();
-            worker = null;
-            workerHandler = null;
-        }
-        detachWindow();
-    }
-
     private WindowManager.LayoutParams buildParams() {
         // Touchable window with a pass-through backdrop: the chip itself is
         // touchable so it can be dragged, and every pixel outside the chip
@@ -378,7 +330,7 @@ public final class FpsOverlayService extends Service {
         lp.gravity = Gravity.TOP | Gravity.START;
         lp.layoutInDisplayCutoutMode =
             WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-        positionedPackage = prefs().getString(KEY_POS_PACKAGE, "");        int[] saved = (!perGame || positionedPackage.isEmpty())
+        int[] saved = (!perGame || positionedPackage.isEmpty())
             ? null : perGamePositions.get(positionedPackage);
         if (saved != null) {
             lp.x = saved[0];
@@ -504,7 +456,6 @@ public final class FpsOverlayService extends Service {
         view.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
         view.setLineSpacing(0, 1.05f);
         view.setContentDescription("Foreground app frame rate");
-        applyStyleTo(view);
         return view;
     }
 
@@ -550,64 +501,39 @@ public final class FpsOverlayService extends Service {
      * sensors and the package are smaller supporting lines. A field the ROM
      * does not expose is omitted rather than printed as a fake zero.
      */
+    private static void metric(StringBuilder out, String label, int value) {
+        if (out.length() > 0) out.append(" \u00b7 ");
+        out.append(label).append(' ').append(value).append('%');
+    }
     private static void render(TextView view, String payload) {
         long scaled = 0;
-        int cpuLoad = 0;
-        int gpu = 0;
-        int ramUsedMb = 0;
-        int ramTotalMb = 0;
-        int batteryLevel = 0;
-        boolean hasCpuLoad = false;
-        boolean hasGpu = false;
-        boolean hasRam = false;
-        boolean hasBattery = false;
+        String metrics = "";
         try {
             JSONObject snapshot = new JSONObject(payload == null ? "{}" : payload);
             scaled = Math.round(snapshot.optDouble("fps", 0.0) * 100.0);
-            hasCpuLoad = snapshot.has("cpuLoad");
-            hasGpu = snapshot.has("gpuUtil");
-            hasRam = snapshot.has("ramUsedMb") && snapshot.has("ramTotalMb");
-            hasBattery = snapshot.has("batteryLevel");
-            cpuLoad = snapshot.optInt("cpuLoad", 0);
-            gpu = snapshot.optInt("gpuUtil", 0);
-            ramUsedMb = snapshot.optInt("ramUsedMb", 0);
-            ramTotalMb = snapshot.optInt("ramTotalMb", 0);
-            batteryLevel = snapshot.optInt("batteryLevel", 0);
+            StringBuilder m = new StringBuilder();
+            if (snapshot.has("cpuLoad")) metric(m, "CPU", snapshot.optInt("cpuLoad"));
+            if (snapshot.has("gpuUtil")) metric(m, "GPU", snapshot.optInt("gpuUtil"));
+            if (snapshot.has("ramUsedMb") && snapshot.has("ramTotalMb")
+                    && snapshot.optInt("ramTotalMb") > 0) {
+                metric(m, "RAM", Math.round(snapshot.optInt("ramUsedMb") * 100f
+                    / snapshot.optInt("ramTotalMb")));
+            }
+            if (snapshot.has("batteryLevel")) metric(m, "BAT", snapshot.optInt("batteryLevel"));
+            metrics = m.toString();
         } catch (JSONException malformed) {
             // A daemon that is away answers "{}"; the chip shows a dash.
         }
-
         SpannableStringBuilder text = new SpannableStringBuilder();
-        int start = text.length();
         text.append(scaled > 0
             ? Math.round(scaled / 100.0) + " FPS" : "FPS \u2014");
-        text.setSpan(new RelativeSizeSpan(1.35f), start, text.length(), SPAN);
-        text.setSpan(new StyleSpan(Typeface.BOLD), start, text.length(), SPAN);
-        StringBuilder metrics = new StringBuilder();
-        if (hasCpuLoad) {
-            metrics.append("CPU ").append(cpuLoad).append('%');
-        }
-        if (hasGpu) {
-            if (metrics.length() > 0) metrics.append(" \u00b7 ");
-            metrics.append("GPU ").append(gpu).append('%');
-        }
-        if (hasRam && ramTotalMb > 0) {
-            if (metrics.length() > 0) metrics.append(" \u00b7 ");
-            metrics.append("RAM ")
-                .append(Math.round(ramUsedMb * 100f / ramTotalMb))
-                .append('%');
-        }
-        if (hasBattery) {
-            if (metrics.length() > 0) metrics.append(" \u00b7 ");
-            metrics.append("BAT ").append(batteryLevel).append('%');
-        }
-        if (metrics.length() > 0) {
+        text.setSpan(new RelativeSizeSpan(1.35f), 0, text.length(), SPAN);
+        text.setSpan(new StyleSpan(Typeface.BOLD), 0, text.length(), SPAN);
+        if (!metrics.isEmpty()) {
             text.append(" \u00b7 ");
             int detailStart = text.length();
             text.append(metrics);
             text.setSpan(new RelativeSizeSpan(0.68f), detailStart, text.length(), SPAN);
-            text.setSpan(
-                new ForegroundColorSpan(0xFFA8B8C4), detailStart, text.length(), SPAN);
         }
         view.setText(text);
     }
